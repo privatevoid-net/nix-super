@@ -474,9 +474,8 @@ struct CmdProfileList : virtual EvalCommand, virtual StoreCommand, MixDefaultPro
 
         for (size_t i = 0; i < manifest.elements.size(); ++i) {
             auto & element(manifest.elements[i]);
-            logger->cout("%d %s %s %s", i,
+            logger->cout("%03d %s\t%s", i,
                 element.source ? element.source->originalRef.to_string() + "#" + element.source->attrPath : "-",
-                element.source ? element.source->resolvedRef.to_string() + "#" + element.source->attrPath : "-",
                 concatStringsSep(" ", store->printStorePathSet(element.storePaths)));
         }
     }
