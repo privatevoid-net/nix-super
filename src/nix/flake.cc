@@ -631,8 +631,6 @@ struct CmdFlakeCheck : FlakeCommand
                             }
                         }
 
-                        else
-                            warn("unknown flake output '%s'", name);
 
                     } catch (Error & e) {
                         e.addTrace(pos, hintfmt("while checking flake output '%s'", name));
