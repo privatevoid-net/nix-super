@@ -1,5 +1,5 @@
 {
-  description = "The purely functional package manager";
+  description = "The purely functional package manager - but super!";
 
   inputs.nixpkgs.url = "nixpkgs/nixos-21.05-small";
   inputs.nixpkgs-regression.url = "nixpkgs/215d4d0fd80ca5163643b03a33fde804a29cc1e2";
@@ -180,7 +180,7 @@
         NIX_DAEMON_PACKAGE = daemon;
         NIX_CLIENT_PACKAGE = client;
         name =
-          "nix-tests"
+          "nix-super-tests"
           + optionalString
             (versionAtLeast daemon.version "2.4pre20211005" &&
              versionAtLeast client.version "2.4pre20211005")
@@ -213,7 +213,7 @@
           installerClosureInfo = buildPackages.closureInfo { rootPaths = [ nix cacert ]; };
         in
 
-        buildPackages.runCommand "nix-binary-tarball-${version}"
+        buildPackages.runCommand "nix-super-binary-tarball-${version}"
           { #nativeBuildInputs = lib.optional (system != "aarch64-linux") shellcheck;
             meta.description = "Distribution-independent Nix bootstrap binaries for ${pkgs.system}";
           }
@@ -258,7 +258,7 @@
             chmod +x $TMPDIR/install-darwin-multi-user.sh
             chmod +x $TMPDIR/install-systemd-multi-user.sh
             chmod +x $TMPDIR/install-multi-user
-            dir=nix-${version}-${pkgs.system}
+            dir=nix-super-${version}-${pkgs.system}
             fn=$out/$dir.tar.xz
             mkdir -p $out/nix-support
             echo "file binary-dist $fn" >> $out/nix-support/hydra-build-products
@@ -288,7 +288,7 @@
           nixUnstable = prev.nixUnstable;
 
           nix = with final; with commonDeps pkgs; currentStdenv.mkDerivation {
-            name = "nix-${version}";
+            name = "nix-super-${version}";
             inherit version;
 
             src = self;
@@ -354,7 +354,7 @@
             strictDeps = true;
 
             passthru.perl-bindings = with final; currentStdenv.mkDerivation {
-              name = "nix-perl-${version}";
+              name = "nix-super-perl-${version}";
 
               src = self;
 
@@ -419,7 +419,7 @@
         buildStatic = nixpkgs.lib.genAttrs linux64BitSystems (system: self.packages.${system}.nix-static);
 
         buildCross = nixpkgs.lib.genAttrs crossSystems (crossSystem:
-          nixpkgs.lib.genAttrs ["x86_64-linux"] (system: self.packages.${system}."nix-${crossSystem}"));
+          nixpkgs.lib.genAttrs ["x86_64-linux"] (system: self.packages.${system}."nix-super-${crossSystem}"));
 
         # Perl bindings for various platforms.
         perlBindings = nixpkgs.lib.genAttrs systems (system: self.packages.${system}.nix.perl-bindings);
@@ -436,7 +436,7 @@
               inherit system crossSystem;
               overlays = [ self.overlay ];
             };
-          in binaryTarball nixpkgsFor.${system} self.packages.${system}."nix-${crossSystem}" nixpkgsCross;
+          in binaryTarball nixpkgsFor.${system} self.packages.${system}."nix-super-${crossSystem}" nixpkgsCross;
         }) crossSystems));
 
         # The first half of the installation script. This is uploaded
@@ -455,7 +455,7 @@
           with commonDeps pkgs;
 
           releaseTools.coverageAnalysis {
-            name = "nix-coverage-${version}";
+            name = "nix-super-coverage-${version}";
 
             src = self;
 
@@ -557,7 +557,7 @@
         nix-static = let
           nixpkgs = nixpkgsFor.${system}.pkgsStatic;
         in with commonDeps nixpkgs; nixpkgs.stdenv.mkDerivation {
-          name = "nix-${version}";
+          name = "nix-super-${version}";
 
           src = self;
 
@@ -609,14 +609,14 @@
               echo "file binary-dist $image" >> $out/nix-support/hydra-build-products
             '';
       } // builtins.listToAttrs (map (crossSystem: {
-        name = "nix-${crossSystem}";
+        name = "nix-super-${crossSystem}";
         value = let
           nixpkgsCross = import nixpkgs {
             inherit system crossSystem;
             overlays = [ self.overlay ];
           };
         in with commonDeps nixpkgsCross; nixpkgsCross.stdenv.mkDerivation {
-          name = "nix-${version}";
+          name = "nix-super-${version}";
 
           src = self;
 
@@ -649,7 +649,7 @@
         };
       }) crossSystems)) // (builtins.listToAttrs (map (stdenvName:
         nixpkgsFor.${system}.lib.nameValuePair
-          "nix-${stdenvName}"
+          "nix-super-${stdenvName}"
           nixpkgsFor.${system}."${stdenvName}Packages".nix
       ) stdenvs)));
 
@@ -662,7 +662,7 @@
         with commonDeps pkgs;
 
         nixpkgsFor.${system}.${stdenv}.mkDerivation {
-          name = "nix";
+          name = "nix-super";
 
           outputs = [ "out" "dev" "doc" ];
 
