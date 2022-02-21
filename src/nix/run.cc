@@ -101,7 +101,36 @@ struct CmdShell : InstallablesCommand, MixEnvironment
 
         setEnviron();
 
+        std::map<std::string,std::string> pathVarMapping {
+            // default - always added
+            // { "PATH",                 "/bin" }
+            // additional
+              { "CUPS_DATADIR",         "/share/cups" }
+            , { "DICPATH",              "/share/hunspell" }
+            , { "GIO_EXTRA_MODULES",    "/lib/gio/modules" }
+            , { "GI_TYPELIB_PATH",      "/lib/girepository-1.0" }
+            , { "GST_PLUGIN_PATH_1_0",  "/lib/gstreamer-1.0" }
+            , { "GTK_PATH",             "/lib/gtk-3.0" } // TODO: gtk-2.0, gtk-4.0 support
+            , { "INFOPATH",             "/share/info" }
+            , { "LADSPA_PATH",          "/lib/ladspa" }
+            , { "LD_LIBRARY_PATH",      "/lib" }
+            , { "LIBEXEC_PATH",         "/libexec" }
+            , { "LV2_PATH",             "/lib/lv2" }
+            , { "MOZ_PLUGIN_PATH",      "/lib/mozilla/plugins" }
+            , { "QTWEBKIT_PLUGIN_PATH", "/lib/mozilla/plugins" }
+            , { "TERMINFO_DIRS",        "/share/terminfo" }
+            , { "XDG_CONFIG_DIRS",      "/etc/xdg" }
+            , { "XDG_DATA_DIRS",        "/share" }
+        };
+
         auto unixPath = tokenizeString<Strings>(getEnv("PATH").value_or(""), ":");
+
+        std::map<std::string,Strings> pathVars;
+
+        for (auto const& pathV : pathVarMapping) {
+            pathVars[pathV.first] = tokenizeString<Strings>(getEnv(pathV.first).value_or(""), ":");
+        }
+
 
         while (!todo.empty()) {
             auto path = todo.front();
@@ -111,7 +140,15 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             if (true)
                 unixPath.push_front(store->printStorePath(path) + "/bin");
 
-            auto propPath = store->printStorePath(path) + "/nix-support/propagated-user-env-packages";
+            auto pathString = store->printStorePath(path);
+
+            for (auto const& pathV : pathVarMapping) {
+                if (accessor->stat(pathString + pathV.second).type != FSAccessor::tMissing)
+                    pathVars[pathV.first].push_front(pathString + pathV.second);
+            }
+
+
+            auto propPath = pathString + "/nix-support/propagated-user-env-packages";
             if (accessor->stat(propPath).type == FSAccessor::tRegular) {
                 for (auto & p : tokenizeString<Paths>(readFile(propPath)))
                     todo.push(store->parseStorePath(p));
@@ -119,6 +156,10 @@ struct CmdShell : InstallablesCommand, MixEnvironment
         }
 
         setenv("PATH", concatStringsSep(":", unixPath).c_str(), 1);
+        for (auto const& pathV : pathVarMapping) {
+            setenv(pathV.first.c_str(), concatStringsSep(":", pathVars[pathV.first]).c_str(), 1);
+        }
+
 
         Strings args;
         for (auto & arg : command) args.push_back(arg);
