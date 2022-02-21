@@ -166,6 +166,46 @@ SourceExprCommand::SourceExprCommand()
         .labels = {"expr"},
         .handler = {&applyToInstallable},
     });
+
+    addFlag({
+        .longName = "override",
+        .description = "Override derivation arguments: --override *name* *expr*",
+        .category = installablesCategory,
+        .labels = {"name", "expr"},
+        .handler = {[&](std::string name, std::string expr) {  overrideArgs[name] = 'E' + expr; }}
+    });
+
+    addFlag({
+        .longName = "override-pkg",
+        .description = "Override dependency *name* of the given derivations with other packages, using *flakeref*.",
+        .category = installablesCategory,
+        .labels = {"name", "flakeref"},
+        .handler = {[&](std::string name, std::string expr) {  overrideArgs[name] = 'F' + expr; }}
+    });
+
+    addFlag({
+        .longName = "override-from",
+        .description = "Override dependency *name* of the given derivations with other packages, using *attrpath*. (Only applicable when using --file)",
+        .category = installablesCategory,
+        .labels = {"name", "attrpath"},
+        .handler = {[&](std::string name, std::string expr) {  overrideArgs[name] = 'X' + expr; }}
+    });
+
+    addFlag({
+        .longName = "override-attrs",
+        .description = "Override the given derivations' attributes using *expr*.",
+        .category = installablesCategory,
+        .labels = {"expr"},
+        .handler = {&installableOverrideAttrs},
+    });
+
+    addFlag({
+        .longName = "with",
+        .description = "Enhance the given derivations using an environment specified in *expr*.",
+        .category = installablesCategory,
+        .labels = {"expr"},
+        .handler = {&installableWithPackages},
+    });
 }
 
 Strings SourceExprCommand::getDefaultFlakeAttrPaths()
@@ -731,12 +771,44 @@ FlakeRef InstallableFlake::nixpkgsFlakeRef() const
     return Installable::nixpkgsFlakeRef();
 }
 
+Bindings * SourceExprCommand::getOverrideArgs(EvalState & state, ref<Store> store)
+{
+    Bindings * res = state.allocBindings(overrideArgs.size());
+    for (auto & i : overrideArgs) {
+        Value * v = state.allocValue();
+        if (i.second[0] == 'E') {
+            // is a raw expression, parse
+            state.mkThunk_(*v, state.parseExprFromString(string(i.second, 1), absPath(".")));
+        } else if (i.second[0] == 'F') {
+            // is a flakeref
+            auto [vNew, pos] = parseInstallable(store, string(i.second, 1), false, false)->toValue(state);
+            v = vNew;
+        } else if (i.second[0] == 'X') {
+            // is not a flakeref, use attrPath from file
+            // error because --override covers expressions already
+            if (!file)
+                throw Error("no file to reference override from");
+            auto [vNew, pos] = parseInstallable(store, string(i.second, 1), false, true)->toValue(state);
+            v = vNew;
+        } else {
+            throw Error("[BUG] unknown argtype %s",i.second[0]);
+        }
+        res->push_back(Attr(state.symbols.create(i.first), v));
+    }
+    res->sort();
+    return res;
+}
+
 std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
-    ref<Store> store, std::vector<std::string> ss)
+    ref<Store> store, std::vector<std::string> ss,
+    bool applyOverrides, bool nestedIsExprOk)
 {
     std::vector<std::shared_ptr<Installable>> result;
 
-    if (file || expr) {
+    auto modifyInstallable = applyOverrides && ( applyToInstallable
+        || installableOverrideAttrs || installableWithPackages || overrideArgs.size() > 0 );
+
+    if (nestedIsExprOk && (file || expr)) {
         if (file && expr)
             throw UsageError("'--file' and '--expr' are exclusive");
 
@@ -753,26 +825,62 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
             state->eval(e, *vFile);
         }
 
-        if (applyToInstallable) {
-            auto vApply = state->allocValue();
-            state->eval(state->parseExprFromString(*applyToInstallable, absPath(".")), *vApply);
-            auto vRes = state->allocValue();
-            state->callFunction(*vApply, *vFile, *vRes, noPos);
-            vFile = vRes;
+        for (auto & s : ss) {
+            auto installableAttr = std::make_shared<InstallableAttrPath>(state, *this, vFile, s == "." ? "" : s);
+            if (modifyInstallable) {
+                auto [v, pos] = installableAttr->toValue(*state);
+                auto vApply = state->allocValue();
+                auto vRes = state->allocValue();
+                auto state = getEvalState();
+                auto overrideSet = getOverrideArgs(*state, store);
+
+                // FIXME merge this and the code for the flake version into a single function ("modifyInstallables()"?)
+                if (applyToInstallable) {
+                    state->eval(state->parseExprFromString(*applyToInstallable, absPath(".")), *vApply);
+                    state->callFunction(*vApply, *v, *vRes, noPos);
+                } else if (overrideSet->size() > 0) {
+                    Value * overrideValues = state->allocValue();
+                    overrideValues->mkAttrs(state->buildBindings(overrideSet->size()).finish());
+                    for (auto& v : *overrideSet) {
+                        overrideValues->attrs->push_back(v);
+                    }
+                    auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("override"));
+                    if (!vOverrideFunctorAttr) {
+                        throw Error("%s is not overridable", s);
+                    }
+                    auto vOverrideFunctor = vOverrideFunctorAttr->value;
+                    state->callFunction(*vOverrideFunctor, *overrideValues, *vRes, noPos);
+                } else if (installableOverrideAttrs) {
+                    state->eval(state->parseExprFromString(fmt("old: with old; %s",*installableOverrideAttrs), absPath(".")), *vApply);
+                    auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("overrideAttrs"));
+                    if (!vOverrideFunctorAttr) {
+                        throw Error("%s is not overrideAttrs-capable", s);
+                    }
+                    auto vOverrideFunctor = vOverrideFunctorAttr->value;
+                    state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
+                } else if (installableWithPackages) {
+                    state->eval(state->parseExprFromString(fmt("ps: with ps; %s",*installableWithPackages), absPath(".")), *vApply);
+                    auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("withPackages"));
+                    if (!vOverrideFunctorAttr) {
+                        throw Error("%s cannot be extended with additional packages", s);
+                    }
+                    auto vOverrideFunctor = vOverrideFunctorAttr->value;
+                    state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
+                }
+                result.push_back(std::make_shared<InstallableAttrPath>(state, *this, vRes, ""));
+            } else {
+                result.push_back(installableAttr);
+            }
         }
-
-        for (auto & s : ss)
-            result.push_back(std::make_shared<InstallableAttrPath>(state, *this, vFile, s == "." ? "" : s));
-
     } else {
 
         for (auto & s : ss) {
             std::exception_ptr ex;
 
             if (s.find('/') != std::string::npos) {
-                if (applyToInstallable) {
+                /*if (modifyInstallable) {
                     throw Error("cannot apply function: installable cannot be evaluated");
-                }
+                }*/
                 try {
                     result.push_back(std::make_shared<InstallableStorePath>(store, store->followLinksToStorePath(s)));
                     continue;
@@ -800,12 +908,45 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
                         getDefaultFlakeAttrPaths(),
                         getDefaultFlakeAttrPathPrefixes(),
                         lockFlags);
-                if (applyToInstallable) {
+                if (modifyInstallable) {
                     auto [v, pos] = installableFlake->toValue(*state);
                     auto vApply = state->allocValue();
-                    state->eval(state->parseExprFromString(*applyToInstallable, absPath(".")), *vApply);
                     auto vRes = state->allocValue();
-                    state->callFunction(*vApply, *v, *vRes, noPos);
+                    auto state = getEvalState();
+                    auto overrideSet = getOverrideArgs(*state, store);
+
+                    if (applyToInstallable) {
+                        state->eval(state->parseExprFromString(*applyToInstallable, absPath(".")), *vApply);
+                        state->callFunction(*vApply, *v, *vRes, noPos);
+                    } else if (overrideSet->size() > 0) {
+                        Value * overrideValues = state->allocValue();
+                        overrideValues->mkAttrs(state->buildBindings(overrideSet->size()).finish());
+                        for (auto& v : *overrideSet) {
+                            overrideValues->attrs->push_back(v);
+                        }
+                        auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("override"));
+                        if (!vOverrideFunctorAttr) {
+                            throw Error("%s is not overridable", s);
+                        }
+                        auto vOverrideFunctor = vOverrideFunctorAttr->value;
+                        state->callFunction(*vOverrideFunctor, *overrideValues, *vRes, noPos);
+                    } else if (installableOverrideAttrs) {
+                        state->eval(state->parseExprFromString(fmt("old: with old; %s",*installableOverrideAttrs), absPath(".")), *vApply);
+                        auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("overrideAttrs"));
+                        if (!vOverrideFunctorAttr) {
+                            throw Error("%s is not overrideAttrs-capable", s);
+                        }
+                        auto vOverrideFunctor = vOverrideFunctorAttr->value;
+                        state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
+                    } else if (installableWithPackages) {
+                        state->eval(state->parseExprFromString(fmt("ps: with ps; %s",*installableWithPackages), absPath(".")), *vApply);
+                        auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("withPackages"));
+                        if (!vOverrideFunctorAttr) {
+                            throw Error("%s cannot be extended with additional packages", s);
+                        }
+                        auto vOverrideFunctor = vOverrideFunctorAttr->value;
+                        state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
+                    }
                     result.push_back(std::make_shared<InstallableAttrPath>(state, *this, vRes, ""));
                 } else {
                     result.push_back(installableFlake);
@@ -823,9 +964,10 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
 }
 
 std::shared_ptr<Installable> SourceExprCommand::parseInstallable(
-    ref<Store> store, const std::string & installable)
+    ref<Store> store, const std::string & installable,
+    bool applyOverrides, bool nestedIsExprOk)
 {
-    auto installables = parseInstallables(store, {installable});
+    auto installables = parseInstallables(store, {installable}, applyOverrides, nestedIsExprOk);
     assert(installables.size() == 1);
     return installables.front();
 }

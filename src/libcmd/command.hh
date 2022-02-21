@@ -95,6 +95,10 @@ struct SourceExprCommand : virtual Args, MixFlakeOptions
     std::optional<Path> file;
     std::optional<std::string> expr;
     std::optional<std::string> applyToInstallable;
+    std::optional<std::string> installableOverrideAttrs;
+    std::optional<std::string> installableWithPackages;
+
+    std::map<std::string, std::string> overrideArgs;
 
     // FIXME: move this; not all commands (e.g. 'nix run') use it.
     OperateOn operateOn = OperateOn::Output;
@@ -102,10 +106,14 @@ struct SourceExprCommand : virtual Args, MixFlakeOptions
     SourceExprCommand();
 
     std::vector<std::shared_ptr<Installable>> parseInstallables(
-        ref<Store> store, std::vector<std::string> ss);
+        ref<Store> store, std::vector<std::string> ss,
+        bool applyOverrides = true, bool nestedIsExprOk = true);
+
+    Bindings * getOverrideArgs(EvalState & state, ref<Store> store);
 
     std::shared_ptr<Installable> parseInstallable(
-        ref<Store> store, const std::string & installable);
+        ref<Store> store, const std::string & installable,
+        bool applyOverrides = true, bool nestedIsExprOk = true);
 
     virtual Strings getDefaultFlakeAttrPaths();
 
