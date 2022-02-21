@@ -199,7 +199,7 @@ namespace {
 void NixRepl::mainLoop(const std::vector<std::string> & files)
 {
     string error = ANSI_RED "error:" ANSI_NORMAL " ";
-    notice("Welcome to Nix " + nixVersion + ". Type :? for help.\n");
+    notice("Welcome to Nix Super " + nixVersion + ". Type :? for help.\n");
 
     for (auto & i : files)
         loadedFiles.push_back(i);
