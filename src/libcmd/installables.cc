@@ -20,6 +20,10 @@
 
 namespace nix {
 
+const static std::regex attrPathRegex(
+    R"((?:[a-zA-Z0-9_"-][a-zA-Z0-9_".-]*))",
+    std::regex::ECMAScript);
+
 void completeFlakeInputPath(
     ref<EvalState> evalState,
     const FlakeRef & flakeRef,
@@ -234,12 +238,21 @@ void completeFlakeRefWithFragment(
     /* Look for flake output attributes that match the
        prefix. */
     try {
+        bool isAttrPath = std::regex_match(prefix.begin(), prefix.end(), attrPathRegex);
         auto hash = prefix.find('#');
-        if (hash == std::string::npos) {
+        if (!isAttrPath && hash == std::string::npos) {
             completeFlakeRef(evalState->store, prefix);
         } else {
-            auto fragment = prefix.substr(hash + 1);
-            auto flakeRefS = std::string(prefix.substr(0, hash));
+            auto fragment =
+                isAttrPath
+                ? prefix
+                : prefix.substr(hash + 1);
+
+            auto flakeRefS =
+                isAttrPath
+                ? std::string("flake:default")
+                : std::string(prefix.substr(0, hash));
+
             // FIXME: do tilde expansion.
             auto flakeRef = parseFlakeRef(flakeRefS, absPath("."));
 
@@ -274,7 +287,10 @@ void completeFlakeRefWithFragment(
                         auto attrPath2 = attr->getAttrPath(attr2);
                         /* Strip the attrpath prefix. */
                         attrPath2.erase(attrPath2.begin(), attrPath2.begin() + attrPathPrefix.size());
-                        completions->add(flakeRefS + "#" + concatStringsSep(".", attrPath2));
+                        if (isAttrPath)
+                            completions->add(concatStringsSep(".", attrPath2));
+                        else
+                            completions->add(flakeRefS + "#" + concatStringsSep(".", attrPath2));
                     }
                 }
             }
@@ -749,7 +765,13 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
             }
 
             try {
-                auto [flakeRef, fragment] = parseFlakeRefWithFragment(s, absPath("."));
+                bool isAttrPath = std::regex_match(s, attrPathRegex);
+
+                auto [flakeRef, fragment] =
+                    isAttrPath
+                    ? std::make_pair(parseFlakeRef("flake:default", absPath(".")), s)
+                    : parseFlakeRefWithFragment(s, absPath("."));
+
                 result.push_back(std::make_shared<InstallableFlake>(
                         this,
                         getEvalState(),
