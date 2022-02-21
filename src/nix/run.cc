@@ -170,6 +170,7 @@ struct CmdShell : InstallablesCommand, MixEnvironment
 };
 
 static auto rCmdShell = registerCommand<CmdShell>("shell");
+static auto rCmdNixinate = registerCommand<CmdShell>("inate");
 
 struct CmdRun : InstallableCommand
 {
