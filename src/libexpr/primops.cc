@@ -3859,6 +3859,9 @@ void EvalState::createBaseEnv()
     v.mkInt(6);
     addConstant("__langVersion", v);
 
+    v.mkBool(true);
+    addConstant("__super", v);
+
     // Miscellaneous
     if (evalSettings.enableNativeCode) {
         addPrimOp("__importNative", 2, prim_importNative);
