@@ -346,6 +346,7 @@ void yyerror(YYLTYPE * loc, yyscan_t scanner, ParseData * data, const char * err
 %token IND_STRING_OPEN IND_STRING_CLOSE
 %token ELLIPSIS
 
+%right '$'
 %right IMPL
 %left OR
 %left AND
@@ -420,6 +421,7 @@ expr_op
   | expr_op '*' expr_op { $$ = new ExprCall(CUR_POS, new ExprVar(data->symbols.create("__mul")), {$1, $3}); }
   | expr_op '/' expr_op { $$ = new ExprCall(CUR_POS, new ExprVar(data->symbols.create("__div")), {$1, $3}); }
   | expr_op CONCAT expr_op { $$ = new ExprOpConcatLists(CUR_POS, $1, $3); }
+  | expr_op '$' expr_op { $$ = new ExprCall(CUR_POS, $1, {$3}); }
   | expr_app
   ;
 
