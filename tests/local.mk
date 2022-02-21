@@ -49,6 +49,7 @@ nix_tests = \
   flake-local-settings.sh \
   flake-searching.sh \
   flake-bundler.sh \
+  flake-print-local-path-error.sh \
   build.sh \
   repl.sh ca/repl.sh \
   ca/build.sh \
