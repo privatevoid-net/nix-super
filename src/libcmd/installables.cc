@@ -158,6 +158,14 @@ SourceExprCommand::SourceExprCommand()
         .category = installablesCategory,
         .handler = {&operateOn, OperateOn::Derivation},
     });
+
+    addFlag({
+        .longName = "apply-to-installable",
+        .description = "Apply the function *expr* to each installable.",
+        .category = installablesCategory,
+        .labels = {"expr"},
+        .handler = {&applyToInstallable},
+    });
 }
 
 Strings SourceExprCommand::getDefaultFlakeAttrPaths()
@@ -745,6 +753,14 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
             state->eval(e, *vFile);
         }
 
+        if (applyToInstallable) {
+            auto vApply = state->allocValue();
+            state->eval(state->parseExprFromString(*applyToInstallable, absPath(".")), *vApply);
+            auto vRes = state->allocValue();
+            state->callFunction(*vApply, *vFile, *vRes, noPos);
+            vFile = vRes;
+        }
+
         for (auto & s : ss)
             result.push_back(std::make_shared<InstallableAttrPath>(state, *this, vFile, s == "." ? "" : s));
 
@@ -754,6 +770,9 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
             std::exception_ptr ex;
 
             if (s.find('/') != std::string::npos) {
+                if (applyToInstallable) {
+                    throw Error("cannot apply function: installable cannot be evaluated");
+                }
                 try {
                     result.push_back(std::make_shared<InstallableStorePath>(store, store->followLinksToStorePath(s)));
                     continue;
@@ -772,14 +791,25 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
                     ? std::make_pair(parseFlakeRef("flake:default", absPath(".")), s)
                     : parseFlakeRefWithFragment(s, absPath("."));
 
-                result.push_back(std::make_shared<InstallableFlake>(
+                auto state = getEvalState();
+                auto installableFlake = std::make_shared<InstallableFlake>(
                         this,
-                        getEvalState(),
+                        state,
                         std::move(flakeRef),
                         fragment,
                         getDefaultFlakeAttrPaths(),
                         getDefaultFlakeAttrPathPrefixes(),
-                        lockFlags));
+                        lockFlags);
+                if (applyToInstallable) {
+                    auto [v, pos] = installableFlake->toValue(*state);
+                    auto vApply = state->allocValue();
+                    state->eval(state->parseExprFromString(*applyToInstallable, absPath(".")), *vApply);
+                    auto vRes = state->allocValue();
+                    state->callFunction(*vApply, *v, *vRes, noPos);
+                    result.push_back(std::make_shared<InstallableAttrPath>(state, *this, vRes, ""));
+                } else {
+                    result.push_back(installableFlake);
+                }
                 continue;
             } catch (...) {
                 ex = std::current_exception();

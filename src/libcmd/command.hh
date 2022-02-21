@@ -94,6 +94,7 @@ struct SourceExprCommand : virtual Args, MixFlakeOptions
 {
     std::optional<Path> file;
     std::optional<std::string> expr;
+    std::optional<std::string> applyToInstallable;
 
     // FIXME: move this; not all commands (e.g. 'nix run') use it.
     OperateOn operateOn = OperateOn::Output;
