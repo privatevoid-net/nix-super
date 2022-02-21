@@ -168,8 +168,7 @@ bool Settings::isExperimentalFeatureEnabled(const ExperimentalFeature & feature)
 
 void Settings::requireExperimentalFeature(const ExperimentalFeature & feature)
 {
-    if (!isExperimentalFeatureEnabled(feature))
-        throw MissingExperimentalFeature(feature);
+    return;
 }
 
 bool Settings::isWSL1()
