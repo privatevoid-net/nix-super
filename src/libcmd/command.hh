@@ -165,7 +165,7 @@ struct InstallableCommand : virtual Args, SourceExprCommand
 
     std::optional<FlakeRef> getFlakeRefForCompletion() override
     {
-        return parseFlakeRef(_installable, absPath("."));
+        return parseFlakeRefWithFragment(_installable, absPath(".")).first;
     }
 
 private:
