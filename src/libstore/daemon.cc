@@ -1,7 +1,9 @@
 #include "daemon.hh"
 #include "monitor-fd.hh"
 #include "worker-protocol.hh"
+#include "build-result.hh"
 #include "store-api.hh"
+#include "gc-store.hh"
 #include "path-with-outputs.hh"
 #include "finally.hh"
 #include "archive.hh"
@@ -479,8 +481,8 @@ static void performOp(TunnelLogger * logger, ref<Store> store,
     }
 
     case wopAddTextToStore: {
-        string suffix = readString(from);
-        string s = readString(from);
+        std::string suffix = readString(from);
+        std::string s = readString(from);
         auto refs = worker_proto::read(*store, from, Phantom<StorePathSet> {});
         logger->startWork();
         auto path = store->addTextToStore(suffix, s, refs, NoRepair);
@@ -622,9 +624,12 @@ static void performOp(TunnelLogger * logger, ref<Store> store,
 
     case wopAddIndirectRoot: {
         Path path = absPath(readString(from));
+
         logger->startWork();
-        store->addIndirectRoot(path);
+        auto & gcStore = requireGcStore(*store);
+        gcStore.addIndirectRoot(path);
         logger->stopWork();
+
         to << 1;
         break;
     }
@@ -639,7 +644,8 @@ static void performOp(TunnelLogger * logger, ref<Store> store,
 
     case wopFindRoots: {
         logger->startWork();
-        Roots roots = store->findRoots(!trusted);
+        auto & gcStore = requireGcStore(*store);
+        Roots roots = gcStore.findRoots(!trusted);
         logger->stopWork();
 
         size_t size = 0;
@@ -670,7 +676,8 @@ static void performOp(TunnelLogger * logger, ref<Store> store,
         logger->startWork();
         if (options.ignoreLiveness)
             throw Error("you are not allowed to ignore liveness");
-        store->collectGarbage(options, results);
+        auto & gcStore = requireGcStore(*store);
+        gcStore.collectGarbage(options, results);
         logger->stopWork();
 
         to << results.paths << results.bytesFreed << 0 /* obsolete */;
@@ -698,8 +705,8 @@ static void performOp(TunnelLogger * logger, ref<Store> store,
         if (GET_PROTOCOL_MINOR(clientVersion) >= 12) {
             unsigned int n = readInt(from);
             for (unsigned int i = 0; i < n; i++) {
-                string name = readString(from);
-                string value = readString(from);
+                auto name = readString(from);
+                auto value = readString(from);
                 clientSettings.overrides.emplace(name, value);
             }
         }

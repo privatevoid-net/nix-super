@@ -6,6 +6,7 @@
 #include "store-api.hh"
 #include "fetchers.hh"
 #include "finally.hh"
+#include "fetch-settings.hh"
 
 namespace nix {
 
@@ -254,7 +255,7 @@ static Flake getFlake(
         for (auto & setting : *nixConfig->value->attrs) {
             forceTrivialValue(state, *setting.value, *setting.pos);
             if (setting.value->type() == nString)
-                flake.config.settings.insert({setting.name, string(state.forceStringNoCtx(*setting.value, *setting.pos))});
+                flake.config.settings.insert({setting.name, std::string(state.forceStringNoCtx(*setting.value, *setting.pos))});
             else if (setting.value->type() == nPath) {
                 PathSet emptyContext = {};
                 flake.config.settings.emplace(
@@ -315,7 +316,7 @@ LockedFlake lockFlake(
 
     FlakeCache flakeCache;
 
-    auto useRegistries = lockFlags.useRegistries.value_or(settings.useRegistries);
+    auto useRegistries = lockFlags.useRegistries.value_or(fetchSettings.useRegistries);
 
     auto flake = getFlake(state, topRef, useRegistries, flakeCache);
 
@@ -501,7 +502,7 @@ LockedFlake lockFlake(
                            this input. */
                         debug("creating new input '%s'", inputPathS);
 
-                        if (!lockFlags.allowMutable && !input.ref->input.isImmutable())
+                        if (!lockFlags.allowMutable && !input.ref->input.isLocked())
                             throw Error("cannot update flake input '%s' in pure mode", inputPathS);
 
                         if (input.isFlake) {
@@ -591,7 +592,7 @@ LockedFlake lockFlake(
             if (lockFlags.writeLockFile) {
                 if (auto sourcePath = topRef.input.getSourcePath()) {
                     if (!newLockFile.isImmutable()) {
-                        if (settings.warnDirty)
+                        if (fetchSettings.warnDirty)
                             warn("will not write lock file of flake '%s' because it has a mutable input", topRef);
                     } else {
                         if (!lockFlags.updateLockFile)
@@ -618,7 +619,7 @@ LockedFlake lockFlake(
                         if (lockFlags.commitLockFile) {
                             std::string cm;
 
-                            cm = settings.commitLockFileSummary.get();
+                            cm = fetchSettings.commitLockFileSummary.get();
 
                             if (cm == "") {
                                 cm = fmt("%s: %s", relPath, lockFileExists ? "Update" : "Add");
@@ -650,7 +651,7 @@ LockedFlake lockFlake(
                            now. Corner case: we could have reverted from a
                            dirty to a clean tree! */
                         if (flake.lockedRef.input == prevLockedRef.input
-                            && !flake.lockedRef.input.isImmutable())
+                            && !flake.lockedRef.input.isLocked())
                             throw Error("'%s' did not change after I updated its 'flake.lock' file; is 'flake.lock' under version control?", flake.originalRef);
                     }
                 } else
@@ -707,16 +708,16 @@ static void prim_getFlake(EvalState & state, const Pos & pos, Value * * args, Va
 {
     state.requireExperimentalFeatureOnEvaluation(Xp::Flakes, "builtins.getFlake", pos);
 
-    string flakeRefS(state.forceStringNoCtx(*args[0], pos));
+    std::string flakeRefS(state.forceStringNoCtx(*args[0], pos));
     auto flakeRef = parseFlakeRef(flakeRefS, {}, true);
-    if (evalSettings.pureEval && !flakeRef.input.isImmutable())
-        throw Error("cannot call 'getFlake' on mutable flake reference '%s', at %s (use --impure to override)", flakeRefS, pos);
+    if (evalSettings.pureEval && !flakeRef.input.isLocked())
+        throw Error("cannot call 'getFlake' on unlocked flake reference '%s', at %s (use --impure to override)", flakeRefS, pos);
 
     callFlake(state,
         lockFlake(state, flakeRef,
             LockFlags {
                 .updateLockFile = false,
-                .useRegistries = !evalSettings.pureEval && settings.useRegistries,
+                .useRegistries = !evalSettings.pureEval && fetchSettings.useRegistries,
                 .allowMutable  = !evalSettings.pureEval,
             }),
         v);

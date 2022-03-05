@@ -307,7 +307,7 @@ struct Common : InstallableCommand, MixProfile
         for (auto & [installable_, dir_] : redirects) {
             auto dir = absPath(dir_);
             auto installable = parseInstallable(store, installable_);
-            auto builtPaths = toStorePaths(
+            auto builtPaths = Installable::toStorePaths(
                 getEvalStore(), store, Realise::Nothing, OperateOn::Output, {installable});
             for (auto & path: builtPaths) {
                 auto from = store->printStorePath(path);
@@ -325,8 +325,15 @@ struct Common : InstallableCommand, MixProfile
 
     Strings getDefaultFlakeAttrPaths() override
     {
-        return {"devShell." + settings.thisSystem.get(), "defaultPackage." + settings.thisSystem.get()};
+        Strings paths{
+            "devShells." + settings.thisSystem.get() + ".default",
+            "devShell." + settings.thisSystem.get(),
+        };
+        for (auto & p : SourceExprCommand::getDefaultFlakeAttrPaths())
+            paths.push_back(p);
+        return paths;
     }
+
     Strings getDefaultFlakeAttrPathPrefixes() override
     {
         auto res = SourceExprCommand::getDefaultFlakeAttrPathPrefixes();
@@ -340,7 +347,7 @@ struct Common : InstallableCommand, MixProfile
         if (path && hasSuffix(path->to_string(), "-env"))
             return *path;
         else {
-            auto drvs = toDerivations(store, {installable});
+            auto drvs = Installable::toDerivations(store, {installable});
 
             if (drvs.size() != 1)
                 throw Error("'%s' needs to evaluate to a single derivation, but it evaluated to %d derivations",
@@ -504,7 +511,8 @@ struct CmdDevelop : Common, MixEnvironment
                 nixpkgsLockFlags);
 
             shell = store->printStorePath(
-                toStorePath(getEvalStore(), store, Realise::Outputs, OperateOn::Output, bashInstallable)) + "/bin/bash";
+                Installable::toStorePath(getEvalStore(), store, Realise::Outputs, OperateOn::Output, bashInstallable))
+                + "/bin/bash";
         } catch (Error &) {
             ignoreException();
         }

@@ -76,127 +76,10 @@ enum AllowInvalidFlag : bool { DisallowInvalid = false, AllowInvalid = true };
 const uint32_t exportMagic = 0x4558494e;
 
 
-typedef std::unordered_map<StorePath, std::unordered_set<std::string>> Roots;
-
-
-struct GCOptions
-{
-    /* Garbage collector operation:
-
-       - `gcReturnLive': return the set of paths reachable from
-         (i.e. in the closure of) the roots.
-
-       - `gcReturnDead': return the set of paths not reachable from
-         the roots.
-
-       - `gcDeleteDead': actually delete the latter set.
-
-       - `gcDeleteSpecific': delete the paths listed in
-          `pathsToDelete', insofar as they are not reachable.
-    */
-    typedef enum {
-        gcReturnLive,
-        gcReturnDead,
-        gcDeleteDead,
-        gcDeleteSpecific,
-    } GCAction;
-
-    GCAction action{gcDeleteDead};
-
-    /* If `ignoreLiveness' is set, then reachability from the roots is
-       ignored (dangerous!).  However, the paths must still be
-       unreferenced *within* the store (i.e., there can be no other
-       store paths that depend on them). */
-    bool ignoreLiveness{false};
-
-    /* For `gcDeleteSpecific', the paths to delete. */
-    StorePathSet pathsToDelete;
-
-    /* Stop after at least `maxFreed' bytes have been freed. */
-    uint64_t maxFreed{std::numeric_limits<uint64_t>::max()};
-};
-
-
-struct GCResults
-{
-    /* Depending on the action, the GC roots, or the paths that would
-       be or have been deleted. */
-    PathSet paths;
-
-    /* For `gcReturnDead', `gcDeleteDead' and `gcDeleteSpecific', the
-       number of bytes that would be or was freed. */
-    uint64_t bytesFreed = 0;
-};
-
-
 enum BuildMode { bmNormal, bmRepair, bmCheck };
 
+struct BuildResult;
 
-struct BuildResult
-{
-    /* Note: don't remove status codes, and only add new status codes
-       at the end of the list, to prevent client/server
-       incompatibilities in the nix-store --serve protocol. */
-    enum Status {
-        Built = 0,
-        Substituted,
-        AlreadyValid,
-        PermanentFailure,
-        InputRejected,
-        OutputRejected,
-        TransientFailure, // possibly transient
-        CachedFailure, // no longer used
-        TimedOut,
-        MiscFailure,
-        DependencyFailed,
-        LogLimitExceeded,
-        NotDeterministic,
-        ResolvesToAlreadyValid,
-    } status = MiscFailure;
-    std::string errorMsg;
-
-    std::string toString() const {
-        auto strStatus = [&]() {
-            switch (status) {
-                case Built: return "Built";
-                case Substituted: return "Substituted";
-                case AlreadyValid: return "AlreadyValid";
-                case PermanentFailure: return "PermanentFailure";
-                case InputRejected: return "InputRejected";
-                case OutputRejected: return "OutputRejected";
-                case TransientFailure: return "TransientFailure";
-                case CachedFailure: return "CachedFailure";
-                case TimedOut: return "TimedOut";
-                case MiscFailure: return "MiscFailure";
-                case DependencyFailed: return "DependencyFailed";
-                case LogLimitExceeded: return "LogLimitExceeded";
-                case NotDeterministic: return "NotDeterministic";
-                case ResolvesToAlreadyValid: return "ResolvesToAlreadyValid";
-                default: return "Unknown";
-            };
-        }();
-        return strStatus + ((errorMsg == "") ? "" : " : " + errorMsg);
-    }
-
-    /* How many times this build was performed. */
-    unsigned int timesBuilt = 0;
-
-    /* If timesBuilt > 1, whether some builds did not produce the same
-       result. (Note that 'isNonDeterministic = false' does not mean
-       the build is deterministic, just that we don't have evidence of
-       non-determinism.) */
-    bool isNonDeterministic = false;
-
-    DrvOutputs builtOutputs;
-
-    /* The start/stop times of the build (or one of the rounds, if it
-       was repeated). */
-    time_t startTime = 0, stopTime = 0;
-
-    bool success() {
-        return status == Built || status == Substituted || status == AlreadyValid || status == ResolvesToAlreadyValid;
-    }
-};
 
 struct StoreConfig : public Config
 {
@@ -352,7 +235,9 @@ public:
        simply yield a different store path, so other users wouldn't be
        affected), but it has some backwards compatibility issues (the
        hashing scheme changes), so I'm not doing that for now. */
-    StorePath computeStorePathForText(const string & name, const string & s,
+    StorePath computeStorePathForText(
+        std::string_view name,
+        std::string_view s,
         const StorePathSet & references) const;
 
     /* Check whether a path is valid. */
@@ -482,9 +367,14 @@ public:
        validity the resulting path.  The resulting path is returned.
        The function object `filter' can be used to exclude files (see
        libutil/archive.hh). */
-    virtual StorePath addToStore(const string & name, const Path & srcPath,
-        FileIngestionMethod method = FileIngestionMethod::Recursive, HashType hashAlgo = htSHA256,
-        PathFilter & filter = defaultPathFilter, RepairFlag repair = NoRepair, const StorePathSet & references = StorePathSet());
+    virtual StorePath addToStore(
+        std::string_view name,
+        const Path & srcPath,
+        FileIngestionMethod method = FileIngestionMethod::Recursive,
+        HashType hashAlgo = htSHA256,
+        PathFilter & filter = defaultPathFilter,
+        RepairFlag repair = NoRepair,
+        const StorePathSet & references = StorePathSet());
 
     /* Copy the contents of a path to the store and register the
        validity the resulting path, using a constant amount of
@@ -506,8 +396,11 @@ public:
 
     /* Like addToStore, but the contents written to the output path is
        a regular file containing the given string. */
-    virtual StorePath addTextToStore(const string & name, const string & s,
-        const StorePathSet & references, RepairFlag repair = NoRepair) = 0;
+    virtual StorePath addTextToStore(
+        std::string_view name,
+        std::string_view s,
+        const StorePathSet & references,
+        RepairFlag repair = NoRepair) = 0;
 
     /**
      * Add a mapping indicating that `deriver!outputName` maps to the output path
@@ -585,30 +478,10 @@ public:
     virtual void addTempRoot(const StorePath & path)
     { debug("not creating temporary root, store doesn't support GC"); }
 
-    /* Add an indirect root, which is merely a symlink to `path' from
-       /nix/var/nix/gcroots/auto/<hash of `path'>.  `path' is supposed
-       to be a symlink to a store path.  The garbage collector will
-       automatically remove the indirect root when it finds that
-       `path' has disappeared. */
-    virtual void addIndirectRoot(const Path & path)
-    { unsupported("addIndirectRoot"); }
-
-    /* Find the roots of the garbage collector.  Each root is a pair
-       (link, storepath) where `link' is the path of the symlink
-       outside of the Nix store that point to `storePath'. If
-       'censor' is true, privacy-sensitive information about roots
-       found in /proc is censored. */
-    virtual Roots findRoots(bool censor)
-    { unsupported("findRoots"); }
-
-    /* Perform a garbage collection. */
-    virtual void collectGarbage(const GCOptions & options, GCResults & results)
-    { unsupported("collectGarbage"); }
-
     /* Return a string representing information about the path that
        can be loaded into the database using `nix-store --load-db' or
        `nix-store --register-validity'. */
-    string makeValidityRegistration(const StorePathSet & paths,
+    std::string makeValidityRegistration(const StorePathSet & paths,
         bool showDerivers, bool showHash);
 
     /* Write a JSON representation of store path metadata, such as the
@@ -910,7 +783,7 @@ struct RegisterStoreImplementation
 
 /* Display a set of paths in human-readable form (i.e., between quotes
    and separated by commas). */
-string showPaths(const PathSet & paths);
+std::string showPaths(const PathSet & paths);
 
 
 std::optional<ValidPathInfo> decodeValidPathInfo(
