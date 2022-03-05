@@ -539,7 +539,7 @@ std::vector<InstallableValue::DerivationInfo> InstallableAttrPath::toDerivations
     DrvInfos drvInfos;
     getDerivations(*state, *v, "", autoArgs, drvInfos, false);
 
-    std::vector<DerivationInfo> res;
+    std::vector<InstallableValue::DerivationInfo> res;
     for (auto & drvInfo : drvInfos) {
         auto drvPath = drvInfo.queryDrvPath();
         if (!drvPath)
@@ -677,7 +677,7 @@ std::tuple<std::string, FlakeRef, InstallableValue::DerivationInfo> toDerivation
 
         auto drvPath = attr->forceDerivation();
 
-        auto drvInfo = DerivationInfo {
+        auto drvInfo = InstallableValue::DerivationInfo {
             std::move(drvPath),
             attr->getAttr(flake.state->sOutputName)->getString()
         };
@@ -713,7 +713,7 @@ std::tuple<std::string, FlakeRef, InstallableValue::DerivationInfo> InstallableF
 
 std::vector<InstallableValue::DerivationInfo> InstallableFlake::toDerivations()
 {
-    std::vector<DerivationInfo> res;
+    std::vector<InstallableValue::DerivationInfo> res;
     res.push_back(std::get<2>(toDerivation()));
     return res;
 }
