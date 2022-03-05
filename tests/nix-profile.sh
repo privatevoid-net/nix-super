@@ -43,7 +43,7 @@ cp ./config.nix $flake1Dir/
 
 # Test upgrading from nix-env.
 nix-env -f ./user-envs.nix -i foo-1.0
-nix profile list | grep '0 - - .*-foo-1.0'
+nix profile list | grep '0 -\s.*-foo-1.0'
 nix profile install $flake1Dir -L
 [[ $($TEST_HOME/.nix-profile/bin/hello) = "Hello World" ]]
 nix profile history
