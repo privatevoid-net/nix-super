@@ -788,17 +788,17 @@ Bindings * SourceExprCommand::getOverrideArgs(EvalState & state, ref<Store> stor
         Value * v = state.allocValue();
         if (i.second[0] == 'E') {
             // is a raw expression, parse
-            state.mkThunk_(*v, state.parseExprFromString(string(i.second, 1), absPath(".")));
+            state.mkThunk_(*v, state.parseExprFromString(std::string(i.second, 1), absPath(".")));
         } else if (i.second[0] == 'F') {
             // is a flakeref
-            auto [vNew, pos] = parseInstallable(store, string(i.second, 1), false, false)->toValue(state);
+            auto [vNew, pos] = parseInstallable(store, std::string(i.second, 1), false, false)->toValue(state);
             v = vNew;
         } else if (i.second[0] == 'X') {
             // is not a flakeref, use attrPath from file
             // error because --override covers expressions already
             if (!file)
                 throw Error("no file to reference override from");
-            auto [vNew, pos] = parseInstallable(store, string(i.second, 1), false, true)->toValue(state);
+            auto [vNew, pos] = parseInstallable(store, std::string(i.second, 1), false, true)->toValue(state);
             v = vNew;
         } else {
             throw Error("[BUG] unknown argtype %s",i.second[0]);
