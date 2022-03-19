@@ -327,8 +327,13 @@ MultiCommand::MultiCommand(const Commands & commands_)
         .handler = {[=](std::string s) {
             assert(!command);
             auto i = commands.find(s);
-            if (i == commands.end())
-                throw UsageError("'%s' is not a recognised command", s);
+            if (i == commands.end()) {
+                std::set<std::string> commandNames;
+                for (auto & [name, _] : commands)
+                    commandNames.insert(name);
+                auto suggestions = Suggestions::bestMatches(commandNames, s);
+                throw UsageError(suggestions, "'%s' is not a recognised command", s);
+            }
             command = {s, i->second()};
             command->second->parent = this;
         }},

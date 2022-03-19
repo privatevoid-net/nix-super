@@ -21,6 +21,7 @@ nix_tests = \
   tarball.sh \
   fetchGit.sh \
   fetchurl.sh \
+  fetchPath.sh \
   simple.sh \
   referrers.sh \
   optimise-store.sh \
@@ -52,6 +53,7 @@ nix_tests = \
   build-remote-content-addressed-floating.sh \
   nar-access.sh \
   pure-eval.sh \
+  eval.sh \
   ca/post-hook.sh \
   repl.sh \
   ca/repl.sh \
@@ -92,10 +94,11 @@ nix_tests = \
   bash-profile.sh \
   pass-as-file.sh \
   describe-stores.sh \
-  store-ping.sh \
   flake-bundler.sh \
   flake-print-local-path-error.sh \
-  nix-profile.sh
+  nix-profile.sh \
+  suggestions.sh \
+  store-ping.sh
 
 ifeq ($(HAVE_LIBCPUID), 1)
 	nix_tests += compute-levels.sh
