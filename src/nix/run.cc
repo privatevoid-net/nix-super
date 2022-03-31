@@ -116,7 +116,6 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             , { "GTK_PATH",             "/lib/gtk-3.0" } // TODO: gtk-2.0, gtk-4.0 support
             , { "INFOPATH",             "/share/info" }
             , { "LADSPA_PATH",          "/lib/ladspa" }
-            , { "LD_LIBRARY_PATH",      "/lib" }
             , { "LIBEXEC_PATH",         "/libexec" }
             , { "LV2_PATH",             "/lib/lv2" }
             , { "MOZ_PLUGIN_PATH",      "/lib/mozilla/plugins" }
