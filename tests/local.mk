@@ -98,7 +98,8 @@ nix_tests = \
   flake-print-local-path-error.sh \
   nix-profile.sh \
   suggestions.sh \
-  store-ping.sh
+  store-ping.sh \
+  fetchClosure.sh
 
 ifeq ($(HAVE_LIBCPUID), 1)
 	nix_tests += compute-levels.sh
