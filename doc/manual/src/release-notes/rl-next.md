@@ -14,3 +14,29 @@
 
   This function is only available if you enable the experimental
   feature `fetch-closure`.
+
+* New experimental feature: *impure derivations*. These are
+  derivations that can produce a different result every time they're
+  built. Here is an example:
+
+  ```nix
+  stdenv.mkDerivation {
+    name = "impure";
+    __impure = true; # marks this derivation as impure
+    buildCommand = "date > $out";
+  }
+  ```
+
+  Running `nix build` twice on this expression will build the
+  derivation twice, producing two different content-addressed store
+  paths. Like fixed-output derivations, impure derivations have access
+  to the network. Only fixed-output derivations and impure derivations
+  can depend on an impure derivation.
+
+* The `nixosModule` flake output attribute has been renamed consistent
+  with the `.default` renames in nix 2.7.
+
+  * `nixosModule` → `nixosModules.default`
+
+  As before, the old output will continue to work, but `nix flake check` will
+  issue a warning about it.

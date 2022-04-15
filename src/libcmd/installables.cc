@@ -1,3 +1,4 @@
+#include "globals.hh"
 #include "installables.hh"
 #include "util.hh"
 #include "command.hh"
@@ -142,7 +143,7 @@ MixFlakeOptions::MixFlakeOptions()
     });
 }
 
-SourceExprCommand::SourceExprCommand()
+SourceExprCommand::SourceExprCommand(bool supportReadOnlyMode)
 {
     addFlag({
         .longName = "file",
@@ -218,6 +219,17 @@ SourceExprCommand::SourceExprCommand()
         .labels = {"expr"},
         .handler = {&installableWithPackages},
     });
+
+    if (supportReadOnlyMode) {
+        addFlag({
+            .longName = "read-only",
+            .description =
+                "Do not instantiate each evaluated derivation. "
+                "This improves performance, but can cause errors when accessing "
+                "store paths of derivations during evaluation.",
+            .handler = {&readOnlyMode, true},
+        });
+    }
 }
 
 Strings SourceExprCommand::getDefaultFlakeAttrPaths()
@@ -832,6 +844,10 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
 {
     std::vector<std::shared_ptr<Installable>> result;
 
+    if (readOnlyMode) {
+        settings.readOnlyMode = true;
+    }
+
     auto modifyInstallable = applyOverrides && ( applyToInstallable
         || installableOverrideAttrs || installableWithPackages || overrideArgs.size() > 0 );
 
@@ -1200,7 +1216,7 @@ InstallablesCommand::InstallablesCommand()
 void InstallablesCommand::prepare()
 {
     if (_installables.empty() && useDefaultInstallables())
-        // FIXME: commands like "nix install" should not have a
+        // FIXME: commands like "nix profile install" should not have a
         // default, probably.
         _installables.push_back(".");
     installables = parseInstallables(getStore(), _installables);
@@ -1216,7 +1232,8 @@ std::optional<FlakeRef> InstallablesCommand::getFlakeRefForCompletion()
     return parseFlakeRefWithFragment(_installables.front(), absPath(".")).first;
 }
 
-InstallableCommand::InstallableCommand()
+InstallableCommand::InstallableCommand(bool supportReadOnlyMode)
+    : SourceExprCommand(supportReadOnlyMode)
 {
     expectArgs({
         .label = "installable",
