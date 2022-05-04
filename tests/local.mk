@@ -95,9 +95,20 @@ nix_tests = \
   pass-as-file.sh \
   describe-stores.sh \
   flake-bundler.sh \
-  flake-print-local-path-error.sh \
-  nix-profile.sh \
-  suggestions.sh \
+  build.sh \
+  repl.sh ca/repl.sh \
+  ca/build.sh \
+  ca/build-with-garbage-path.sh \
+  ca/duplicate-realisation-in-closure.sh \
+  ca/substitute.sh \
+  ca/signatures.sh \
+  ca/nix-shell.sh \
+  ca/nix-run.sh \
+  ca/recursive.sh \
+  ca/concurrent-builds.sh \
+  ca/nix-copy.sh \
+  eval-store.sh \
+  readfile-context.sh \
   store-ping.sh \
   fetchClosure.sh \
   impure-derivations.sh

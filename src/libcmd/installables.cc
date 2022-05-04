@@ -649,32 +649,11 @@ InstallableFlake::InstallableFlake(
         throw UsageError("'--arg' and '--argstr' are incompatible with flakes");
 }
 
-namespace {
-std::optional<Path> getSourceFilePathFromInStorePath(Store & store, const Path & file, const fetchers::Input & flakeInput) {
-    if (!store.isInStore(file)) {
-        return std::nullopt;
-    }
+std::tuple<std::string, FlakeRef, InstallableValue::DerivationInfo> InstallableFlake::toDerivation()
+{
+    auto lockedFlake = getLockedFlake();
 
-    auto [sourceStorePath, relPath] = store.toStorePath(file);
-    auto realPath = store.toRealPath(sourceStorePath);
-
-    auto maybeFlakeSource = flakeInput.getSourcePath();
-    if (!maybeFlakeSource) {
-        return std::nullopt;
-    }
-
-    auto betterFilePath = replaceStrings(file, realPath, *maybeFlakeSource);
-    if (!pathExists(betterFilePath)) {
-        return std::nullopt;
-    }
-
-    return betterFilePath;
-}
-
-std::tuple<std::string, FlakeRef, InstallableValue::DerivationInfo> toDerivationImpl(InstallableFlake & flake) {
-    auto lockedFlake = flake.getLockedFlake();
-
-    auto cache = openEvalCache(*flake.state, lockedFlake);
+    auto cache = openEvalCache(*state, lockedFlake);
     auto root = cache->getRoot();
 
     Suggestions suggestions;
@@ -707,30 +686,8 @@ std::tuple<std::string, FlakeRef, InstallableValue::DerivationInfo> toDerivation
         return {attrPath, lockedFlake->flake.lockedRef, std::move(drvInfo)};
     }
 
-    throw Error(suggestions, "flake '%s' does not provide attribute %s",
-        flake.flakeRef, showAttrPaths(flake.getActualAttrPaths()));
-}
-
-template <class F>
-auto patchErrorSourceFile(Store & store, const fetchers::Input & flakeInput, F && func) {
-    try {
-        return func();
-    } catch (BaseError & e) {
-        if (auto pos = e.info().errPos) {
-            if (auto sourceFilePath = getSourceFilePathFromInStorePath(store, pos->file, flakeInput)) {
-                e.replacePosFile(*sourceFilePath);
-            }
-        }
-        throw;
-    }
-}
-}
-
-std::tuple<std::string, FlakeRef, InstallableValue::DerivationInfo> InstallableFlake::toDerivation()
-{
-    return patchErrorSourceFile(*state->store, flakeRef.input, [&] {
-        return toDerivationImpl(*this);
-    });
+    throw Error("flake '%s' does not provide attribute %s",
+        flakeRef, showAttrPaths(getActualAttrPaths()));
 }
 
 std::vector<InstallableValue::DerivationInfo> InstallableFlake::toDerivations()
