@@ -102,7 +102,7 @@
             # Tests
             buildPackages.git
             buildPackages.mercurial # FIXME: remove? only needed for tests
-            buildPackages.jq
+            buildPackages.jq # Also for custom mdBook preprocessor.
           ]
           ++ lib.optionals stdenv.hostPlatform.isLinux [(buildPackages.util-linuxMinimal or buildPackages.utillinuxMinimal)];
 
@@ -134,11 +134,6 @@
               ];
             }))
             nlohmann_json
-          ];
-
-        perlDeps =
-          [ perl
-            perlPackages.DBDSQLite
           ];
       };
 
@@ -673,7 +668,7 @@
           outputs = [ "out" "dev" "doc" ];
 
           nativeBuildInputs = nativeBuildDeps;
-          buildInputs = buildDeps ++ propagatedDeps ++ awsDeps ++ perlDeps;
+          buildInputs = buildDeps ++ propagatedDeps ++ awsDeps;
 
           inherit configureFlags;
 

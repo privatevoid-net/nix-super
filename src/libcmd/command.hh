@@ -57,6 +57,8 @@ struct CopyCommand : virtual StoreCommand
 
 struct EvalCommand : virtual StoreCommand, MixEvalArgs
 {
+    bool startReplOnEvalErrors = false;
+
     EvalCommand();
 
     ~EvalCommand();
@@ -279,4 +281,8 @@ void printClosureDiff(
     const StorePath & afterPath,
     std::string_view indent);
 
+
+void runRepl(
+    ref<EvalState> evalState,
+    const ValMap & extraEnv);
 }
