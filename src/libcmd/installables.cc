@@ -24,7 +24,7 @@
 namespace nix {
 
 const static std::regex attrPathRegex(
-    R"((?:[a-zA-Z0-9_"-][a-zA-Z0-9_".-]*))",
+    R"((?:[a-zA-Z0-9_"-][a-zA-Z0-9_".,^-]*))",
     std::regex::ECMAScript);
 
 void completeFlakeInputPath(
