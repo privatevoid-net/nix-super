@@ -1,8 +1,8 @@
 {
   description = "The purely functional package manager - but super!";
 
-  inputs.nixpkgs.url = "nixpkgs/nixos-21.05-small";
-  inputs.nixpkgs-regression.url = "nixpkgs/215d4d0fd80ca5163643b03a33fde804a29cc1e2";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-21.05-small";
+  inputs.nixpkgs-regression.url = "github:NixOS/nixpkgs/215d4d0fd80ca5163643b03a33fde804a29cc1e2";
   inputs.lowdown-src = { url = "github:kristapsdz/lowdown"; flake = false; };
 
   outputs = { self, nixpkgs, nixpkgs-regression, lowdown-src }:
@@ -348,7 +348,7 @@
 
             strictDeps = true;
 
-            passthru.perl-bindings = with final; currentStdenv.mkDerivation {
+            passthru.perl-bindings = with final; perl.pkgs.toPerlModule (currentStdenv.mkDerivation {
               name = "nix-super-perl-${version}";
 
               src = self;
@@ -378,8 +378,9 @@
               enableParallelBuilding = true;
 
               postUnpack = "sourceRoot=$sourceRoot/perl";
-            };
+            });
 
+            meta.platforms = systems;
           };
 
           lowdown-nix = with final; currentStdenv.mkDerivation rec {
