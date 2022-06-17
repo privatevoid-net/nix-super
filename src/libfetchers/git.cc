@@ -256,6 +256,7 @@ struct GitInputScheme : InputScheme
             url.scheme != "git+http" &&
             url.scheme != "git+https" &&
             url.scheme != "git+ssh" &&
+            url.scheme != "git+ipld" &&
             url.scheme != "git+file") return {};
 
         auto url2(url);
