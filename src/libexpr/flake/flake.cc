@@ -384,6 +384,18 @@ LockedFlake lockFlake(
                 }
             }
 
+            /* Check whether this input has overrides for a
+               non-existent input. */
+            for (auto [inputPath, inputOverride] : overrides) {
+                auto inputPath2(inputPath);
+                auto follow = inputPath2.back();
+                inputPath2.pop_back();
+                if (inputPath2 == inputPathPrefix && !flakeInputs.count(follow))
+                    warn(
+                        "input '%s' has an override for a non-existent input '%s'",
+                        printInputPath(inputPathPrefix), follow);
+            }
+
             /* Go over the flake inputs, resolve/fetch them if
                necessary (i.e. if they're new or the flakeref changed
                from what's in the lock file). */
