@@ -542,9 +542,13 @@ struct CmdProfileList : virtual EvalCommand, virtual StoreCommand, MixDefaultPro
 
         for (size_t i = 0; i < manifest.elements.size(); ++i) {
             auto & element(manifest.elements[i]);
-            logger->cout("%03d %s\t%s", i,
-                element.source ? element.source->originalRef.to_string() + "#" + element.source->attrPath + printOutputsSpec(element.source->outputs) : "-",
-                concatStringsSep(" ", store->printStorePathSet(element.storePaths)));
+            if (element.source) {
+                logger->cout("%03d:\n\tInstallable: %s\n\tStore paths: %s", i,
+                    element.source ? element.source->originalRef.to_string() + "#" + element.source->attrPath + printOutputsSpec(element.source->outputs) : "-",
+                    concatStringsSep(" ", store->printStorePathSet(element.storePaths)));
+            } else {
+                logger->cout("%03d - - %s", i, concatStringsSep(" ", store->printStorePathSet(element.storePaths)));
+            }
         }
     }
 };
