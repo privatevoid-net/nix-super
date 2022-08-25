@@ -223,8 +223,7 @@ static void movePath(const Path & src, const Path & dst)
     if (changePerm)
         chmod_(src, st.st_mode | S_IWUSR);
 
-    if (rename(src.c_str(), dst.c_str()))
-        throw SysError("renaming '%1%' to '%2%'", src, dst);
+    renameFile(src, dst);
 
     if (changePerm)
         chmod_(dst, st.st_mode);
@@ -311,7 +310,7 @@ bool LocalDerivationGoal::cleanupDecideWhetherDiskFull()
             if (buildMode != bmCheck && status.known->isValid()) continue;
             auto p = worker.store.printStorePath(status.known->path);
             if (pathExists(chrootRootDir + p))
-                rename((chrootRootDir + p).c_str(), p.c_str());
+                renameFile((chrootRootDir + p), p);
         }
 
     return diskFull;
@@ -2375,10 +2374,8 @@ DrvOutputs LocalDerivationGoal::registerOutputs()
             if (*scratchPath != finalPath) {
                 // Also rewrite the output path
                 auto source = sinkToSource([&](Sink & nextSink) {
-                    StringSink sink;
-                    dumpPath(actualPath, sink);
                     RewritingSink rsink2(oldHashPart, std::string(finalPath.hashPart()), nextSink);
-                    rsink2(sink.s);
+                    dumpPath(actualPath, rsink2);
                     rsink2.flush();
                 });
                 Path tmpPath = actualPath + ".tmp";
@@ -2625,8 +2622,7 @@ DrvOutputs LocalDerivationGoal::registerOutputs()
             Path prev = path + checkSuffix;
             deletePath(prev);
             Path dst = path + checkSuffix;
-            if (rename(path.c_str(), dst.c_str()))
-                throw SysError("renaming '%s' to '%s'", path, dst);
+            renameFile(path, dst);
         }
     }
 
