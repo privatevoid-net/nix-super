@@ -158,7 +158,7 @@ void migrateCASchema(SQLite& db, Path schemaPath, AutoCloseFD& lockFd)
             txn.commit();
         }
 
-        writeFile(schemaPath, fmt("%d", nixCASchemaVersion));
+        writeFile(schemaPath, fmt("%d", nixCASchemaVersion), 0666, true);
         lockFile(lockFd.get(), ltRead, true);
     }
 }
@@ -281,7 +281,7 @@ LocalStore::LocalStore(const Params & params)
     else if (curSchema == 0) { /* new store */
         curSchema = nixSchemaVersion;
         openDB(*state, true);
-        writeFile(schemaPath, (format("%1%") % nixSchemaVersion).str());
+        writeFile(schemaPath, (format("%1%") % nixSchemaVersion).str(), 0666, true);
     }
 
     else if (curSchema < nixSchemaVersion) {
@@ -329,7 +329,7 @@ LocalStore::LocalStore(const Params & params)
             txn.commit();
         }
 
-        writeFile(schemaPath, (format("%1%") % nixSchemaVersion).str());
+        writeFile(schemaPath, (format("%1%") % nixSchemaVersion).str(), 0666, true);
 
         lockFile(globalLock.get(), ltRead, true);
     }
@@ -751,7 +751,7 @@ void LocalStore::registerDrvOutput(const Realisation & info, CheckSigsFlag check
     if (checkSigs == NoCheckSigs || !realisationIsUntrusted(info))
         registerDrvOutput(info);
     else
-        throw Error("cannot register realisation '%s' because it lacks a valid signature", info.outPath.to_string());
+        throw Error("cannot register realisation '%s' because it lacks a signature by a trusted key", info.outPath.to_string());
 }
 
 void LocalStore::registerDrvOutput(const Realisation & info)
@@ -1266,7 +1266,7 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source,
     RepairFlag repair, CheckSigsFlag checkSigs)
 {
     if (checkSigs && pathInfoIsUntrusted(info))
-        throw Error("cannot add path '%s' because it lacks a valid signature", printStorePath(info.path));
+        throw Error("cannot add path '%s' because it lacks a signature by a trusted key", printStorePath(info.path));
 
     addTempRoot(info.path);
 
