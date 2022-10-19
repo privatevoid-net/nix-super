@@ -275,9 +275,10 @@ void SourceExprCommand::completeInstallable(std::string_view prefix)
 
         evalSettings.pureEval = false;
         auto state = getEvalState();
-        Expr *e = state->parseExprFromFile(
-            resolveExprPath(state->checkSourcePath(lookupFileArg(*state, *file)))
-        );
+        Expr *e =
+            state->parseExprFromFile(
+                resolveExprPath(
+                    lookupFileArg(*state, *file)));
 
         Value root;
         state->eval(e, root);
@@ -635,10 +636,10 @@ ref<eval_cache::EvalCache> openEvalCache(
     EvalState & state,
     std::shared_ptr<flake::LockedFlake> lockedFlake)
 {
-    auto fingerprint = lockedFlake->getFingerprint();
+    auto fingerprint = lockedFlake->getFingerprint(state.store);
     return make_ref<nix::eval_cache::EvalCache>(
         evalSettings.useEvalCache && evalSettings.pureEval
-            ? std::optional { std::cref(fingerprint) }
+            ? fingerprint
             : std::nullopt,
         state,
         [&state, lockedFlake]()
@@ -885,10 +886,11 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
         if (file == "-") {
             auto e = state->parseStdin();
             state->eval(e, *vFile);
-        } else if (file)
+        }
+        else if (file)
             state->evalFile(lookupFileArg(*state, *file), *vFile);
         else {
-            auto e = state->parseExprFromString(*expr, absPath("."));
+            auto e = state->parseExprFromString(*expr, state->rootPath(absPath(".")));
             state->eval(e, *vFile);
         }
 

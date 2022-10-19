@@ -22,7 +22,7 @@ DrvInfos queryInstalled(EvalState & state, const Path & userEnv)
     Path manifestFile = userEnv + "/manifest.nix";
     if (pathExists(manifestFile)) {
         Value v;
-        state.evalFile(manifestFile, v);
+        state.evalFile(state.rootPath(manifestFile), v);
         Bindings & bindings(*state.allocBindings(0));
         getDerivations(state, v, "", bindings, elems, false);
     }
@@ -114,7 +114,7 @@ bool createUserEnv(EvalState & state, DrvInfos & elems,
     Value envBuilder;
     state.eval(state.parseExprFromString(
         #include "buildenv.nix.gen.hh"
-            , "/"), envBuilder);
+            , state.rootPath("/")), envBuilder);
 
     /* Construct a Nix expression that calls the user environment
        builder with the manifest as argument. */

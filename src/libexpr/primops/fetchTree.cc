@@ -4,6 +4,7 @@
 #include "fetchers.hh"
 #include "filetransfer.hh"
 #include "registry.hh"
+#include "tarball.hh"
 
 #include <ctime>
 #include <iomanip>
@@ -11,27 +12,22 @@
 
 namespace nix {
 
-void emitTreeAttrs(
+static void emitTreeAttrs(
     EvalState & state,
-    const fetchers::Tree & tree,
     const fetchers::Input & input,
     Value & v,
+    std::function<void(Value &)> setOutPath,
     bool emptyRevFallback,
     bool forceDirty)
 {
-    assert(input.isLocked());
-
     auto attrs = state.buildBindings(8);
 
-    auto storePath = state.store->printStorePath(tree.storePath);
-
-    attrs.alloc(state.sOutPath).mkString(storePath, {storePath});
+    setOutPath(attrs.alloc(state.sOutPath));
 
     // FIXME: support arbitrary input attributes.
 
-    auto narHash = input.getNarHash();
-    assert(narHash);
-    attrs.alloc("narHash").mkString(narHash->to_string(SRI, true));
+    if (auto narHash = input.getNarHash())
+        attrs.alloc("narHash").mkString(narHash->to_string(SRI, true));
 
     if (input.getType() == "git")
         attrs.alloc("submodules").mkBool(
@@ -65,6 +61,22 @@ void emitTreeAttrs(
     v.mkAttrs(attrs);
 }
 
+void emitTreeAttrs(
+    EvalState & state,
+    const SourcePath & path,
+    const fetchers::Input & input,
+    Value & v,
+    bool emptyRevFallback,
+    bool forceDirty)
+{
+    emitTreeAttrs(state, input, v,
+        [&](Value & vOutPath) {
+            vOutPath.mkPath(path);
+        },
+        emptyRevFallback,
+        forceDirty);
+}
+
 std::string fixURI(std::string uri, EvalState & state, const std::string & defaultScheme = "file")
 {
     state.checkURI(uri);
@@ -86,6 +98,7 @@ std::string fixURIForGit(std::string uri, EvalState & state)
 struct FetchTreeParams {
     bool emptyRevFallback = false;
     bool allowNameArgument = false;
+    bool returnPath = true; // whether to return a lazily fetched SourcePath or a StorePath
 };
 
 static void fetchTree(
@@ -123,7 +136,9 @@ static void fetchTree(
 
         for (auto & attr : *args[0]->attrs) {
             if (attr.name == state.sType) continue;
+
             state.forceValue(*attr.value, attr.pos);
+
             if (attr.value->type() == nPath || attr.value->type() == nString) {
                 auto s = state.coerceToString(attr.pos, *attr.value, context, false, false).toOwned();
                 attrs.emplace(state.symbols[attr.name],
@@ -169,11 +184,33 @@ static void fetchTree(
     if (evalSettings.pureEval && !input.isLocked())
         state.debugThrowLastTrace(EvalError("in pure evaluation mode, 'fetchTree' requires a locked input, at %s", state.positions[pos]));
 
-    auto [tree, input2] = input.fetch(state.store);
+    if (params.returnPath) {
+        auto [accessor, input2] = input.getAccessor(state.store);
 
-    state.allowPath(tree.storePath);
+        state.registerAccessor(accessor);
 
-    emitTreeAttrs(state, tree, input2, v, params.emptyRevFallback, false);
+        emitTreeAttrs(
+            state,
+            { accessor, CanonPath::root },
+            input2,
+            v,
+            params.emptyRevFallback,
+            false);
+    } else {
+        auto [storePath, input2] = input.fetchToStore(state.store);
+
+        auto storePath2 = state.store->printStorePath(storePath);
+
+        emitTreeAttrs(
+            state, input2, v,
+            [&](Value & vOutPath) {
+                vOutPath.mkString(storePath2, {storePath2});
+            },
+            params.emptyRevFallback,
+            false);
+
+        state.allowPath(storePath);
+    }
 }
 
 static void prim_fetchTree(EvalState & state, const PosIdx pos, Value * * args, Value & v)
@@ -220,8 +257,6 @@ static void fetch(EvalState & state, const PosIdx pos, Value * * args, Value & v
     } else
         url = state.forceStringNoCtx(*args[0], pos);
 
-    url = resolveUri(*url);
-
     state.checkURI(*url);
 
     if (name == "")
@@ -247,7 +282,7 @@ static void fetch(EvalState & state, const PosIdx pos, Value * * args, Value & v
     //       https://github.com/NixOS/nix/issues/4313
     auto storePath =
         unpack
-        ? fetchers::downloadTarball(state.store, *url, name, (bool) expectedHash).first.storePath
+        ? fetchers::downloadTarball(state.store, *url, name, (bool) expectedHash).first
         : fetchers::downloadFile(state.store, *url, name, (bool) expectedHash).storePath;
 
     if (expectedHash) {
@@ -331,7 +366,13 @@ static RegisterPrimOp primop_fetchTarball({
 
 static void prim_fetchGit(EvalState & state, const PosIdx pos, Value * * args, Value & v)
 {
-    fetchTree(state, pos, args, v, "git", FetchTreeParams { .emptyRevFallback = true, .allowNameArgument = true });
+    fetchTree(
+        state, pos, args, v, "git",
+        FetchTreeParams {
+            .emptyRevFallback = true,
+            .allowNameArgument = true,
+            .returnPath = false,
+        });
 }
 
 static RegisterPrimOp primop_fetchGit({

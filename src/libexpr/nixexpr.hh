@@ -20,18 +20,23 @@ MakeError(Abort, EvalError);
 MakeError(TypeError, EvalError);
 MakeError(UndefinedVarError, Error);
 MakeError(MissingArgumentError, EvalError);
-MakeError(RestrictedPathError, Error);
 
 /* Position objects. */
-
 struct Pos
 {
-    std::string file;
-    FileOrigin origin;
     uint32_t line;
     uint32_t column;
 
+    struct stdin_tag {};
+    struct string_tag {};
+
+    typedef std::variant<stdin_tag, string_tag, SourcePath> Origin;
+
+    Origin origin;
+
     explicit operator bool() const { return line > 0; }
+
+    operator std::shared_ptr<AbstractPos>() const;
 };
 
 class PosIdx {
@@ -47,7 +52,11 @@ public:
 
     explicit operator bool() const { return id > 0; }
 
-    bool operator<(const PosIdx other) const { return id < other.id; }
+    bool operator <(const PosIdx other) const { return id < other.id; }
+
+    bool operator ==(const PosIdx other) const { return id == other.id; }
+
+    bool operator !=(const PosIdx other) const { return id != other.id; }
 };
 
 class PosTable
@@ -61,13 +70,13 @@ public:
         // current origins.back() can be reused or not.
         mutable uint32_t idx = std::numeric_limits<uint32_t>::max();
 
-        explicit Origin(uint32_t idx): idx(idx), file{}, origin{} {}
+        // Used for searching in PosTable::[].
+        explicit Origin(uint32_t idx): idx(idx), origin{Pos::stdin_tag()} {}
 
     public:
-        const std::string file;
-        const FileOrigin origin;
+        const Pos::Origin origin;
 
-        Origin(std::string file, FileOrigin origin): file(std::move(file)), origin(origin) {}
+        Origin(Pos::Origin origin): origin(origin) {}
     };
 
     struct Offset {
@@ -107,7 +116,7 @@ public:
             [] (const auto & a, const auto & b) { return a.idx < b.idx; });
         const auto origin = *std::prev(pastOrigin);
         const auto offset = offsets[idx];
-        return {origin.file, origin.origin, offset.line, offset.column};
+        return {offset.line, offset.column, origin.origin};
     }
 };
 
@@ -183,9 +192,13 @@ struct ExprString : Expr
 
 struct ExprPath : Expr
 {
-    std::string s;
+    const SourcePath path;
     Value v;
-    ExprPath(std::string s) : s(std::move(s)) { v.mkPath(this->s.c_str()); };
+    ExprPath(SourcePath && _path)
+        : path(_path)
+    {
+        v.mkPath(&*path.accessor, path.path.abs().data());
+    }
     Value * maybeThunk(EvalState & state, Env & env) override;
     COMMON_METHODS
 };

@@ -4,7 +4,7 @@
 #include "tarfile.hh"
 #include "store-api.hh"
 #include "url-parts.hh"
-
+#include "fs-input-accessor.hh"
 #include "fetch-settings.hh"
 
 #include <sys/time.h>
@@ -43,7 +43,7 @@ static std::string runHg(const Strings & args, const std::optional<std::string> 
 
 struct MercurialInputScheme : InputScheme
 {
-    std::optional<Input> inputFromURL(const ParsedURL & url) override
+    std::optional<Input> inputFromURL(const ParsedURL & url) const override
     {
         if (url.scheme != "hg+http" &&
             url.scheme != "hg+https" &&
@@ -69,7 +69,7 @@ struct MercurialInputScheme : InputScheme
         return inputFromAttrs(attrs);
     }
 
-    std::optional<Input> inputFromAttrs(const Attrs & attrs) override
+    std::optional<Input> inputFromAttrs(const Attrs & attrs) const override
     {
         if (maybeGetStrAttr(attrs, "type") != "hg") return {};
 
@@ -89,7 +89,7 @@ struct MercurialInputScheme : InputScheme
         return input;
     }
 
-    ParsedURL toURL(const Input & input) override
+    ParsedURL toURL(const Input & input) const override
     {
         auto url = parseURL(getStrAttr(input.attrs, "url"));
         url.scheme = "hg+" + url.scheme;
@@ -98,17 +98,10 @@ struct MercurialInputScheme : InputScheme
         return url;
     }
 
-    bool hasAllInfo(const Input & input) override
-    {
-        // FIXME: ugly, need to distinguish between dirty and clean
-        // default trees.
-        return input.getRef() == "default" || maybeGetIntAttr(input.attrs, "revCount");
-    }
-
     Input applyOverrides(
         const Input & input,
         std::optional<std::string> ref,
-        std::optional<Hash> rev) override
+        std::optional<Hash> rev) const override
     {
         auto res(input);
         if (rev) res.attrs.insert_or_assign("rev", rev->gitRev());
@@ -116,26 +109,29 @@ struct MercurialInputScheme : InputScheme
         return res;
     }
 
-    std::optional<Path> getSourcePath(const Input & input) override
+    void putFile(
+        const Input & input,
+        const CanonPath & path,
+        std::string_view contents,
+        std::optional<std::string> commitMsg) const
     {
-        auto url = parseURL(getStrAttr(input.attrs, "url"));
-        if (url.scheme == "file" && !input.getRef() && !input.getRev())
-            return url.path;
-        return {};
-    }
+        auto [isLocal, repoPath] = getActualUrl(input);
+        if (!isLocal)
+            throw Error("cannot commit '%s' to Mercurial repository '%s' because it's not a working tree", path, input.to_string());
 
-    void markChangedFile(const Input & input, std::string_view file, std::optional<std::string> commitMsg) override
-    {
-        auto sourcePath = getSourcePath(input);
-        assert(sourcePath);
+        auto absPath = CanonPath(repoPath) + path;
+
+        // FIXME: make sure that absPath is not a symlink that escapes
+        // the repo.
+        writeFile(absPath.abs(), contents);
 
         // FIXME: shut up if file is already tracked.
         runHg(
-            { "add", *sourcePath + "/" + std::string(file) });
+            { "add", absPath.abs() });
 
         if (commitMsg)
             runHg(
-                { "commit", *sourcePath + "/" + std::string(file), "-m", *commitMsg });
+                { "commit", absPath.abs(), "-m", *commitMsg });
     }
 
     std::pair<bool, std::string> getActualUrl(const Input & input) const
@@ -145,9 +141,9 @@ struct MercurialInputScheme : InputScheme
         return {isLocal, isLocal ? url.path : url.base};
     }
 
-    std::pair<StorePath, Input> fetch(ref<Store> store, const Input & _input) override
+    StorePath fetchToStore(ref<Store> store, Input & input) const
     {
-        Input input(_input);
+        auto origRev = input.getRev();
 
         auto name = input.getName();
 
@@ -197,7 +193,7 @@ struct MercurialInputScheme : InputScheme
 
                 auto storePath = store->addToStore(input.getName(), actualPath, FileIngestionMethod::Recursive, htSHA256, filter);
 
-                return {std::move(storePath), input};
+                return storePath;
             }
         }
 
@@ -221,13 +217,12 @@ struct MercurialInputScheme : InputScheme
             });
         };
 
-        auto makeResult = [&](const Attrs & infoAttrs, StorePath && storePath)
-            -> std::pair<StorePath, Input>
+        auto makeResult = [&](const Attrs & infoAttrs, const StorePath & storePath) -> StorePath
         {
             assert(input.getRev());
-            assert(!_input.getRev() || _input.getRev() == input.getRev());
+            assert(!origRev || origRev == input.getRev());
             input.attrs.insert_or_assign("revCount", getIntAttr(infoAttrs, "revCount"));
-            return {std::move(storePath), input};
+            return storePath;
         };
 
         if (input.getRev()) {
@@ -307,7 +302,7 @@ struct MercurialInputScheme : InputScheme
             {"revCount", (uint64_t) revCount},
         });
 
-        if (!_input.getRev())
+        if (!origRev)
             getCache()->add(
                 store,
                 unlockedAttrs,
@@ -323,6 +318,20 @@ struct MercurialInputScheme : InputScheme
             true);
 
         return makeResult(infoAttrs, std::move(storePath));
+    }
+
+    std::pair<ref<InputAccessor>, Input> getAccessor(ref<Store> store, const Input & _input) const override
+    {
+        Input input(_input);
+
+        auto storePath = fetchToStore(store, input);
+
+        return {makeStorePathAccessor(store, storePath), input};
+    }
+
+    bool isLocked(const Input & input) const override
+    {
+        return (bool) input.getRev();
     }
 };
 

@@ -180,15 +180,12 @@ static void showHelp(std::vector<std::string> subcommand, MultiCommand & topleve
     auto vGenerateManpage = state.allocValue();
     state.eval(state.parseExprFromString(
         #include "generate-manpage.nix.gen.hh"
-        , "/"), *vGenerateManpage);
+        , state.rootPath("/")), *vGenerateManpage);
 
-    auto vUtils = state.allocValue();
-    state.cacheFile(
-        "/utils.nix", "/utils.nix",
-        state.parseExprFromString(
-            #include "utils.nix.gen.hh"
-            , "/"),
-        *vUtils);
+    state.corepkgsFS->addFile(
+        CanonPath("utils.nix"),
+        #include "utils.nix.gen.hh"
+        );
 
     auto attrs = state.buildBindings(16);
     attrs.alloc("toplevel").mkString(toplevel.toJSON().dump());

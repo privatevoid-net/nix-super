@@ -35,7 +35,7 @@ typedef std::string FlakeId;
 
 struct FlakeRef
 {
-    /* fetcher-specific representation of the input, sufficient to
+    /* Fetcher-specific representation of the input, sufficient to
        perform the fetch operation. */
     fetchers::Input input;
 
@@ -57,7 +57,7 @@ struct FlakeRef
 
     static FlakeRef fromAttrs(const fetchers::Attrs & attrs);
 
-    std::pair<fetchers::Tree, FlakeRef> fetchTree(ref<Store> store) const;
+    std::pair<ref<InputAccessor>, FlakeRef> lazyFetch(ref<Store> store) const;
 };
 
 std::ostream & operator << (std::ostream & str, const FlakeRef & flakeRef);

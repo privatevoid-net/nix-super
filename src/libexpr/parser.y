@@ -31,14 +31,9 @@ namespace nix {
         EvalState & state;
         SymbolTable & symbols;
         Expr * result;
-        Path basePath;
+        SourcePath basePath;
         PosTable::Origin origin;
         std::optional<ErrorInfo> error;
-        ParseData(EvalState & state, PosTable::Origin origin)
-            : state(state)
-            , symbols(state.symbols)
-            , origin(std::move(origin))
-            { };
     };
 
     struct ParserFormals {
@@ -515,11 +510,8 @@ string_parts_interpolated
 
 path_start
   : PATH {
-    Path path(absPath({$1.p, $1.l}, data->basePath));
-    /* add back in the trailing '/' to the first segment */
-    if ($1.p[$1.l-1] == '/' && $1.l > 1)
-      path += "/";
-    $$ = new ExprPath(path);
+    SourcePath path { data->basePath.accessor, CanonPath({$1.p, $1.l}, data->basePath.path) };
+    $$ = new ExprPath(std::move(path));
   }
   | HPATH {
     if (evalSettings.pureEval) {
@@ -529,7 +521,7 @@ path_start
         );
     }
     Path path(getHome() + std::string($1.p + 1, $1.l - 1));
-    $$ = new ExprPath(path);
+    $$ = new ExprPath(data->state.rootPath(path));
   }
   ;
 
@@ -644,30 +636,29 @@ formal
 #include "eval.hh"
 #include "filetransfer.hh"
 #include "fetchers.hh"
+#include "fs-input-accessor.hh"
+#include "tarball.hh"
 #include "store-api.hh"
+#include "flake/flake.hh"
 
 
 namespace nix {
 
 
-Expr * EvalState::parse(char * text, size_t length, FileOrigin origin,
-    const PathView path, const PathView basePath, std::shared_ptr<StaticEnv> & staticEnv)
+Expr * EvalState::parse(
+    char * text,
+    size_t length,
+    Pos::Origin origin,
+    const SourcePath & basePath,
+    std::shared_ptr<StaticEnv> & staticEnv)
 {
     yyscan_t scanner;
-    std::string file;
-    switch (origin) {
-        case foFile:
-            file = path;
-            break;
-        case foStdin:
-        case foString:
-            file = text;
-            break;
-        default:
-            assert(false);
-    }
-    ParseData data(*this, {file, origin});
-    data.basePath = basePath;
+    ParseData data {
+        .state = *this,
+        .symbols = symbols,
+        .basePath = basePath,
+        .origin = {origin},
+    };
 
     yylex_init(&scanner);
     yy_scan_buffer(text, length, scanner);
@@ -682,55 +673,43 @@ Expr * EvalState::parse(char * text, size_t length, FileOrigin origin,
 }
 
 
-Path resolveExprPath(Path path)
+SourcePath resolveExprPath(const SourcePath & path)
 {
-    assert(path[0] == '/');
-
-    unsigned int followCount = 0, maxFollow = 1024;
-
     /* If `path' is a symlink, follow it.  This is so that relative
        path references work. */
-    struct stat st;
-    while (true) {
-        // Basic cycle/depth limit to avoid infinite loops.
-        if (++followCount >= maxFollow)
-            throw Error("too many symbolic links encountered while traversing the path '%s'", path);
-        st = lstat(path);
-        if (!S_ISLNK(st.st_mode)) break;
-        path = absPath(readLink(path), dirOf(path));
-    }
+    auto path2 = path.resolveSymlinks();
 
     /* If `path' refers to a directory, append `/default.nix'. */
-    if (S_ISDIR(st.st_mode))
-        path = canonPath(path + "/default.nix");
+    if (path2.lstat().type == InputAccessor::tDirectory)
+        return path2 + "default.nix";
 
-    return path;
+    return path2;
 }
 
 
-Expr * EvalState::parseExprFromFile(const Path & path)
+Expr * EvalState::parseExprFromFile(const SourcePath & path)
 {
     return parseExprFromFile(path, staticBaseEnv);
 }
 
 
-Expr * EvalState::parseExprFromFile(const Path & path, std::shared_ptr<StaticEnv> & staticEnv)
+Expr * EvalState::parseExprFromFile(const SourcePath & path, std::shared_ptr<StaticEnv> & staticEnv)
 {
-    auto buffer = readFile(path);
-    // readFile should have left some extra space for terminators
+    auto buffer = path.readFile();
+    // readFile hopefully have left some extra space for terminators
     buffer.append("\0\0", 2);
-    return parse(buffer.data(), buffer.size(), foFile, path, dirOf(path), staticEnv);
+    return parse(buffer.data(), buffer.size(), Pos::Origin(path), path.parent(), staticEnv);
 }
 
 
-Expr * EvalState::parseExprFromString(std::string s, const Path & basePath, std::shared_ptr<StaticEnv> & staticEnv)
+Expr * EvalState::parseExprFromString(std::string s, const SourcePath & basePath, std::shared_ptr<StaticEnv> & staticEnv)
 {
     s.append("\0\0", 2);
-    return parse(s.data(), s.size(), foString, "", basePath, staticEnv);
+    return parse(s.data(), s.size(), Pos::string_tag(), basePath, staticEnv);
 }
 
 
-Expr * EvalState::parseExprFromString(std::string s, const Path & basePath)
+Expr * EvalState::parseExprFromString(std::string s, const SourcePath & basePath)
 {
     return parseExprFromString(std::move(s), basePath, staticBaseEnv);
 }
@@ -742,7 +721,7 @@ Expr * EvalState::parseStdin()
     auto buffer = drainFD(0);
     // drainFD should have left some extra space for terminators
     buffer.append("\0\0", 2);
-    return parse(buffer.data(), buffer.size(), foStdin, "", absPath("."), staticBaseEnv);
+    return parse(buffer.data(), buffer.size(), Pos::stdin_tag(), rootPath(absPath(".")), staticBaseEnv);
 }
 
 
@@ -762,13 +741,13 @@ void EvalState::addToSearchPath(const std::string & s)
 }
 
 
-Path EvalState::findFile(const std::string_view path)
+SourcePath EvalState::findFile(const std::string_view path)
 {
     return findFile(searchPath, path);
 }
 
 
-Path EvalState::findFile(SearchPath & searchPath, const std::string_view path, const PosIdx pos)
+SourcePath EvalState::findFile(SearchPath & searchPath, const std::string_view path, const PosIdx pos)
 {
     for (auto & i : searchPath) {
         std::string suffix;
@@ -781,14 +760,14 @@ Path EvalState::findFile(SearchPath & searchPath, const std::string_view path, c
                 continue;
             suffix = path.size() == s ? "" : concatStrings("/", path.substr(s));
         }
-        auto r = resolveSearchPathElem(i);
-        if (!r.first) continue;
-        Path res = r.second + suffix;
-        if (pathExists(res)) return canonPath(res);
+        if (auto path = resolveSearchPathElem(i)) {
+            auto res = *path + CanonPath(suffix);
+            if (res.pathExists()) return res;
+        }
     }
 
     if (hasPrefix(path, "nix/"))
-        return concatStrings(corepkgsPrefix, path.substr(4));
+        return {corepkgsFS, CanonPath(path.substr(3))};
 
     debugThrowLastTrace(ThrownError({
         .msg = hintfmt(evalSettings.pureEval
@@ -800,38 +779,63 @@ Path EvalState::findFile(SearchPath & searchPath, const std::string_view path, c
 }
 
 
-std::pair<bool, std::string> EvalState::resolveSearchPathElem(const SearchPathElem & elem)
+std::optional<SourcePath> EvalState::resolveSearchPathElem(const SearchPathElem & elem, bool initAccessControl)
 {
     auto i = searchPathResolved.find(elem.second);
     if (i != searchPathResolved.end()) return i->second;
 
-    std::pair<bool, std::string> res;
+    std::optional<SourcePath> res;
 
-    if (isUri(elem.second)) {
+    if (EvalSettings::isPseudoUrl(elem.second)) {
         try {
-            res = { true, store->toRealPath(fetchers::downloadTarball(
-                        store, resolveUri(elem.second), "source", false).first.storePath) };
+            auto storePath = fetchers::downloadTarball(
+                store, EvalSettings::resolvePseudoUrl(elem.second), "source", false).first;
+            auto accessor = makeStorePathAccessor(store, storePath);
+            registerAccessor(accessor);
+            res.emplace(accessor->root());
         } catch (FileTransferError & e) {
             logWarning({
                 .msg = hintfmt("Nix search path entry '%1%' cannot be downloaded, ignoring", elem.second)
             });
-            res = { false, "" };
         }
-    } else {
-        auto path = absPath(elem.second);
-        if (pathExists(path))
-            res = { true, path };
+    }
+
+    else if (hasPrefix(elem.second, "flake:")) {
+        auto flakeRef = parseFlakeRef(elem.second.substr(6), {}, true, false);
+        debug("fetching flake search path element '%s''", elem.second);
+        auto [accessor, _] = flakeRef.resolve(store).lazyFetch(store);
+        res.emplace(accessor->root());
+    }
+
+    else {
+        auto path = rootPath(absPath(elem.second));
+
+        /* Allow access to paths in the search path. */
+        if (initAccessControl) {
+            allowPath(path.path.abs());
+            if (store->isInStore(path.path.abs())) {
+                try {
+                    StorePathSet closure;
+                    store->computeFSClosure(store->toStorePath(path.path.abs()).first, closure);
+                    for (auto & p : closure)
+                        allowPath(p);
+                } catch (InvalidPath &) { }
+            }
+        }
+
+        if (path.pathExists())
+            res.emplace(path);
         else {
             logWarning({
                 .msg = hintfmt("Nix search path entry '%1%' does not exist, ignoring", elem.second)
             });
-            res = { false, "" };
         }
     }
 
-    debug(format("resolved search path element '%s' to '%s'") % elem.second % res.second);
+    if (res)
+        debug("resolved search path element '%s' to '%s'", elem.second, *res);
 
-    searchPathResolved[elem.second] = res;
+    searchPathResolved.emplace(elem.second, res);
     return res;
 }
 

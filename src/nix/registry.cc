@@ -183,14 +183,14 @@ struct CmdRegistryPin : RegistryCommand, EvalCommand
 
     void run(nix::ref<nix::Store> store) override
     {
-        if (locked.empty()) {
-            locked = url;
-        }
+        if (locked.empty()) locked = url;
         auto registry = getRegistry();
         auto ref = parseFlakeRef(url);
-        auto locked_ref = parseFlakeRef(locked);
+        auto lockedRef = parseFlakeRef(locked);
         registry->remove(ref.input);
-        auto [tree, resolved] = locked_ref.resolve(store).input.fetch(store);
+        auto  resolved = lockedRef.resolve(store).input.getAccessor(store).second;
+        if (!resolved.isLocked())
+            warn("flake '%s' is not locked", resolved.to_string());
         fetchers::Attrs extraAttrs;
         if (ref.subdir != "") extraAttrs["dir"] = ref.subdir;
         registry->add(ref.input, resolved, extraAttrs);

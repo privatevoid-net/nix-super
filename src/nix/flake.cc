@@ -182,8 +182,7 @@ struct CmdFlakeMetadata : FlakeCommand, MixJSON
                 j["revCount"] = *revCount;
             if (auto lastModified = flake.lockedRef.input.getLastModified())
                 j["lastModified"] = *lastModified;
-            j["path"] = store->printStorePath(flake.sourceInfo->storePath);
-            j["locks"] = lockedFlake.lockFile.toJSON();
+            j["locks"] = lockedFlake.lockFile.toJSON().first;
             logger->cout("%s", j.dump());
         } else {
             logger->cout(
@@ -196,9 +195,6 @@ struct CmdFlakeMetadata : FlakeCommand, MixJSON
                 logger->cout(
                     ANSI_BOLD "Description:" ANSI_NORMAL "   %s",
                     *flake.description);
-            logger->cout(
-                ANSI_BOLD "Path:" ANSI_NORMAL "          %s",
-                store->printStorePath(flake.sourceInfo->storePath));
             if (auto rev = flake.lockedRef.input.getRev())
                 logger->cout(
                     ANSI_BOLD "Revision:" ANSI_NORMAL "      %s",
@@ -215,7 +211,7 @@ struct CmdFlakeMetadata : FlakeCommand, MixJSON
             if (!lockedFlake.lockFile.root->inputs.empty())
                 logger->cout(ANSI_BOLD "Inputs:" ANSI_NORMAL);
 
-            std::unordered_set<std::shared_ptr<Node>> visited;
+            std::set<ref<Node>> visited;
 
             std::function<void(const Node & node, const std::string & prefix)> recurse;
 
@@ -227,7 +223,7 @@ struct CmdFlakeMetadata : FlakeCommand, MixJSON
                     if (auto lockedNode = std::get_if<0>(&input.second)) {
                         logger->cout("%s" ANSI_BOLD "%s" ANSI_NORMAL ": %s",
                             prefix + (last ? treeLast : treeConn), input.first,
-                            *lockedNode ? (*lockedNode)->lockedRef : flake.lockedRef);
+                            (*lockedNode)->lockedRef);
 
                         bool firstVisit = visited.insert(*lockedNode).second;
 
@@ -456,8 +452,8 @@ struct CmdFlakeCheck : FlakeCommand
                     if (attr->name == state->symbols.create("path")) {
                         PathSet context;
                         auto path = state->coerceToPath(attr->pos, *attr->value, context);
-                        if (!store->isInStore(path))
-                            throw Error("template '%s' has a bad 'path' attribute");
+                        if (!path.pathExists())
+                            throw Error("template '%s' refers to a non-existent path '%s'", attrPath, path);
                         // TODO: recursively check the flake in 'path'.
                     }
                 } else
@@ -730,47 +726,42 @@ struct CmdFlakeInitCommon : virtual Args, EvalCommand
 
         auto cursor = installable.getCursor(*evalState);
 
-        auto templateDirAttr = cursor->getAttr("path");
-        auto templateDir = templateDirAttr->getString();
+        auto templateDirAttr = cursor->getAttr("path")->forceValue();
+        PathSet context;
+        auto templateDir = evalState->coerceToPath(noPos, templateDirAttr, context);
 
-        if (!store->isInStore(templateDir))
-            throw TypeError(
-                "'%s' was not found in the Nix store\n"
-                "If you've set '%s' to a string, try using a path instead.",
-                templateDir, templateDirAttr->getAttrPathStr());
+        std::vector<CanonPath> changedFiles;
+        std::vector<CanonPath> conflictedFiles;
 
-        std::vector<Path> changedFiles;
-        std::vector<Path> conflictedFiles;
-
-        std::function<void(const Path & from, const Path & to)> copyDir;
-        copyDir = [&](const Path & from, const Path & to)
+        std::function<void(const SourcePath & from, const CanonPath & to)> copyDir;
+        copyDir = [&](const SourcePath & from, const CanonPath & to)
         {
-            createDirs(to);
+            createDirs(to.abs());
 
-            for (auto & entry : readDirectory(from)) {
-                auto from2 = from + "/" + entry.name;
-                auto to2 = to + "/" + entry.name;
-                auto st = lstat(from2);
-                if (S_ISDIR(st.st_mode))
+            for (auto & [name, entry] : from.readDirectory()) {
+                auto from2 = from + name;
+                auto to2 = to + name;
+                auto st = from2.lstat();
+                if (st.type == InputAccessor::tDirectory)
                     copyDir(from2, to2);
-                else if (S_ISREG(st.st_mode)) {
-                    auto contents = readFile(from2);
-                    if (pathExists(to2)) {
-                        auto contents2 = readFile(to2);
+                else if (st.type == InputAccessor::tRegular) {
+                    auto contents = from2.readFile();
+                    if (pathExists(to2.abs())) {
+                        auto contents2 = readFile(to2.abs());
                         if (contents != contents2) {
-                            printError("refusing to overwrite existing file '%s'\n please merge it manually with '%s'", to2, from2);
+                            printError("refusing to overwrite existing file '%s'\nplease merge it manually with '%s'", to2, from2);
                             conflictedFiles.push_back(to2);
                         } else {
                             notice("skipping identical file: %s", from2);
                         }
                         continue;
                     } else
-                        writeFile(to2, contents);
+                        writeFile(to2.abs(), contents);
                 }
-                else if (S_ISLNK(st.st_mode)) {
-                    auto target = readLink(from2);
-                    if (pathExists(to2)) {
-                        if (readLink(to2) != target) {
+                else if (st.type == InputAccessor::tSymlink) {
+                    auto target = from2.readLink();
+                    if (pathExists(to2.abs())) {
+                        if (readLink(to2.abs()) != target) {
                             printError("refusing to overwrite existing file '%s'\n please merge it manually with '%s'", to2, from2);
                             conflictedFiles.push_back(to2);
                         } else {
@@ -778,7 +769,7 @@ struct CmdFlakeInitCommon : virtual Args, EvalCommand
                         }
                         continue;
                     } else
-                          createSymlink(target, to2);
+                        createSymlink(target, to2.abs());
                 }
                 else
                     throw Error("file '%s' has unsupported type", from2);
@@ -787,21 +778,21 @@ struct CmdFlakeInitCommon : virtual Args, EvalCommand
             }
         };
 
-        copyDir(templateDir, flakeDir);
+        copyDir(templateDir, CanonPath(flakeDir));
 
         if (!changedFiles.empty() && pathExists(flakeDir + "/.git")) {
             Strings args = { "-C", flakeDir, "add", "--intent-to-add", "--force", "--" };
-            for (auto & s : changedFiles) args.push_back(s);
+            for (auto & s : changedFiles) args.push_back(s.abs());
             runProgram("git", true, args);
         }
-        auto welcomeText = cursor->maybeGetAttr("welcomeText");
-        if (welcomeText) {
+
+        if (auto welcomeText = cursor->maybeGetAttr("welcomeText")) {
             notice("\n");
             notice(renderMarkdownToTerminal(welcomeText->getString()));
         }
 
         if (!conflictedFiles.empty())
-            throw Error("Encountered %d conflicts - see above", conflictedFiles.size());
+            throw Error("encountered %d conflicts - see above", conflictedFiles.size());
     }
 };
 
@@ -885,7 +876,7 @@ struct CmdFlakeClone : FlakeCommand
     }
 };
 
-struct CmdFlakeArchive : FlakeCommand, MixJSON, MixDryRun
+struct CmdFlakeArchive : FlakeCommand, MixJSON
 {
     std::string dstUri;
 
@@ -913,42 +904,42 @@ struct CmdFlakeArchive : FlakeCommand, MixJSON, MixDryRun
 
     void run(nix::ref<nix::Store> store) override
     {
+        auto dstStore = store;
+        if (!dstUri.empty())
+            dstStore = openStore(dstUri);
+
         auto flake = lockFlake();
 
         auto jsonRoot = json ? std::optional<JSONObject>(std::cout) : std::nullopt;
 
-        StorePathSet sources;
-
-        sources.insert(flake.flake.sourceInfo->storePath);
-        if (jsonRoot)
-            jsonRoot->attr("path", store->printStorePath(flake.flake.sourceInfo->storePath));
+        {
+            Activity act(*logger, lvlChatty, actUnknown, fmt("archiving root"));
+            auto storePath = flake.flake.lockedRef.input.fetchToStore(dstStore).first;
+            if (jsonRoot)
+                jsonRoot->attr("path", store->printStorePath(storePath));
+        }
 
         // FIXME: use graph output, handle cycles.
-        std::function<void(const Node & node, std::optional<JSONObject> & jsonObj)> traverse;
-        traverse = [&](const Node & node, std::optional<JSONObject> & jsonObj)
+        std::function<void(const Node & node, const InputPath & parentPath, std::optional<JSONObject> & jsonObj)> traverse;
+        traverse = [&](const Node & node, const InputPath & parentPath, std::optional<JSONObject> & jsonObj)
         {
             auto jsonObj2 = jsonObj ? jsonObj->object("inputs") : std::optional<JSONObject>();
             for (auto & [inputName, input] : node.inputs) {
                 if (auto inputNode = std::get_if<0>(&input)) {
+                    auto inputPath = parentPath;
+                    inputPath.push_back(inputName);
+                    Activity act(*logger, lvlChatty, actUnknown,
+                        fmt("archiving input '%s'", printInputPath(inputPath)));
                     auto jsonObj3 = jsonObj2 ? jsonObj2->object(inputName) : std::optional<JSONObject>();
-                    auto storePath =
-                        dryRun
-                        ? (*inputNode)->lockedRef.input.computeStorePath(*store)
-                        : (*inputNode)->lockedRef.input.fetch(store).first.storePath;
+                    auto storePath = (*inputNode)->lockedRef.input.fetchToStore(dstStore).first;
                     if (jsonObj3)
                         jsonObj3->attr("path", store->printStorePath(storePath));
-                    sources.insert(std::move(storePath));
-                    traverse(**inputNode, jsonObj3);
+                    traverse(**inputNode, inputPath, jsonObj3);
                 }
             }
         };
 
-        traverse(*flake.lockFile.root, jsonRoot);
-
-        if (!dryRun && !dstUri.empty()) {
-            ref<Store> dstStore = dstUri.empty() ? openStore() : openStore(dstUri);
-            copyPaths(*store, *dstStore, sources);
-        }
+        traverse(*flake.lockFile.root, {}, jsonRoot);
     }
 };
 
@@ -1184,7 +1175,7 @@ struct CmdFlakePrefetch : FlakeCommand, MixJSON
 
     std::string description() override
     {
-        return "download the source tree denoted by a flake reference into the Nix store";
+        return "fetch the source tree denoted by a flake reference";
     }
 
     std::string doc() override
@@ -1198,19 +1189,13 @@ struct CmdFlakePrefetch : FlakeCommand, MixJSON
     {
         auto originalRef = getFlakeRef();
         auto resolvedRef = originalRef.resolve(store);
-        auto [tree, lockedRef] = resolvedRef.fetchTree(store);
-        auto hash = store->queryPathInfo(tree.storePath)->narHash;
+        auto [accessor, lockedRef] = resolvedRef.lazyFetch(store);
 
         if (json) {
             auto res = nlohmann::json::object();
-            res["storePath"] = store->printStorePath(tree.storePath);
-            res["hash"] = hash.to_string(SRI, true);
             logger->cout(res.dump());
         } else {
-            notice("Downloaded '%s' to '%s' (hash '%s').",
-                lockedRef.to_string(),
-                store->printStorePath(tree.storePath),
-                hash.to_string(SRI, true));
+            notice("Fetched '%s'.", lockedRef.to_string());
         }
     }
 };

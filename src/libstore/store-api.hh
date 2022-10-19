@@ -179,7 +179,7 @@ public:
 
     /* Return true if ‘path’ is in the Nix store (but not the Nix
        store itself). */
-    bool isInStore(const Path & path) const;
+    bool isInStore(PathView path) const;
 
     /* Return true if ‘path’ is a store path, i.e. a direct child of
        the Nix store. */
@@ -187,7 +187,7 @@ public:
 
     /* Split a path like /nix/store/<hash>-<name>/<bla> into
        /nix/store/<hash>-<name> and /<bla>. */
-    std::pair<StorePath, Path> toStorePath(const Path & path) const;
+    std::pair<StorePath, Path> toStorePath(PathView path) const;
 
     /* Follow symlinks until we end up with a path in the Nix store. */
     Path followLinksToStore(std::string_view path) const;
@@ -217,12 +217,14 @@ public:
         const StorePathSet & references = {},
         bool hasSelfReference = false) const;
 
-    /* This is the preparatory part of addToStore(); it computes the
-       store path to which srcPath is to be copied.  Returns the store
-       path and the cryptographic hash of the contents of srcPath. */
-    std::pair<StorePath, Hash> computeStorePathForPath(std::string_view name,
-        const Path & srcPath, FileIngestionMethod method = FileIngestionMethod::Recursive,
-        HashType hashAlgo = htSHA256, PathFilter & filter = defaultPathFilter) const;
+    /* Read-only variant of addToStoreFromDump(). It returns the store
+       path to which a NAR or flat file would be written. */
+    std::pair<StorePath, Hash> computeStorePathFromDump(
+        Source & dump,
+        std::string_view name,
+        FileIngestionMethod method = FileIngestionMethod::Recursive,
+        HashType hashAlgo = htSHA256,
+        const StorePathSet & references = {}) const;
 
     /* Preparatory part of addTextToStore().
 

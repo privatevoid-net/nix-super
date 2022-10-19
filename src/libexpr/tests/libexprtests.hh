@@ -23,7 +23,7 @@ namespace nix {
             }
             Value eval(std::string input, bool forceValue = true) {
                 Value v;
-                Expr * e = state.parseExprFromString(input, "");
+                Expr * e = state.parseExprFromString(input, state.rootPath("/"));
                 assert(e);
                 state.eval(e, v);
                 if (forceValue)
@@ -99,14 +99,17 @@ namespace nix {
     }
 
     MATCHER_P(IsPathEq, p, fmt("Is a path equal to \"%1%\"", p)) {
-            if (arg.type() != nPath) {
-                *result_listener << "Expected a path got " << arg.type();
-                return false;
-            } else if (std::string_view(arg.string.s) != p) {
-                *result_listener << "Expected a path that equals \"" << p << "\" but got: " << arg.string.s;
+        if (arg.type() != nPath) {
+            *result_listener << "Expected a path got " << arg.type();
+            return false;
+        } else {
+            auto path = arg.path();
+            if (path.path != CanonPath(p)) {
+                *result_listener << "Expected a path that equals \"" << p << "\" but got: " << path.path;
                 return false;
             }
-            return true;
+        }
+        return true;
     }
 
 

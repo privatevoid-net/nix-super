@@ -215,17 +215,15 @@ static std::ostream & showDebugTrace(std::ostream & out, const PosTable & positi
     out << dt.hint.str() << "\n";
 
     // prefer direct pos, but if noPos then try the expr.
-    auto pos = *dt.pos
-        ? *dt.pos
-        : positions[dt.expr.getPos() ? dt.expr.getPos() : noPos];
+    auto pos = dt.pos
+        ? dt.pos
+        : (std::shared_ptr<AbstractPos>) positions[dt.expr.getPos() ? dt.expr.getPos() : noPos];
 
     if (pos) {
-        printAtPos(pos, out);
-
-        auto loc = getCodeLines(pos);
-        if (loc.has_value()) {
+        out << pos;
+        if (auto loc = pos->getCodeLines()) {
             out << "\n";
-            printCodeLines(out, "", pos, *loc);
+            printCodeLines(out, "", *pos, *loc);
             out << "\n";
         }
     }
@@ -584,15 +582,17 @@ bool NixRepl::processLine(std::string line)
         Value v;
         evalString(arg, v);
 
-        const auto [file, line] = [&] () -> std::pair<std::string, uint32_t> {
+        const auto [path, line] = [&] () -> std::pair<SourcePath, uint32_t> {
             if (v.type() == nPath || v.type() == nString) {
                 PathSet context;
-                auto filename = state->coerceToString(noPos, v, context).toOwned();
-                state->symbols.create(filename);
-                return {filename, 0};
+                auto path = state->coerceToPath(noPos, v, context);
+                return {path, 0};
             } else if (v.isLambda()) {
                 auto pos = state->positions[v.lambda.fun->pos];
-                return {pos.file, pos.line};
+                if (auto path = std::get_if<SourcePath>(&pos.origin))
+                    return {*path, pos.line};
+                else
+                    throw Error("'%s' cannot be shown in an editor", pos);
             } else {
                 // assume it's a derivation
                 return findPackageFilename(*state, v, arg);
@@ -600,7 +600,7 @@ bool NixRepl::processLine(std::string line)
         }();
 
         // Open in EDITOR
-        auto args = editorFor(file, line);
+        auto args = editorFor(path, line);
         auto editor = args.front();
         args.pop_front();
 
@@ -782,7 +782,7 @@ void NixRepl::loadFlake(const std::string & flakeRefS)
             flake::LockFlags {
                 .updateLockFile = false,
                 .useRegistries = !evalSettings.pureEval,
-                .allowMutable  = !evalSettings.pureEval,
+                .allowUnlocked = !evalSettings.pureEval,
             }),
         v);
     addAttrsToScope(v);
@@ -859,7 +859,7 @@ void NixRepl::addVarToScope(const Symbol name, Value & v)
 
 Expr * NixRepl::parseString(std::string s)
 {
-    Expr * e = state->parseExprFromString(std::move(s), curDir, staticEnv);
+    Expr * e = state->parseExprFromString(std::move(s), state->rootPath(curDir), staticEnv);
     return e;
 }
 
@@ -917,7 +917,7 @@ std::ostream & NixRepl::printValue(std::ostream & str, Value & v, unsigned int m
         break;
 
     case nPath:
-        str << ANSI_GREEN << v.path << ANSI_NORMAL; // !!! escaping?
+        str << ANSI_GREEN << v.path().to_string() << ANSI_NORMAL; // !!! escaping?
         break;
 
     case nNull:

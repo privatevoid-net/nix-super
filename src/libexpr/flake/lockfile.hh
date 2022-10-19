@@ -20,7 +20,7 @@ struct LockedNode;
    type LockedNode. */
 struct Node : std::enable_shared_from_this<Node>
 {
-    typedef std::variant<std::shared_ptr<LockedNode>, InputPath> Edge;
+    typedef std::variant<ref<LockedNode>, InputPath> Edge;
 
     std::map<FlakeId, Edge> inputs;
 
@@ -33,34 +33,37 @@ struct LockedNode : Node
     FlakeRef lockedRef, originalRef;
     bool isFlake = true;
 
+    /* The node relative to which relative source paths
+       (e.g. 'path:../foo') are interpreted. */
+    std::optional<InputPath> parentPath;
+
     LockedNode(
         const FlakeRef & lockedRef,
         const FlakeRef & originalRef,
-        bool isFlake = true)
-        : lockedRef(lockedRef), originalRef(originalRef), isFlake(isFlake)
+        bool isFlake = true,
+        std::optional<InputPath> parentPath = {})
+        : lockedRef(lockedRef), originalRef(originalRef), isFlake(isFlake), parentPath(parentPath)
     { }
 
     LockedNode(const nlohmann::json & json);
-
-    StorePath computeStorePath(Store & store) const;
 };
 
 struct LockFile
 {
-    std::shared_ptr<Node> root = std::make_shared<Node>();
+    ref<Node> root = make_ref<Node>();
 
     LockFile() {};
-    LockFile(const nlohmann::json & json, const Path & path);
+    LockFile(std::string_view contents, std::string_view path);
 
-    nlohmann::json toJSON() const;
+    typedef std::map<ref<const Node>, std::string> KeyMap;
 
-    std::string to_string() const;
+    std::pair<nlohmann::json, KeyMap> toJSON() const;
 
-    static LockFile read(const Path & path);
+    std::pair<std::string, KeyMap> to_string() const;
 
-    void write(const Path & path) const;
-
-    bool isImmutable() const;
+    /* Check whether this lock file has any unlocked inputs. If so,
+       return one. */
+    std::optional<FlakeRef> isUnlocked() const;
 
     bool operator ==(const LockFile & other) const;
 

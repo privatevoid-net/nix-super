@@ -5,3 +5,11 @@
   arguments will be ignored and the resulting derivation will have
   `__impure` set to `true`, making it an impure derivation.
 
+* You can now use flake references in the old CLI, e.g.
+
+  ```
+  # nix-build flake:nixpkgs -A hello
+  # nix-build -I nixpkgs=flake:github:NixOS/nixpkgs/nixos-22.05 \
+      '<nixpkgs>' -A hello
+  # NIX_PATH=nixpkgs=flake:nixpkgs nix-build '<nixpkgs>' -A hello
+  ```

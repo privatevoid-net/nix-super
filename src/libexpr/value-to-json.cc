@@ -2,6 +2,7 @@
 #include "json.hh"
 #include "eval-inline.hh"
 #include "util.hh"
+#include "store-api.hh"
 
 #include <cstdlib>
 #include <iomanip>
@@ -33,9 +34,11 @@ void printValueAsJSON(EvalState & state, bool strict,
 
         case nPath:
             if (copyToStore)
-                out.write(state.copyPathToStore(context, v.path));
+                out.write(
+                    state.store->printStorePath(
+                        state.copyPathToStore(context, v.path())));
             else
-                out.write(v.path);
+                out.write(v.path().path.abs());
             break;
 
         case nNull:

@@ -61,9 +61,9 @@ struct Flake
     FlakeRef originalRef; // the original flake specification (by the user)
     FlakeRef resolvedRef; // registry references and caching resolved to the specific underlying flake
     FlakeRef lockedRef; // the specific local store result of invoking the fetcher
+    SourcePath path;
     bool forceDirty = false; // pretend that 'lockedRef' is dirty
     std::optional<std::string> description;
-    std::shared_ptr<const fetchers::Tree> sourceInfo;
     FlakeInputs inputs;
     ConfigFile config; // 'nixConfig' attribute
     ~Flake();
@@ -79,7 +79,12 @@ struct LockedFlake
     Flake flake;
     LockFile lockFile;
 
-    Fingerprint getFingerprint() const;
+    /* Source tree accessors for nodes that have been fetched in
+       lockFlake(); in particular, the root node and the overriden
+       inputs. */
+    std::map<ref<Node>, SourcePath> nodePaths;
+
+    std::optional<Fingerprint> getFingerprint(ref<Store> store) const;
 };
 
 struct LockFlags
@@ -108,11 +113,11 @@ struct LockFlags
 
     bool applyNixConfig = false;
 
-    /* Whether mutable flake references (i.e. those without a Git
+    /* Whether unlocked flake references (i.e. those without a Git
        revision or similar) without a corresponding lock are
-       allowed. Mutable flake references with a lock are always
+       allowed. Unlocked flake references with a lock are always
        allowed. */
-    bool allowMutable = true;
+    bool allowUnlocked = true;
 
     /* Whether to commit changes to flake.lock. */
     bool commitLockFile = false;
@@ -139,7 +144,7 @@ void callFlake(
 
 void emitTreeAttrs(
     EvalState & state,
-    const fetchers::Tree & tree,
+    const SourcePath & path,
     const fetchers::Input & input,
     Value & v,
     bool emptyRevFallback = false,

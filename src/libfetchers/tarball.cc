@@ -1,3 +1,4 @@
+#include "tarball.hh"
 #include "fetchers.hh"
 #include "cache.hh"
 #include "filetransfer.hh"
@@ -7,6 +8,7 @@
 #include "tarfile.hh"
 #include "types.hh"
 #include "split.hh"
+#include "fs-input-accessor.hh"
 
 namespace nix::fetchers {
 
@@ -110,7 +112,7 @@ DownloadFileResult downloadFile(
     };
 }
 
-std::pair<Tree, time_t> downloadTarball(
+std::pair<StorePath, time_t> downloadTarball(
     ref<Store> store,
     const std::string & url,
     const std::string & name,
@@ -127,7 +129,7 @@ std::pair<Tree, time_t> downloadTarball(
 
     if (cached && !cached->expired)
         return {
-            Tree { .actualPath = store->toRealPath(cached->storePath), .storePath = std::move(cached->storePath) },
+            std::move(cached->storePath),
             getIntAttr(cached->infoAttrs, "lastModified")
         };
 
@@ -164,7 +166,7 @@ std::pair<Tree, time_t> downloadTarball(
         locked);
 
     return {
-        Tree { .actualPath = store->toRealPath(*unpackedStorePath), .storePath = std::move(*unpackedStorePath) },
+        std::move(*unpackedStorePath),
         lastModified,
     };
 }
@@ -185,7 +187,7 @@ struct CurlInputScheme : InputScheme
 
     virtual bool isValidURL(const ParsedURL & url) const = 0;
 
-    std::optional<Input> inputFromURL(const ParsedURL & url) override
+    std::optional<Input> inputFromURL(const ParsedURL & url) const override
     {
         if (!isValidURL(url))
             return std::nullopt;
@@ -203,7 +205,7 @@ struct CurlInputScheme : InputScheme
         return input;
     }
 
-    std::optional<Input> inputFromAttrs(const Attrs & attrs) override
+    std::optional<Input> inputFromAttrs(const Attrs & attrs) const override
     {
         auto type = maybeGetStrAttr(attrs, "type");
         if (type != inputType()) return {};
@@ -220,20 +222,20 @@ struct CurlInputScheme : InputScheme
         return input;
     }
 
-    ParsedURL toURL(const Input & input) override
+    ParsedURL toURL(const Input & input) const override
     {
         auto url = parseURL(getStrAttr(input.attrs, "url"));
-        // NAR hashes are preferred over file hashes since tar/zip files        // don't have a canonical representation.
+        // NAR hashes are preferred over file hashes since tar/zip
+        // files don't have a canonical representation.
         if (auto narHash = input.getNarHash())
             url.query.insert_or_assign("narHash", narHash->to_string(SRI, true));
         return url;
     }
 
-    bool hasAllInfo(const Input & input) override
+    bool isLocked(const Input & input) const override
     {
-        return true;
+        return (bool) input.getNarHash();
     }
-
 };
 
 struct FileInputScheme : CurlInputScheme
@@ -249,10 +251,17 @@ struct FileInputScheme : CurlInputScheme
                     : !hasTarballExtension(url.path));
     }
 
-    std::pair<StorePath, Input> fetch(ref<Store> store, const Input & input) override
+    std::pair<ref<InputAccessor>, Input> getAccessor(ref<Store> store, const Input & _input) const override
     {
+        auto input(_input);
+
         auto file = downloadFile(store, getStrAttr(input.attrs, "url"), input.getName(), false);
-        return {std::move(file.storePath), input};
+
+        // FIXME: remove?
+        auto narHash = store->queryPathInfo(file.storePath)->narHash;
+        input.attrs.insert_or_assign("narHash", narHash.to_string(SRI, true));
+
+        return {makeStorePathAccessor(store, file.storePath), input};
     }
 };
 
@@ -270,10 +279,17 @@ struct TarballInputScheme : CurlInputScheme
                     : hasTarballExtension(url.path));
     }
 
-    std::pair<StorePath, Input> fetch(ref<Store> store, const Input & input) override
+    std::pair<ref<InputAccessor>, Input> getAccessor(ref<Store> store, const Input & _input) const override
     {
-        auto tree = downloadTarball(store, getStrAttr(input.attrs, "url"), input.getName(), false).first;
-        return {std::move(tree.storePath), input};
+        auto input(_input);
+
+        auto storePath = downloadTarball(store, getStrAttr(input.attrs, "url"), input.getName(), false).first;
+
+        // FIXME: remove?
+        auto narHash = store->queryPathInfo(storePath)->narHash;
+        input.attrs.insert_or_assign("narHash", narHash.to_string(SRI, true));
+
+        return {makeStorePathAccessor(store, storePath), input};
     }
 };
 

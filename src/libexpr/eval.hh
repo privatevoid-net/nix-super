@@ -7,6 +7,7 @@
 #include "symbol-table.hh"
 #include "config.hh"
 #include "experimental-features.hh"
+#include "input-accessor.hh"
 
 #include <map>
 #include <optional>
@@ -19,7 +20,9 @@ namespace nix {
 class Store;
 class EvalState;
 class StorePath;
+struct SourcePath;
 enum RepairFlag : bool;
+struct FSInputAccessor;
 
 
 typedef void (* PrimOpFun) (EvalState & state, const PosIdx pos, Value * * args, Value & v);
@@ -55,16 +58,12 @@ std::unique_ptr<ValMap> mapStaticEnvBindings(const SymbolTable & st, const Stati
 void copyContext(const Value & v, PathSet & context);
 
 
-/* Cache for calls to addToStore(); maps source paths to the store
-   paths. */
-typedef std::map<Path, StorePath> SrcToStore;
-
-
 std::ostream & printValue(const EvalState & state, std::ostream & str, const Value & v);
 std::string printValue(const EvalState & state, const Value & v);
 std::ostream & operator << (std::ostream & os, const ValueType t);
 
 
+// FIXME: maybe change this to an std::variant<SourcePath, URL>.
 typedef std::pair<std::string, std::string> SearchPathElem;
 typedef std::list<SearchPathElem> SearchPath;
 
@@ -78,7 +77,7 @@ struct RegexCache;
 std::shared_ptr<RegexCache> makeRegexCache();
 
 struct DebugTrace {
-    std::optional<ErrPos> pos;
+    std::shared_ptr<AbstractPos> pos;
     const Expr & expr;
     const Env & env;
     hintformat hint;
@@ -93,8 +92,6 @@ public:
     SymbolTable symbols;
     PosTable positions;
 
-    static inline std::string derivationNixPath = "//builtin/derivation.nix";
-
     const Symbol sWith, sOutPath, sDrvPath, sType, sMeta, sName, sValue,
         sSystem, sOverrides, sOutputs, sOutputName, sIgnoreNulls,
         sFile, sLine, sColumn, sFunctor, sToString,
@@ -105,17 +102,24 @@ public:
         sDescription, sSelf, sEpsilon, sStartSet, sOperator, sKey, sPath,
         sPrefix,
         sOutputSpecified;
-    Symbol sDerivationNix;
 
     /* If set, force copying files to the Nix store even if they
        already exist there. */
     RepairFlag repair;
 
-    /* The allowed filesystem paths in restricted or pure evaluation
-       mode. */
-    std::optional<PathSet> allowedPaths;
-
     Bindings emptyBindings;
+
+    const ref<FSInputAccessor> rootFS;
+    const ref<MemoryInputAccessor> corepkgsFS;
+    const ref<MemoryInputAccessor> internalFS;
+
+    const SourcePath derivationInternal;
+
+    const SourcePath callFlakeInternal;
+
+    /* A map keyed by InputAccessor::number that keeps input accessors
+       alive. */
+    std::unordered_map<size_t, ref<InputAccessor>> inputAccessors;
 
     /* Store used to materialise .drv files. */
     const ref<Store> store;
@@ -123,7 +127,6 @@ public:
     /* Store used to build stuff. */
     const ref<Store> buildStore;
 
-    RootValue vCallFlake = nullptr;
     RootValue vImportedDrvToDerivation = nullptr;
 
     /* Debugger */
@@ -171,30 +174,30 @@ public:
 
 
 private:
-    SrcToStore srcToStore;
+
+    /* Cache for calls to addToStore(); maps source paths to the store
+       paths. */
+    std::map<SourcePath, StorePath> srcToStore;
 
     /* A cache from path names to parse trees. */
 #if HAVE_BOEHMGC
-    typedef std::map<Path, Expr *, std::less<Path>, traceable_allocator<std::pair<const Path, Expr *>>> FileParseCache;
+    typedef std::map<SourcePath, Expr *, std::less<SourcePath>, traceable_allocator<std::pair<const SourcePath, Expr *>>> FileParseCache;
 #else
-    typedef std::map<Path, Expr *> FileParseCache;
+    typedef std::map<SourcePath, Expr *> FileParseCache;
 #endif
     FileParseCache fileParseCache;
 
     /* A cache from path names to values. */
 #if HAVE_BOEHMGC
-    typedef std::map<Path, Value, std::less<Path>, traceable_allocator<std::pair<const Path, Value>>> FileEvalCache;
+    typedef std::map<SourcePath, Value, std::less<SourcePath>, traceable_allocator<std::pair<const SourcePath, Value>>> FileEvalCache;
 #else
-    typedef std::map<Path, Value> FileEvalCache;
+    typedef std::map<SourcePath, Value> FileEvalCache;
 #endif
     FileEvalCache fileEvalCache;
 
     SearchPath searchPath;
 
-    std::map<std::string, std::pair<bool, std::string>> searchPathResolved;
-
-    /* Cache used by checkSourcePath(). */
-    std::unordered_map<Path, Path> resolvedPaths;
+    std::map<std::string, std::optional<SourcePath>> searchPathResolved;
 
     /* Cache used by prim_match(). */
     std::shared_ptr<RegexCache> regexCache;
@@ -219,6 +222,22 @@ public:
 
     SearchPath getSearchPath() { return searchPath; }
 
+    SourcePath rootPath(const Path & path);
+
+    void registerAccessor(ref<InputAccessor> accessor);
+
+    /* Convert a path to a string representation of the format
+       `/__virtual__/<accessor-number>/<path>`. */
+    std::string encodePath(const SourcePath & path);
+
+    /* Decode a path encoded by `encodePath()`. */
+    SourcePath decodePath(std::string_view s, PosIdx pos = noPos);
+
+    /* Decode all virtual paths in a string, i.e. all
+       /__virtual__/... substrings are replaced by the corresponding
+       input accessor. */
+    std::string decodePaths(std::string_view s);
+
     /* Allow access to a path. */
     void allowPath(const Path & path);
 
@@ -228,10 +247,6 @@ public:
 
     /* Allow access to a store path and return it as a string. */
     void allowAndSetStorePathString(const StorePath & storePath, Value & v);
-
-    /* Check whether access to a path is allowed and throw an error if
-       not. Otherwise return the canonicalised path. */
-    Path checkSourcePath(const Path & path);
 
     void checkURI(const std::string & uri);
 
@@ -245,36 +260,30 @@ public:
     Path toRealPath(const Path & path, const PathSet & context);
 
     /* Parse a Nix expression from the specified file. */
-    Expr * parseExprFromFile(const Path & path);
-    Expr * parseExprFromFile(const Path & path, std::shared_ptr<StaticEnv> & staticEnv);
+    Expr * parseExprFromFile(const SourcePath & path);
+    Expr * parseExprFromFile(const SourcePath & path, std::shared_ptr<StaticEnv> & staticEnv);
 
     /* Parse a Nix expression from the specified string. */
-    Expr * parseExprFromString(std::string s, const Path & basePath, std::shared_ptr<StaticEnv> & staticEnv);
-    Expr * parseExprFromString(std::string s, const Path & basePath);
+    Expr * parseExprFromString(std::string s, const SourcePath & basePath, std::shared_ptr<StaticEnv> & staticEnv);
+    Expr * parseExprFromString(std::string s, const SourcePath & basePath);
 
     Expr * parseStdin();
 
     /* Evaluate an expression read from the given file to normal
        form. Optionally enforce that the top-level expression is
        trivial (i.e. doesn't require arbitrary computation). */
-    void evalFile(const Path & path, Value & v, bool mustBeTrivial = false);
-
-    /* Like `evalFile`, but with an already parsed expression. */
-    void cacheFile(
-        const Path & path,
-        const Path & resolvedPath,
-        Expr * e,
-        Value & v,
-        bool mustBeTrivial = false);
+    void evalFile(const SourcePath & path, Value & v, bool mustBeTrivial = false);
 
     void resetFileCache();
 
     /* Look up a file in the search path. */
-    Path findFile(const std::string_view path);
-    Path findFile(SearchPath & searchPath, const std::string_view path, const PosIdx pos = noPos);
+    SourcePath findFile(const std::string_view path);
+    SourcePath findFile(SearchPath & searchPath, const std::string_view path, const PosIdx pos = noPos);
 
     /* If the specified search path element is a URI, download it. */
-    std::pair<bool, std::string> resolveSearchPathElem(const SearchPathElem & elem);
+    std::optional<SourcePath> resolveSearchPathElem(
+        const SearchPathElem & elem,
+        bool initAccessControl = false);
 
     /* Evaluate an expression to normal form, storing the result in
        value `v'. */
@@ -323,7 +332,7 @@ public:
     [[gnu::noinline, gnu::noreturn]]
     void throwEvalError(const char * s, const std::string & s2);
     [[gnu::noinline, gnu::noreturn]]
-    void throwEvalError(const PosIdx pos, const char * s, const std::string & s2);
+    void throwEvalError(const PosIdx pos, const char * s, std::string_view s2);
     [[gnu::noinline, gnu::noreturn]]
     void throwEvalError(const char * s, const std::string & s2,
         Env & env, Expr & expr);
@@ -333,6 +342,8 @@ public:
     [[gnu::noinline, gnu::noreturn]]
     void throwEvalError(const char * s, const std::string & s2, const std::string & s3,
         Env & env, Expr & expr);
+    [[gnu::noinline, gnu::noreturn]]
+    void throwEvalError(const PosIdx pos, const char * s, std::string_view s2) const;
     [[gnu::noinline, gnu::noreturn]]
     void throwEvalError(const PosIdx pos, const char * s, const std::string & s2, const std::string & s3,
         Env & env, Expr & expr);
@@ -397,15 +408,14 @@ public:
        booleans and lists to a string.  If `copyToStore' is set,
        referenced paths are copied to the Nix store as a side effect. */
     BackedStringView coerceToString(const PosIdx pos, Value & v, PathSet & context,
-        bool coerceMore = false, bool copyToStore = true,
-        bool canonicalizePath = true);
+        bool coerceMore = false, bool copyToStore = true);
 
-    std::string copyPathToStore(PathSet & context, const Path & path);
+    StorePath copyPathToStore(PathSet & context, const SourcePath & path);
 
     /* Path coercion.  Converts strings, paths and derivations to a
        path.  The result is guaranteed to be a canonicalised, absolute
        path.  Nothing is copied to the store. */
-    Path coerceToPath(const PosIdx pos, Value & v, PathSet & context);
+    SourcePath coerceToPath(const PosIdx pos, Value & v, PathSet & context);
 
     /* Like coerceToPath, but the result must be a store path. */
     StorePath coerceToStorePath(const PosIdx pos, Value & v, PathSet & context);
@@ -457,8 +467,12 @@ private:
     friend struct ExprAttrs;
     friend struct ExprLet;
 
-    Expr * parse(char * text, size_t length, FileOrigin origin, const PathView path,
-        const PathView basePath, std::shared_ptr<StaticEnv> & staticEnv);
+    Expr * parse(
+        char * text,
+        size_t length,
+        Pos::Origin origin,
+        const SourcePath & basePath,
+        std::shared_ptr<StaticEnv> & staticEnv);
 
 public:
 
@@ -573,7 +587,7 @@ std::string showType(const Value & v);
 NixStringContextElem decodeContext(const Store & store, std::string_view s);
 
 /* If `path' refers to a directory, then append "/default.nix". */
-Path resolveExprPath(Path path);
+SourcePath resolveExprPath(const SourcePath & path);
 
 struct InvalidPathError : EvalError
 {
@@ -589,6 +603,10 @@ struct EvalSettings : Config
     EvalSettings();
 
     static Strings getDefaultNixPath();
+
+    static bool isPseudoUrl(std::string_view s);
+
+    static std::string resolvePseudoUrl(std::string_view url);
 
     Setting<bool> enableNativeCode{this, false, "allow-unsafe-native-code-during-evaluation",
         "Whether builtin functions that allow executing native code should be enabled."};
@@ -659,8 +677,6 @@ struct EvalSettings : Config
 };
 
 extern EvalSettings evalSettings;
-
-static const std::string corepkgsPrefix{"/__corepkgs__/"};
 
 }
 

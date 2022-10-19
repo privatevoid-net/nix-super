@@ -2,6 +2,7 @@ source ./common.sh
 
 requireGit
 
+flake1Dir=$TEST_ROOT/flake1
 flakeFollowsA=$TEST_ROOT/follows/flakeA
 flakeFollowsB=$TEST_ROOT/follows/flakeA/flakeB
 flakeFollowsC=$TEST_ROOT/follows/flakeA/flakeB/flakeC
@@ -9,6 +10,8 @@ flakeFollowsD=$TEST_ROOT/follows/flakeA/flakeD
 flakeFollowsE=$TEST_ROOT/follows/flakeA/flakeE
 
 # Test following path flakerefs.
+createGitRepo $flake1Dir
+createSimpleGitFlake $flake1Dir
 createGitRepo $flakeFollowsA
 mkdir -p $flakeFollowsB
 mkdir -p $flakeFollowsC
@@ -24,7 +27,7 @@ cat > $flakeFollowsA/flake.nix <<EOF
             inputs.foobar.follows = "foobar";
         };
 
-        foobar.url = "path:$flakeFollowsA/flakeE";
+        foobar.url = "path:$flakeFollowsA/flakeE?lock=1";
     };
     outputs = { ... }: {};
 }
@@ -34,7 +37,7 @@ cat > $flakeFollowsB/flake.nix <<EOF
 {
     description = "Flake B";
     inputs = {
-        foobar.url = "path:$flakeFollowsA/flakeE";
+        foobar.url = "path:$flakeFollowsA/flakeE?lock=1";
         goodoo.follows = "C/goodoo";
         C = {
             url = "path:./flakeC";
@@ -49,7 +52,7 @@ cat > $flakeFollowsC/flake.nix <<EOF
 {
     description = "Flake C";
     inputs = {
-        foobar.url = "path:$flakeFollowsA/flakeE";
+        foobar.url = "path:$flakeFollowsA/flakeE?lock=1";
         goodoo.follows = "foobar";
     };
     outputs = { ... }: {};
@@ -115,7 +118,7 @@ nix flake lock $flakeFollowsA
 [[ $(jq -c .nodes.B.inputs.foobar $flakeFollowsA/flake.lock) = '"foobar"' ]]
 jq -r -c '.nodes | keys | .[]' $flakeFollowsA/flake.lock | grep "^foobar$"
 
-# Ensure a relative path is not allowed to go outside the store path
+# Check that subflakes are allowed to access flakes in the parent.
 cat > $flakeFollowsA/flake.nix <<EOF
 {
     description = "Flake A";
@@ -128,7 +131,7 @@ EOF
 
 git -C $flakeFollowsA add flake.nix
 
-nix flake lock $flakeFollowsA 2>&1 | grep 'points outside'
+nix flake lock $flakeFollowsA
 
 # Non-existant follows should print a warning.
 cat >$flakeFollowsA/flake.nix <<EOF

@@ -442,8 +442,10 @@ Value & AttrCursor::forceValue()
         if (v.type() == nString)
             cachedValue = {root->db->setString(getKey(), v.string.s, v.string.context),
                            string_t{v.string.s, {}}};
-        else if (v.type() == nPath)
-            cachedValue = {root->db->setString(getKey(), v.path), string_t{v.path, {}}};
+        else if (v.type() == nPath) {
+            auto path = v.path().path;
+            cachedValue = {root->db->setString(getKey(), path.abs()), string_t{path.abs(), {}}};
+        }
         else if (v.type() == nBool)
             cachedValue = {root->db->setBool(getKey(), v.boolean), v.boolean};
         else if (v.type() == nInt)
@@ -580,7 +582,7 @@ std::string AttrCursor::getString()
     if (v.type() != nString && v.type() != nPath)
         root->state.debugThrowLastTrace(TypeError("'%s' is not a string but %s", getAttrPathStr(), showType(v.type())));
 
-    return v.type() == nString ? v.string.s : v.path;
+    return v.type() == nString ? v.string.s : v.path().to_string();
 }
 
 string_t AttrCursor::getStringWithContext()
@@ -611,7 +613,7 @@ string_t AttrCursor::getStringWithContext()
     if (v.type() == nString)
         return {v.string.s, v.getContext(*root->state.store)};
     else if (v.type() == nPath)
-        return {v.path, {}};
+        return {v.path().to_string(), {}};
     else
         root->state.debugThrowLastTrace(TypeError("'%s' is not a string but %s", getAttrPathStr(), showType(v.type())));
 }
@@ -645,17 +647,17 @@ NixInt AttrCursor::getInt()
             cachedValue = root->db->getAttr(getKey());
         if (cachedValue && !std::get_if<placeholder_t>(&cachedValue->second)) {
             if (auto i = std::get_if<int_t>(&cachedValue->second)) {
-                debug("using cached Integer attribute '%s'", getAttrPathStr());
+                debug("using cached integer attribute '%s'", getAttrPathStr());
                 return i->x;
             } else
-                throw TypeError("'%s' is not an Integer", getAttrPathStr());
+                throw TypeError("'%s' is not an integer", getAttrPathStr());
         }
     }
 
     auto & v = forceValue();
 
     if (v.type() != nInt)
-        throw TypeError("'%s' is not an Integer", getAttrPathStr());
+        throw TypeError("'%s' is not an integer", getAttrPathStr());
 
     return v.integer;
 }

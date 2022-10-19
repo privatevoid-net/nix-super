@@ -17,21 +17,21 @@
 namespace nix {
 
 
-bool Store::isInStore(const Path & path) const
+bool Store::isInStore(PathView path) const
 {
     return isInDir(path, storeDir);
 }
 
 
-std::pair<StorePath, Path> Store::toStorePath(const Path & path) const
+std::pair<StorePath, Path> Store::toStorePath(PathView path) const
 {
     if (!isInStore(path))
         throw Error("path '%1%' is not in the Nix store", path);
-    Path::size_type slash = path.find('/', storeDir.size() + 1);
+    auto slash = path.find('/', storeDir.size() + 1);
     if (slash == Path::npos)
         return {parseStorePath(path), ""};
     else
-        return {parseStorePath(std::string_view(path).substr(0, slash)), path.substr(slash)};
+        return {parseStorePath(path.substr(0, slash)), (Path) path.substr(slash)};
 }
 
 
@@ -220,13 +220,17 @@ StorePath Store::makeTextPath(std::string_view name, const Hash & hash,
 }
 
 
-std::pair<StorePath, Hash> Store::computeStorePathForPath(std::string_view name,
-    const Path & srcPath, FileIngestionMethod method, HashType hashAlgo, PathFilter & filter) const
+std::pair<StorePath, Hash> Store::computeStorePathFromDump(
+    Source & dump,
+    std::string_view name,
+    FileIngestionMethod method,
+    HashType hashAlgo,
+    const StorePathSet & references) const
 {
-    Hash h = method == FileIngestionMethod::Recursive
-        ? hashPath(hashAlgo, srcPath, filter).first
-        : hashFile(hashAlgo, srcPath);
-    return std::make_pair(makeFixedOutputPath(method, h, name), h);
+    HashSink sink(hashAlgo);
+    dump.drainInto(sink);
+    auto hash = sink.finish().first;
+    return {makeFixedOutputPath(method, hash, name, references), hash};
 }
 
 

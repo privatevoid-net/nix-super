@@ -289,7 +289,7 @@ static void main_nix_build(int argc, char * * argv)
     else
         for (auto i : left) {
             if (fromArgs)
-                exprs.push_back(state->parseExprFromString(std::move(i), absPath(".")));
+                exprs.push_back(state->parseExprFromString(std::move(i), state->rootPath(absPath("."))));
             else {
                 auto absolute = i;
                 try {
@@ -301,8 +301,11 @@ static void main_nix_build(int argc, char * * argv)
                 else
                     /* If we're in a #! script, interpret filenames
                        relative to the script. */
-                    exprs.push_back(state->parseExprFromFile(resolveExprPath(state->checkSourcePath(lookupFileArg(*state,
-                                        inShebang && !packages ? absPath(i, absPath(dirOf(script))) : i)))));
+                    exprs.push_back(
+                        state->parseExprFromFile(
+                            resolveExprPath(
+                                lookupFileArg(*state,
+                                    inShebang && !packages ? absPath(i, absPath(dirOf(script))) : i))));
             }
         }
 
@@ -385,7 +388,9 @@ static void main_nix_build(int argc, char * * argv)
         if (!shell) {
 
             try {
-                auto expr = state->parseExprFromString("(import <nixpkgs> {}).bashInteractive", absPath("."));
+                auto expr = state->parseExprFromString(
+                    "(import <nixpkgs> {}).bashInteractive",
+                    state->rootPath(absPath(".")));
 
                 Value v;
                 state->eval(expr, v);
