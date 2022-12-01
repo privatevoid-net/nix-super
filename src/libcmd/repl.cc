@@ -270,6 +270,7 @@ void NixRepl::mainLoop()
             // ctrl-D should exit the debugger.
             state->debugStop = false;
             state->debugQuit = true;
+            logger->cout("");
             break;
         }
         try {
@@ -384,6 +385,10 @@ StringSet NixRepl::completePrefix(const std::string & prefix)
             i++;
         }
     } else {
+        /* Temporarily disable the debugger, to avoid re-entering readline. */
+        auto debug_repl = state->debugRepl;
+        state->debugRepl = nullptr;
+        Finally restoreDebug([&]() { state->debugRepl = debug_repl; });
         try {
             /* This is an expression that should evaluate to an
                attribute set.  Evaluate it to get the names of the
