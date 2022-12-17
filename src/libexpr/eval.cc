@@ -45,7 +45,7 @@ static char * allocString(size_t size)
 #if HAVE_BOEHMGC
     t = (char *) GC_MALLOC_ATOMIC(size);
 #else
-    t = malloc(size);
+    t = (char *) malloc(size);
 #endif
     if (!t) throw std::bad_alloc();
     return t;
@@ -402,7 +402,8 @@ static Strings parseNixPath(const std::string & s)
         }
 
         if (*p == ':') {
-            if (isUri(std::string(start2, s.end()))) {
+            auto prefix = std::string(start2, s.end());
+            if (EvalSettings::isPseudoUrl(prefix) || hasPrefix(prefix, "flake:")) {
                 ++p;
                 while (p != s.end() && *p != ':') ++p;
             }
@@ -470,9 +471,6 @@ EvalState::EvalState(
 #if HAVE_BOEHMGC
     , valueAllocCache(std::allocate_shared<void *>(traceable_allocator<void *>(), nullptr))
     , env1AllocCache(std::allocate_shared<void *>(traceable_allocator<void *>(), nullptr))
-#else
-    , valueAllocCache(std::make_shared<void *>(nullptr))
-    , env1AllocCache(std::make_shared<void *>(nullptr))
 #endif
     , baseEnv(allocEnv(128))
     , staticBaseEnv{std::make_shared<StaticEnv>(false, nullptr)}
@@ -1646,7 +1644,7 @@ void EvalState::callFunction(Value & fun, size_t nrArgs, Value * * args, Value &
                 auto dts = debugRepl
                     ? makeDebugTraceStacker(
                         *this, *lambda.body, env2, positions[lambda.pos],
-                        "while evaluating %s",
+                        "while calling %s",
                         lambda.name
                         ? concatStrings("'", symbols[lambda.name], "'")
                         : "anonymous lambda")
@@ -1655,11 +1653,11 @@ void EvalState::callFunction(Value & fun, size_t nrArgs, Value * * args, Value &
                 lambda.body->eval(*this, env2, vCur);
             } catch (Error & e) {
                 if (loggerSettings.showTrace.get()) {
-                    addErrorTrace(e, lambda.pos, "while evaluating %s",
+                    addErrorTrace(e, lambda.pos, "while calling %s",
                         (lambda.name
                             ? concatStrings("'", symbols[lambda.name], "'")
                             : "anonymous lambda"));
-                    addErrorTrace(e, pos, "from call site%s", "");
+                    addErrorTrace(e, pos, "while evaluating call site%s", "");
                 }
                 throw;
             }
@@ -1806,7 +1804,7 @@ void EvalState::autoCallFunction(Bindings & args, Value & fun, Value & res)
 Nix attempted to evaluate a function as a top level expression; in
 this case it must have its arguments supplied either by default
 values, or passed explicitly with '--arg' or '--argstr'. See
-https://nixos.org/manual/nix/stable/expressions/language-constructs.html#functions.)", symbols[i.name],                 
+https://nixos.org/manual/nix/stable/language/constructs.html#functions.)", symbols[i.name],
                 *fun.lambda.env, *fun.lambda.fun);
             }
         }
@@ -2581,6 +2579,23 @@ Strings EvalSettings::getDefaultNixPath()
     }
 
     return res;
+}
+
+bool EvalSettings::isPseudoUrl(std::string_view s)
+{
+    if (s.compare(0, 8, "channel:") == 0) return true;
+    size_t pos = s.find("://");
+    if (pos == std::string::npos) return false;
+    std::string scheme(s, 0, pos);
+    return scheme == "http" || scheme == "https" || scheme == "file" || scheme == "channel" || scheme == "git" || scheme == "s3" || scheme == "ssh";
+}
+
+std::string EvalSettings::resolvePseudoUrl(std::string_view url)
+{
+    if (hasPrefix(url, "channel:"))
+        return "https://nixos.org/channels/" + std::string(url.substr(8)) + "/nixexprs.tar.xz";
+    else
+        return std::string(url);
 }
 
 EvalSettings evalSettings;

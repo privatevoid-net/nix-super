@@ -9,13 +9,13 @@
 
     let
 
-      version = builtins.readFile ./.version + versionSuffix;
+      officialRelease = false;
+
+      version = nixpkgs.lib.fileContents ./.version + versionSuffix;
       versionSuffix =
         if officialRelease
         then ""
         else "pre${builtins.substring 0 8 (self.lastModifiedDate or self.lastModified or "19700101")}_${self.shortRev or "dirty"}";
-
-      officialRelease = false;
 
       linux64BitSystems = [ "x86_64-linux" "aarch64-linux" ];
       linuxSystems = linux64BitSystems ++ [ "i686-linux" ];
@@ -419,6 +419,8 @@
 
         buildCross = nixpkgs.lib.genAttrs crossSystems (crossSystem:
           nixpkgs.lib.genAttrs ["x86_64-linux"] (system: self.packages.${system}."nix-super-${crossSystem}"));
+
+        buildNoGc = nixpkgs.lib.genAttrs systems (system: self.packages.${system}.nix.overrideAttrs (a: { configureFlags = (a.configureFlags or []) ++ ["--enable-gc=no"];}));
 
         # Perl bindings for various platforms.
         perlBindings = nixpkgs.lib.genAttrs systems (system: self.packages.${system}.nix.perl-bindings);

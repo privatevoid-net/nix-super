@@ -1461,10 +1461,10 @@ static RegisterPrimOp primop_storePath({
 static void prim_pathExists(EvalState & state, const PosIdx pos, Value * * args, Value & v)
 {
     /* We don’t check the path right now, because we don’t want to
-      throw if the path isn’t allowed, but just return false (and we
-      can’t just catch the exception here because we still want to
-      throw if something in the evaluation of `*args[0]` tries to
-      access an unauthorized path). */
+       throw if the path isn’t allowed, but just return false (and we
+       can’t just catch the exception here because we still want to
+       throw if something in the evaluation of `*args[0]` tries to
+       access an unauthorized path). */
     auto path = realisePath(state, pos, *args[0], { .checkForPureEval = false });
 
     try {
@@ -2420,12 +2420,18 @@ static RegisterPrimOp primop_listToAttrs({
       Construct a set from a list specifying the names and values of each
       attribute. Each element of the list should be a set consisting of a
       string-valued attribute `name` specifying the name of the attribute,
-      and an attribute `value` specifying its value. Example:
+      and an attribute `value` specifying its value.
+
+      In case of duplicate occurrences of the same name, the first
+      takes precedence.
+
+      Example:
 
       ```nix
       builtins.listToAttrs
         [ { name = "foo"; value = 123; }
           { name = "bar"; value = 456; }
+          { name = "bar"; value = 420; }
         ]
       ```
 
