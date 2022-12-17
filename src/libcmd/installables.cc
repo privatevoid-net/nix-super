@@ -962,10 +962,6 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
         for (auto & s : ss) {
             std::exception_ptr ex;
 
-            if (s.find('/') != std::string::npos) {
-                /*if (modifyInstallable) {
-                    throw Error("cannot apply function: installable cannot be evaluated");
-                }*/
             auto found = s.rfind('^');
             if (found != std::string::npos) {
                 try {
