@@ -354,6 +354,7 @@ void printVersion(const std::string & programName)
         cfg.push_back("gc");
 #endif
         cfg.push_back("signed-caches");
+        cfg.push_back("nixos");
         std::cout << "System type: " << settings.thisSystem << "\n";
         std::cout << "Additional system types: " << concatStringsSep(", ", settings.extraPlatforms.get()) << "\n";
         std::cout << "Features: " << concatStringsSep(", ", cfg) << "\n";
