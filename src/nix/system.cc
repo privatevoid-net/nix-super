@@ -32,6 +32,8 @@
 using namespace nix;
 
 void executePrivileged(std::string program, Strings args) {
+    stopProgressBar();
+    restoreProcessContext();
     args.push_front(program);
     auto exe = program;
     auto privCmds = Strings {
