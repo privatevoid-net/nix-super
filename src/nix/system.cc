@@ -34,13 +34,22 @@ using namespace nix;
 void executePrivileged(std::string program, Strings args) {
     args.push_front(program);
     auto exe = program;
-    if(getuid() != 0) {
-        args.push_front("doas");
-        exe = "doas";
+    auto privCmds = Strings {
+        "doas",
+        "sudo"
+    };
+    bool isRoot = getuid() == 0;
+    for (auto privCmd : privCmds) {
+        if(!isRoot) {
+            args.push_front(privCmd);
+            exe = privCmd;
+        }
+        execvp(exe.c_str(), stringsToCharPtrs(args).data());
+        if(!isRoot)
+            args.pop_front();
     }
-    execvp(exe.c_str(), stringsToCharPtrs(args).data());
 
-    throw SysError("unable to execute '%s'", exe);
+    throw SysError("unable to execute privilege elevation helper (tried %s)", concatStringsSep(", ", privCmds));
 }
 
 struct SystemCommand : InstallableCommand
