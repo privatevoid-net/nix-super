@@ -91,6 +91,35 @@ struct SystemCommand : InstallableCommand
     }
 };
 
+struct SystemInstalledActivationCommand : SystemCommand, MixProfile
+{
+    std::string activationType;
+
+    void run(nix::ref<nix::Store> store) override
+    {
+        std::vector<std::shared_ptr<Installable>> installableContext;
+        auto state = getEvalState();
+        installableContext.emplace_back(transformInstallable(state, installable));
+        auto buildables = Installable::build(
+            getEvalStore(), store,
+            Realise::Outputs,
+            installableContext, bmNormal);
+
+        if (!profile) {
+            profile = settings.nixStateDir + "/profiles/system";
+        } else {
+            profile = settings.nixStateDir + "/profiles/system-profiles/" + profile.value();
+        }
+
+        BuiltPaths buildables2;
+        for (auto & b : buildables)
+            buildables2.push_back(b.path);
+        updateProfile(buildables2);
+
+        executePrivileged(profile.value() + "/bin/switch-to-configuration", Strings{activationType});
+    }
+};
+
 struct CmdSystemBuild : SystemCommand, MixDryRun
 {
     Path outLink = "result";
@@ -228,12 +257,56 @@ struct CmdSystemActivate : SystemCommand, MixDryRun
     }
 };
 
+struct CmdSystemApply : SystemInstalledActivationCommand
+{
+    std::string activationType = "switch";
+
+    CmdSystemApply()
+    {
+    }
+
+    std::string description() override
+    {
+        return "activate a NixOS system configuration and make it the default boot configuration";
+    }
+
+    std::string doc() override
+    {
+        return
+          #include "system-apply.md"
+          ;
+    }
+};
+
+struct CmdSystemBoot : SystemInstalledActivationCommand
+{
+    std::string activationType = "boot";
+
+    CmdSystemBoot()
+    {
+    }
+
+    std::string description() override
+    {
+        return "make a NixOS configuration the default boot configuration";
+    }
+
+    std::string doc() override
+    {
+        return
+          #include "system-boot.md"
+          ;
+    }
+};
+
 struct CmdSystem : NixMultiCommand
 {
     CmdSystem()
         : MultiCommand({
                 {"build", []() { return make_ref<CmdSystemBuild>(); }},
                 {"activate", []() { return make_ref<CmdSystemActivate>(); }},
+                {"apply", []() { return make_ref<CmdSystemApply>(); }},
+                {"boot", []() { return make_ref<CmdSystemBoot>(); }},
             })
     {
     }
