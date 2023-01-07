@@ -96,6 +96,12 @@ struct SystemCommand : InstallableCommand
 struct SystemInstalledActivationCommand : SystemCommand, MixProfile
 {
     std::string activationType;
+    std::string selfCommandName;
+
+    SystemInstalledActivationCommand(std::string activationType, std::string selfCommandName)
+        : activationType(activationType),
+          selfCommandName(selfCommandName)
+    { }
 
     void run(nix::ref<nix::Store> store) override
     {
@@ -107,18 +113,33 @@ struct SystemInstalledActivationCommand : SystemCommand, MixProfile
             Realise::Outputs,
             installableContext, bmNormal);
 
-        if (!profile) {
-            profile = settings.nixStateDir + "/profiles/system";
-        } else {
-            profile = settings.nixStateDir + "/profiles/system-profiles/" + profile.value();
-        }
-
         BuiltPaths buildables2;
         for (auto & b : buildables)
             buildables2.push_back(b.path);
-        updateProfile(buildables2);
 
-        executePrivileged(profile.value() + "/bin/switch-to-configuration", Strings{activationType});
+        if (getuid() != 0) {
+            Strings args {
+                "system", selfCommandName,
+                store->printStorePath(*buildables2.front().outPaths().begin())
+            };
+            if (profile) {
+                args.push_back("--profile");
+                args.push_back(profile.value());
+            }
+            executePrivileged(getSelfExe().value_or("nix"), args);
+        } else {
+            if (!profile) {
+                profile = settings.nixStateDir + "/profiles/system";
+            } else {
+                auto systemProfileBase = settings.nixStateDir + "/profiles/system-profiles";
+                if (!pathExists(systemProfileBase)) {
+                    createDirs(systemProfileBase);
+                }
+                profile = systemProfileBase + "/" + profile.value();
+            }
+            updateProfile(buildables2);
+            executePrivileged(profile.value() + "/bin/switch-to-configuration", Strings{activationType});
+        }
     }
 };
 
@@ -261,9 +282,7 @@ struct CmdSystemActivate : SystemCommand, MixDryRun
 
 struct CmdSystemApply : SystemInstalledActivationCommand
 {
-    std::string activationType = "switch";
-
-    CmdSystemApply()
+    CmdSystemApply() : SystemInstalledActivationCommand("switch", "apply")
     {
     }
 
@@ -282,9 +301,7 @@ struct CmdSystemApply : SystemInstalledActivationCommand
 
 struct CmdSystemBoot : SystemInstalledActivationCommand
 {
-    std::string activationType = "boot";
-
-    CmdSystemBoot()
+    CmdSystemBoot() : SystemInstalledActivationCommand("boot","boot")
     {
     }
 
