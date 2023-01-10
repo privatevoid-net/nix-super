@@ -91,6 +91,26 @@ struct SystemCommand : InstallableCommand
             return installable;
         }
     }
+
+    StorePath buildSystem(nix::ref<nix::Store> store) {
+        std::vector<std::shared_ptr<Installable>> installableContext;
+        auto state = getEvalState();
+        installableContext.emplace_back(transformInstallable(state, installable));
+        auto buildables = Installable::build(
+            getEvalStore(), store,
+            Realise::Outputs,
+            installableContext, bmNormal);
+
+        BuiltPaths buildables2;
+        for (auto & b : buildables)
+            buildables2.push_back(b.path);
+
+        auto buildable = buildables2.front();
+        if (buildables2.size() != 1 || buildable.outPaths().size() != 1) {
+            throw UsageError("this command requires that the argument produces a single store path");
+        }
+        return *buildable.outPaths().begin();
+    }
 };
 
 struct SystemInstalledActivationCommand : SystemCommand, MixProfile
@@ -105,22 +125,12 @@ struct SystemInstalledActivationCommand : SystemCommand, MixProfile
 
     void run(nix::ref<nix::Store> store) override
     {
-        std::vector<std::shared_ptr<Installable>> installableContext;
-        auto state = getEvalState();
-        installableContext.emplace_back(transformInstallable(state, installable));
-        auto buildables = Installable::build(
-            getEvalStore(), store,
-            Realise::Outputs,
-            installableContext, bmNormal);
-
-        BuiltPaths buildables2;
-        for (auto & b : buildables)
-            buildables2.push_back(b.path);
+        auto out = buildSystem(store);
 
         if (getuid() != 0) {
             Strings args {
                 "system", selfCommandName,
-                store->printStorePath(*buildables2.front().outPaths().begin())
+                store->printStorePath(out)
             };
             if (profile) {
                 args.push_back("--profile");
@@ -137,7 +147,7 @@ struct SystemInstalledActivationCommand : SystemCommand, MixProfile
                 }
                 profile = systemProfileBase + "/" + profile.value();
             }
-            updateProfile(buildables2);
+            updateProfile(out);
             executePrivileged(profile.value() + "/bin/switch-to-configuration", Strings{activationType});
         }
     }
@@ -186,10 +196,10 @@ struct CmdSystemBuild : SystemCommand, MixDryRun
 
     void run(nix::ref<nix::Store> store) override
     {
-        std::vector<std::shared_ptr<Installable>> installableContext;
-        auto state = getEvalState();
-        installableContext.emplace_back(transformInstallable(state, installable));
         if (dryRun) {
+            std::vector<std::shared_ptr<Installable>> installableContext;
+            auto state = getEvalState();
+            installableContext.emplace_back(transformInstallable(state, installable));
             std::vector<DerivedPath> pathsToBuild;
 
             for (auto & i : installableContext) {
@@ -200,46 +210,18 @@ struct CmdSystemBuild : SystemCommand, MixDryRun
             return;
         }
 
-        auto buildables = Installable::build(
-            getEvalStore(), store,
-            Realise::Outputs,
-            installableContext, bmNormal);
+        auto out = buildSystem(store);
 
-        if (outLink != "")
-            if (auto store2 = store.dynamic_pointer_cast<LocalFSStore>())
-                for (const auto & [_i, buildable] : enumerate(buildables)) {
-                    auto i = _i;
-                    std::visit(overloaded {
-                        [&](const BuiltPath::Opaque & bo) {
-                            std::string symlink = outLink;
-                            if (i) symlink += fmt("-%d", i);
-                            store2->addPermRoot(bo.path, absPath(symlink));
-                        },
-                        [&](const BuiltPath::Built & bfd) {
-                            for (auto & output : bfd.outputs) {
-                                std::string symlink = outLink;
-                                if (i) symlink += fmt("-%d", i);
-                                if (output.first != "out") symlink += fmt("-%s", output.first);
-                                store2->addPermRoot(output.second, absPath(symlink));
-                            }
-                        },
-                    }, buildable.path.raw());
-                }
+        if (outLink != "") {
+            if (auto store2 = store.dynamic_pointer_cast<LocalFSStore>()) {
+                std::string symlink = outLink;
+                store2->addPermRoot(out, absPath(symlink));
+            }
+        }
 
         if (printOutputPaths) {
             stopProgressBar();
-            for (auto & buildable : buildables) {
-                std::visit(overloaded {
-                    [&](const BuiltPath::Opaque & bo) {
-                        std::cout << store->printStorePath(bo.path) << std::endl;
-                    },
-                    [&](const BuiltPath::Built & bfd) {
-                        for (auto & output : bfd.outputs) {
-                            std::cout << store->printStorePath(output.second) << std::endl;
-                        }
-                    },
-                }, buildable.path.raw());
-            }
+            std::cout << store->printStorePath(out) << std::endl;
         }
     }
 };
@@ -263,20 +245,9 @@ struct CmdSystemActivate : SystemCommand, MixDryRun
     }
     void run(nix::ref<nix::Store> store) override
     {
-        auto state = getEvalState();
-        auto inst = transformInstallable(state, installable);
-        auto cursor = inst->getCursor(*state);
+        auto out = buildSystem(store);
 
-        auto drvPath = cursor->forceDerivation();
-        auto outPath = cursor->getAttr(state->sOutPath)->getString();
-        auto outputName = cursor->getAttr(state->sOutputName)->getString();
-
-        auto app = UnresolvedApp{App {
-            .context = { { drvPath, {outputName} } },
-            .program = outPath + "/bin/switch-to-configuration",
-        }}.resolve(getEvalStore(), store);
-
-        executePrivileged(app.program, Strings{dryRun ? "dry-activate" : "test"});
+        executePrivileged(store->printStorePath(out) + "/bin/switch-to-configuration", Strings{dryRun ? "dry-activate" : "test"});
     }
 };
 
