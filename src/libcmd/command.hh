@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common-args.hh"
 #include "installables.hh"
 #include "args.hh"
 #include "common-eval-args.hh"
@@ -270,6 +271,34 @@ struct MixEnvironment : virtual Args {
 
     /* Modify global environ based on ignoreEnvironment, keep, and unset. It's expected that exec will be called before this class goes out of scope, otherwise environ will become invalid. */
     void setEnviron();
+};
+
+/* A command that operates on exactly one "activatable" */
+struct ActivatableCommand : public InstallableCommand
+{
+    ActivatableCommand(std::string activationPackageAttrPath);
+    std::string activationPackageAttrPath;
+    void prepare() override;
+    StorePath buildActivatable(nix::ref<Store> store, bool dryRun = false);
+};
+
+template<class ActivatableCommand>
+struct ActivatableBuildCommand : public ActivatableCommand, public MixDryRun
+{
+    ActivatableBuildCommand();
+    Path outLink = "result";
+    bool printOutputPaths = false;
+    void run(nix::ref<Store>) override;
+};
+
+/* A command that manages the activation of exactly one "activatable" */
+template<class ActivatableCommand>
+struct ActivationCommand : public ActivatableCommand
+{
+public: 
+    ActivationCommand(std::string activationType, std::string selfCommandName);
+    const std::string activationType;
+    const std::string selfCommandName;
 };
 
 void completeFlakeRef(ref<Store> store, std::string_view prefix);
