@@ -354,6 +354,7 @@ void printVersion(const std::string & programName)
         cfg.push_back("gc");
 #endif
         cfg.push_back("signed-caches");
+        cfg.push_back("super");
         cfg.push_back("nixos");
         cfg.push_back("home");
         std::cout << "System type: " << settings.thisSystem << "\n";
