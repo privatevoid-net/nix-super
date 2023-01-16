@@ -42,7 +42,8 @@ void ActivatableBuildCommand<ActivatableCommand>::run(nix::ref<Store> store)
 
         for (auto & i : installableContext) {
             auto b = i->toDerivedPaths();
-            pathsToBuild.insert(pathsToBuild.end(), b.begin(), b.end());
+            for (auto & b : i->toDerivedPaths())
+                pathsToBuild.push_back(b.path);
         }
         printMissing(store, pathsToBuild, lvlError);
         return;

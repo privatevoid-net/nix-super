@@ -17,7 +17,7 @@ void ActivatableCommand::prepare() {
                 getEvalState(),
                 std::move(installableFlake->flakeRef),
                 activationPackageAttrPath == "" ? fragment : fragment + "." + activationPackageAttrPath,
-                installableFlake->outputsSpec,
+                installableFlake->extendedOutputsSpec,
                 getDefaultFlakeAttrPaths(),
                 getDefaultFlakeAttrPathPrefixes(),
                 installableFlake->lockFlags
