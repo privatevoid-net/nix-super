@@ -1009,11 +1009,13 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
             }
 
             try {
-                bool isAttrPath = std::regex_match(s, attrPathRegex);
-                
-                auto actualRef = isAttrPath ? "flake:default#" + s : s;
+                auto prefixS = std::string { prefix };
 
-                auto [flakeRef, fragment] = parseFlakeRefWithFragment(std::string { prefix }, absPath("."));
+                bool isAttrPath = std::regex_match(prefixS, attrPathRegex);
+
+                auto actualRef = isAttrPath ? "flake:default#" + prefixS : prefixS;
+                
+                auto [flakeRef, fragment] = parseFlakeRefWithFragment(actualRef, absPath("."));
 
                 auto state = getEvalState();
 
