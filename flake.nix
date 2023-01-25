@@ -82,7 +82,9 @@
         });
 
         configureFlags =
-          lib.optionals stdenv.isLinux [
+          [
+            "CXXFLAGS=-I${lib.getDev rapidcheck}/extras/gtest/include"
+          ] ++ lib.optionals stdenv.isLinux [
             "--with-boost=${boost}/lib"
             "--with-sandbox-shell=${sh}/bin/busybox"
           ]
@@ -116,6 +118,7 @@
             boost
             lowdown-nix
             gtest
+            rapidcheck
           ]
           ++ lib.optionals stdenv.isLinux [libseccomp]
           ++ lib.optional (stdenv.isLinux || stdenv.isDarwin) libsodium
@@ -128,9 +131,14 @@
           });
 
         propagatedDeps =
-          [ (boehmgc.override {
+          [ ((boehmgc.override {
               enableLargeConfig = true;
+            }).overrideAttrs(o: {
+              patches = (o.patches or []) ++ [
+                ./boehmgc-coroutine-sp-fallback.diff
+              ];
             })
+            )
             nlohmann_json
           ];
       };
@@ -650,6 +658,7 @@
             inherit system crossSystem;
             overlays = [ self.overlays.default ];
           };
+          inherit (nixpkgsCross) lib;
         in with commonDeps { pkgs = nixpkgsCross; }; nixpkgsCross.stdenv.mkDerivation {
           name = "nix-super-${version}";
 
@@ -662,7 +671,11 @@
           nativeBuildInputs = nativeBuildDeps;
           buildInputs = buildDeps ++ propagatedDeps;
 
-          configureFlags = [ "--sysconfdir=/etc" "--disable-doc-gen" ];
+          configureFlags = [
+            "CXXFLAGS=-I${lib.getDev nixpkgsCross.rapidcheck}/extras/gtest/include"
+            "--sysconfdir=/etc"
+            "--disable-doc-gen"
+          ];
 
           enableParallelBuilding = true;
 
