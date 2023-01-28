@@ -48,7 +48,6 @@ struct CmdSearch : SourceExprCommand, MixJSON
             throw UsageError("'--installable' cannot be used together with '--file' or '--expr'");
         }
 
-        expectArgs("args", &res);
         expectArgs("regex", &res);
         addFlag(Flag {
             .longName = "exclude",
