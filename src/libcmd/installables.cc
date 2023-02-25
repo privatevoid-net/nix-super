@@ -1,5 +1,8 @@
 #include "globals.hh"
 #include "installables.hh"
+#include "installable-derived-path.hh"
+#include "installable-attr-path.hh"
+#include "installable-flake.hh"
 #include "outputs-spec.hh"
 #include "util.hh"
 #include "command.hh"
@@ -159,7 +162,7 @@ void MixFlakeOptions::completionHook()
         completeFlakeInput(*prefix);
 }
 
-SourceExprCommand::SourceExprCommand(bool supportReadOnlyMode)
+SourceExprCommand::SourceExprCommand()
 {
     addFlag({
         .longName = "file",
@@ -180,13 +183,6 @@ SourceExprCommand::SourceExprCommand(bool supportReadOnlyMode)
         .category = installablesCategory,
         .labels = {"expr"},
         .handler = {&expr}
-    });
-
-    addFlag({
-        .longName = "derivation",
-        .description = "Operate on the [store derivation](../../glossary.md#gloss-store-derivation) rather than its outputs.",
-        .category = installablesCategory,
-        .handler = {&operateOn, OperateOn::Derivation},
     });
 
     addFlag({
@@ -236,17 +232,18 @@ SourceExprCommand::SourceExprCommand(bool supportReadOnlyMode)
         .labels = {"expr"},
         .handler = {&installableWithPackages},
     });
+}
 
-    if (supportReadOnlyMode) {
-        addFlag({
-            .longName = "read-only",
-            .description =
-                "Do not instantiate each evaluated derivation. "
-                "This improves performance, but can cause errors when accessing "
-                "store paths of derivations during evaluation.",
-            .handler = {&readOnlyMode, true},
-        });
-    }
+MixReadOnlyOption::MixReadOnlyOption()
+{
+    addFlag({
+        .longName = "read-only",
+        .description =
+            "Do not instantiate each evaluated derivation. "
+            "This improves performance, but can cause errors when accessing "
+            "store paths of derivations during evaluation.",
+        .handler = {&settings.readOnlyMode, true},
+    });
 }
 
 Strings SourceExprCommand::getDefaultFlakeAttrPaths()
@@ -455,10 +452,9 @@ Installable::getCursors(EvalState & state)
 ref<eval_cache::AttrCursor>
 Installable::getCursor(EvalState & state)
 {
-    auto cursors = getCursors(state);
-    if (cursors.empty())
-        throw Error("cannot find flake attribute '%s'", what());
-    return cursors[0];
+    /* Although getCursors should return at least one element, in case it doesn't,
+       bound check to avoid an undefined behavior for vector[0] */
+    return getCursors(state).at(0);
 }
 
 static StorePath getDeriver(
@@ -471,143 +467,6 @@ static StorePath getDeriver(
         throw Error("'%s' does not have a known deriver", i.what());
     // FIXME: use all derivers?
     return *derivers.begin();
-}
-
-struct InstallableStorePath : Installable
-{
-    ref<Store> store;
-    DerivedPath req;
-
-    InstallableStorePath(ref<Store> store, DerivedPath && req)
-        : store(store), req(std::move(req))
-    { }
-
-    std::string what() const override
-    {
-        return req.to_string(*store);
-    }
-
-    DerivedPathsWithInfo toDerivedPaths() override
-    {
-        return {{.path = req, .info = {} }};
-    }
-
-    std::optional<StorePath> getStorePath() override
-    {
-        return std::visit(overloaded {
-            [&](const DerivedPath::Built & bfd) {
-                return bfd.drvPath;
-            },
-            [&](const DerivedPath::Opaque & bo) {
-                return bo.path;
-            },
-        }, req.raw());
-    }
-};
-
-struct InstallableAttrPath : InstallableValue
-{
-    SourceExprCommand & cmd;
-    RootValue v;
-    std::string attrPath;
-    ExtendedOutputsSpec extendedOutputsSpec;
-
-    InstallableAttrPath(
-        ref<EvalState> state,
-        SourceExprCommand & cmd,
-        Value * v,
-        const std::string & attrPath,
-        ExtendedOutputsSpec extendedOutputsSpec)
-        : InstallableValue(state)
-        , cmd(cmd)
-        , v(allocRootValue(v))
-        , attrPath(attrPath)
-        , extendedOutputsSpec(std::move(extendedOutputsSpec))
-    { }
-
-    std::string what() const override { return attrPath; }
-
-    std::pair<Value *, PosIdx> toValue(EvalState & state) override
-    {
-        auto [vRes, pos] = findAlongAttrPath(state, attrPath, *cmd.getAutoArgs(state), **v);
-        state.forceValue(*vRes, pos);
-        return {vRes, pos};
-    }
-
-    DerivedPathsWithInfo toDerivedPaths() override
-    {
-        auto v = toValue(*state).first;
-
-        Bindings & autoArgs = *cmd.getAutoArgs(*state);
-
-        DrvInfos drvInfos;
-        getDerivations(*state, *v, "", autoArgs, drvInfos, false);
-
-        // Backward compatibility hack: group results by drvPath. This
-        // helps keep .all output together.
-        std::map<StorePath, OutputsSpec> byDrvPath;
-
-        for (auto & drvInfo : drvInfos) {
-            auto drvPath = drvInfo.queryDrvPath();
-            if (!drvPath)
-                throw Error("'%s' is not a derivation", what());
-
-            auto newOutputs = std::visit(overloaded {
-                [&](const ExtendedOutputsSpec::Default & d) -> OutputsSpec {
-                    std::set<std::string> outputsToInstall;
-                    for (auto & output : drvInfo.queryOutputs(false, true))
-                        outputsToInstall.insert(output.first);
-                    return OutputsSpec::Names { std::move(outputsToInstall) };
-                },
-                [&](const ExtendedOutputsSpec::Explicit & e) -> OutputsSpec {
-                    return e;
-                },
-            }, extendedOutputsSpec.raw());
-
-            auto [iter, didInsert] = byDrvPath.emplace(*drvPath, newOutputs);
-
-            if (!didInsert)
-                iter->second = iter->second.union_(newOutputs);
-        }
-
-        DerivedPathsWithInfo res;
-        for (auto & [drvPath, outputs] : byDrvPath)
-            res.push_back({
-                .path = DerivedPath::Built {
-                    .drvPath = drvPath,
-                    .outputs = outputs,
-                },
-            });
-
-        return res;
-    }
-};
-
-std::vector<std::string> InstallableFlake::getActualAttrPaths()
-{
-    std::vector<std::string> res;
-
-    for (auto & prefix : prefixes)
-        res.push_back(prefix + *attrPaths.begin());
-
-    for (auto & s : attrPaths)
-        res.push_back(s);
-
-    return res;
-}
-
-Value * InstallableFlake::getFlakeOutputs(EvalState & state, const flake::LockedFlake & lockedFlake)
-{
-    auto vFlake = state.allocValue();
-
-    callFlake(state, lockedFlake, *vFlake);
-
-    auto aOutputs = vFlake->attrs->get(state.symbols.create("outputs"));
-    assert(aOutputs);
-
-    state.forceValue(*aOutputs->value, [&]() { return aOutputs->value->determinePos(noPos); });
-
-    return aOutputs->value;
 }
 
 ref<eval_cache::EvalCache> openEvalCache(
@@ -639,6 +498,8 @@ ref<eval_cache::EvalCache> openEvalCache(
         });
 }
 
+/*
+<<<<<<< HEAD
 static std::string showAttrPaths(const std::vector<std::string> & paths)
 {
     std::string s;
@@ -837,7 +698,7 @@ FlakeRef InstallableFlake::nixpkgsFlakeRef() const
 
     return Installable::nixpkgsFlakeRef();
 }
-
+*/
 Bindings * SourceExprCommand::getOverrideArgs(EvalState & state, ref<Store> store)
 {
     Bindings * res = state.allocBindings(overrideArgs.size());
@@ -872,10 +733,6 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
 {
     std::vector<std::shared_ptr<Installable>> result;
 
-    if (readOnlyMode) {
-        settings.readOnlyMode = true;
-    }
-
     auto modifyInstallable = applyOverrides && ( applyToInstallable
         || installableOverrideAttrs || installableWithPackages || overrideArgs.size() > 0 );
 
@@ -902,10 +759,9 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
 
         for (auto & s : ss) {
             auto [prefix, extendedOutputsSpec] = ExtendedOutputsSpec::parse(s);
-            auto installableAttr = std::make_shared<InstallableAttrPath>(
-                    state, *this, vFile,
-                    prefix == "." ? "" : std::string { prefix },
-                    extendedOutputsSpec);
+            auto installableAttr = std::make_shared<InstallableAttrPath>(InstallableAttrPath::parse(
+                state, *this, vFile, prefix, extendedOutputsSpec
+            ));
             if (modifyInstallable) {
                 auto [v, pos] = installableAttr->toValue(*state);
                 auto vApply = state->allocValue();
@@ -947,10 +803,9 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
                     state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
                 }
                 result.push_back(
-                    std::make_shared<InstallableAttrPath>(
-                        state, *this, vRes,
-                        prefix == "." ? "" : std::string { prefix },
-                        extendedOutputsSpec));
+                    std::make_shared<InstallableAttrPath>(InstallableAttrPath::parse(
+                        state, *this, vRes, prefix, extendedOutputsSpec
+                    )));
             } else {
                 result.push_back(installableAttr);
             }
@@ -965,41 +820,10 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
             auto prefix = std::move(prefix_);
             auto extendedOutputsSpec = std::move(extendedOutputsSpec_);
 
-            auto found = prefix.find('/');
-            if (found != std::string::npos) {
+            if (prefix.find('/') != std::string::npos) {
                 try {
-                    auto derivedPath = std::visit(overloaded {
-                        // If the user did not use ^, we treat the output more liberally.
-                        [&](const ExtendedOutputsSpec::Default &) -> DerivedPath {
-                            // First, we accept a symlink chain or an actual store path.
-                            auto storePath = store->followLinksToStorePath(prefix);
-                            // Second, we see if the store path ends in `.drv` to decide what sort
-                            // of derived path they want.
-                            //
-                            // This handling predates the `^` syntax. The `^*` in
-                            // `/nix/store/hash-foo.drv^*` unambiguously means "do the
-                            // `DerivedPath::Built` case", so plain `/nix/store/hash-foo.drv` could
-                            // also unambiguously mean "do the DerivedPath::Opaque` case".
-                            //
-                            // Issue #7261 tracks reconsidering this `.drv` dispatching.
-                            return storePath.isDerivation()
-                                ? (DerivedPath) DerivedPath::Built {
-                                    .drvPath = std::move(storePath),
-                                    .outputs = OutputsSpec::All {},
-                                }
-                                : (DerivedPath) DerivedPath::Opaque {
-                                    .path = std::move(storePath),
-                                };
-                        },
-                        // If the user did use ^, we just do exactly what is written.
-                        [&](const ExtendedOutputsSpec::Explicit & outputSpec) -> DerivedPath {
-                            return DerivedPath::Built {
-                                .drvPath = store->parseStorePath(prefix),
-                                .outputs = outputSpec,
-                            };
-                        },
-                    }, extendedOutputsSpec.raw());
-                    result.push_back(std::make_shared<InstallableStorePath>(store, std::move(derivedPath)));
+                    result.push_back(std::make_shared<InstallableDerivedPath>(
+                        InstallableDerivedPath::parse(store, prefix, extendedOutputsSpec)));
                     continue;
                 } catch (BadStorePath &) {
                 } catch (...) {
@@ -1067,7 +891,9 @@ std::vector<std::shared_ptr<Installable>> SourceExprCommand::parseInstallables(
                         auto vOverrideFunctor = vOverrideFunctorAttr->value;
                         state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
                     }
-                    result.push_back(std::make_shared<InstallableAttrPath>(state, *this, vRes, "", extendedOutputsSpec));
+                    result.push_back(std::make_shared<InstallableAttrPath>(InstallableAttrPath::parse(
+                        state, *this, vRes, "", extendedOutputsSpec
+                    )));
                 } else {
                     result.push_back(installableFlake);
                 }
@@ -1288,8 +1114,8 @@ void InstallablesCommand::prepare()
     installables = load();
 }
 
-Installables InstallablesCommand::load() {
-    Installables installables;
+Installables InstallablesCommand::load()
+{
     if (_installables.empty() && useDefaultInstallables())
         // FIXME: commands like "nix profile install" should not have a
         // default, probably.
@@ -1299,16 +1125,13 @@ Installables InstallablesCommand::load() {
 
 std::vector<std::string> InstallablesCommand::getFlakesForCompletion()
 {
-    if (_installables.empty()) {
-        if (useDefaultInstallables())
-            return {"."};
-        return {};
-    }
+    if (_installables.empty() && useDefaultInstallables())
+        return {"."};
     return _installables;
 }
 
-InstallableCommand::InstallableCommand(bool supportReadOnlyMode)
-    : SourceExprCommand(supportReadOnlyMode)
+InstallableCommand::InstallableCommand()
+    : SourceExprCommand()
 {
     expectArgs({
         .label = "installable",
