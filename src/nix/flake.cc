@@ -1,4 +1,5 @@
 #include "command.hh"
+#include "installable-flake.hh"
 #include "common-args.hh"
 #include "shared.hh"
 #include "eval.hh"
@@ -655,6 +656,21 @@ struct CmdFlakeCheck : FlakeCommand
                             }
                         }
 
+                        else if (
+                            name == "lib"
+                            || name == "darwinConfigurations"
+                            || name == "darwinModules"
+                            || name == "flakeModule"
+                            || name == "flakeModules"
+                            || name == "herculesCI"
+                            || name == "homeConfigurations"
+                            || name == "nixopsConfigurations"
+                            )
+                            // Known but unchecked community attribute
+                            ;
+
+                        else
+                            warn("unknown flake output '%s'", name);
 
                     } catch (Error & e) {
                         e.addTrace(resolve(pos), hintfmt("while checking flake output '%s'", name));
@@ -951,7 +967,7 @@ struct CmdFlakeArchive : FlakeCommand, MixJSON, MixDryRun
 struct CmdFlakeShow : FlakeCommand, MixJSON
 {
     bool showLegacy = false;
-    bool showForeign = false;
+    bool showAllSystems = false;
 
     CmdFlakeShow()
     {
@@ -961,9 +977,9 @@ struct CmdFlakeShow : FlakeCommand, MixJSON
             .handler = {&showLegacy, true}
         });
         addFlag({
-            .longName = "foreign",
-            .description = "Show the contents of outputs for foreign systems.",
-            .handler = {&showForeign, true}
+            .longName = "all-systems",
+            .description = "Show the contents of outputs for all systems.",
+            .handler = {&showAllSystems, true}
         });
     }
 
@@ -986,6 +1002,61 @@ struct CmdFlakeShow : FlakeCommand, MixJSON
         auto state = getEvalState();
         auto flake = std::make_shared<LockedFlake>(lockFlake());
         auto localSystem = std::string(settings.thisSystem.get());
+
+        std::function<bool(
+            eval_cache::AttrCursor & visitor,
+            const std::vector<Symbol> &attrPath,
+            const Symbol &attr)> hasContent;
+
+        // For frameworks it's important that structures are as lazy as possible
+        // to prevent infinite recursions, performance issues and errors that
+        // aren't related to the thing to evaluate. As a consequence, they have
+        // to emit more attributes than strictly (sic) necessary.
+        // However, these attributes with empty values are not useful to the user
+        // so we omit them.
+        hasContent = [&](
+            eval_cache::AttrCursor & visitor,
+            const std::vector<Symbol> &attrPath,
+            const Symbol &attr) -> bool
+        {
+            auto attrPath2(attrPath);
+            attrPath2.push_back(attr);
+            auto attrPathS = state->symbols.resolve(attrPath2);
+            const auto & attrName = state->symbols[attr];
+
+            auto visitor2 = visitor.getAttr(attrName);
+
+            if ((attrPathS[0] == "apps"
+                    || attrPathS[0] == "checks"
+                    || attrPathS[0] == "devShells"
+                    || attrPathS[0] == "legacyPackages"
+                    || attrPathS[0] == "packages")
+                && (attrPathS.size() == 1 || attrPathS.size() == 2)) {
+                for (const auto &subAttr : visitor2->getAttrs()) {
+                    if (hasContent(*visitor2, attrPath2, subAttr)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            if ((attrPathS.size() == 1)
+                && (attrPathS[0] == "formatter"
+                    || attrPathS[0] == "nixosConfigurations"
+                    || attrPathS[0] == "nixosModules"
+                    || attrPathS[0] == "overlays"
+                    )) {
+                for (const auto &subAttr : visitor2->getAttrs()) {
+                    if (hasContent(*visitor2, attrPath2, subAttr)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            // If we don't recognize it, it's probably content
+            return true;
+        };
 
         std::function<nlohmann::json(
             eval_cache::AttrCursor & visitor,
@@ -1012,7 +1083,12 @@ struct CmdFlakeShow : FlakeCommand, MixJSON
                 {
                     if (!json)
                         logger->cout("%s", headerPrefix);
-                    auto attrs = visitor.getAttrs();
+                    std::vector<Symbol> attrs;
+                    for (const auto &attr : visitor.getAttrs()) {
+                        if (hasContent(visitor, attrPath, attr))
+                            attrs.push_back(attr);
+                    }
+
                     for (const auto & [i, attr] : enumerate(attrs)) {
                         const auto & attrName = state->symbols[attr];
                         bool last = i + 1 == attrs.size();
@@ -1076,11 +1152,11 @@ struct CmdFlakeShow : FlakeCommand, MixJSON
                     || (attrPath.size() == 3 && (attrPathS[0] == "checks" || attrPathS[0] == "packages" || attrPathS[0] == "devShells"))
                     )
                 {
-                    if (!showForeign && std::string(attrPathS[1]) != localSystem) {
+                    if (!showAllSystems && std::string(attrPathS[1]) != localSystem) {
                         if (!json)
-                            logger->cout(fmt("%s " ANSI_WARNING "omitted" ANSI_NORMAL " (use '--foreign' to show)", headerPrefix));
+                            logger->cout(fmt("%s " ANSI_WARNING "omitted" ANSI_NORMAL " (use '--all-systems' to show)", headerPrefix));
                         else {
-                            logger->warn(fmt("%s omitted (use '--foreign' to show)", concatStringsSep(".", attrPathS)));
+                            logger->warn(fmt("%s omitted (use '--all-systems' to show)", concatStringsSep(".", attrPathS)));
                         }
                     } else {
                         if (visitor.isDerivation())
@@ -1105,6 +1181,12 @@ struct CmdFlakeShow : FlakeCommand, MixJSON
                             logger->cout(fmt("%s " ANSI_WARNING "omitted" ANSI_NORMAL " (use '--legacy' to show)", headerPrefix));
                         else {
                             logger->warn(fmt("%s omitted (use '--legacy' to show)", concatStringsSep(".", attrPathS)));
+                        }
+                    } else if (!showAllSystems && std::string(attrPathS[1]) != localSystem) {
+                        if (!json)
+                            logger->cout(fmt("%s " ANSI_WARNING "omitted" ANSI_NORMAL " (use '--all-systems' to show)", headerPrefix));
+                        else {
+                            logger->warn(fmt("%s omitted (use '--all-systems' to show)", concatStringsSep(".", attrPathS)));
                         }
                     } else {
                         if (visitor.isDerivation())

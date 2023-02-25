@@ -1,4 +1,5 @@
 #include "command.hh"
+#include "installable-flake.hh"
 #include "local-fs-store.hh"
 #include "progress-bar.hh"
 #include "shared.hh"
