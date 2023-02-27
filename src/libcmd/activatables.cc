@@ -1,4 +1,5 @@
 #include "command.hh"
+#include "installable-flake.hh"
 #include "progress-bar.hh"
 
 using namespace nix;
