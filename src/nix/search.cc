@@ -1,4 +1,4 @@
-#include "command.hh"
+#include "command-installable-value.hh"
 #include "globals.hh"
 #include "eval.hh"
 #include "eval-inline.hh"
@@ -85,7 +85,7 @@ struct CmdSearch : SourceExprCommand, MixJSON
         settings.readOnlyMode = true;
         evalSettings.enableImportFromDerivation.setDefault(false);
 
-        auto installable = parseInstallable(store, (file || expr) ? "" : _installable);
+        auto installable = InstallableValue::require(parseInstallable(store, (file || expr) ? "" : _installable));
 
         // Empty search string should match all packages
         // Use "^" here instead of ".*" due to differences in resulting highlighting
@@ -217,9 +217,8 @@ struct CmdSearch : SourceExprCommand, MixJSON
         for (auto & cursor : installable->getCursors(*state))
             visit(*cursor, cursor->getAttrPath(), true);
 
-        if (json) {
-            std::cout << jsonOut->dump() << std::endl;
-        }
+        if (json)
+            logger->cout("%s", *jsonOut);
 
         if (!json && !results)
             throw Error("no results for the given search term(s)!");

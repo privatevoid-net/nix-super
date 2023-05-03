@@ -28,9 +28,9 @@
 
 namespace nix {
 
-std::shared_ptr<Installable> SourceExprCommand::modifyInstallable (
+ref<Installable> SourceExprCommand::modifyInstallable (
     ref<Store> store, ref<EvalState> state,
-    std::shared_ptr<Installable> installable,
+    ref<InstallableValue> installable,
     std::string_view installableName,
     std::string_view prefix, ExtendedOutputsSpec extendedOutputsSpec
 )
@@ -41,7 +41,7 @@ std::shared_ptr<Installable> SourceExprCommand::modifyInstallable (
     auto overrideSet = getOverrideArgs(*state, store);
 
     if (applyToInstallable) {
-        state->eval(state->parseExprFromString(*applyToInstallable, absPath(".")), *vApply);
+        state->eval(state->parseExprFromString(*applyToInstallable, state->rootPath(CanonPath::fromCwd())), *vApply);
         state->callFunction(*vApply, *v, *vRes, noPos);
     } else if (overrideSet->size() > 0) {
         Value * overrideValues = state->allocValue();
@@ -56,7 +56,7 @@ std::shared_ptr<Installable> SourceExprCommand::modifyInstallable (
         auto vOverrideFunctor = vOverrideFunctorAttr->value;
         state->callFunction(*vOverrideFunctor, *overrideValues, *vRes, noPos);
     } else if (installableOverrideAttrs) {
-        state->eval(state->parseExprFromString(fmt("old: with old; %s",*installableOverrideAttrs), absPath(".")), *vApply);
+        state->eval(state->parseExprFromString(fmt("old: with old; %s",*installableOverrideAttrs), state->rootPath(CanonPath::fromCwd())), *vApply);
         auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("overrideAttrs"));
         if (!vOverrideFunctorAttr) {
             throw Error("%s is not overrideAttrs-capable", installableName);
@@ -64,7 +64,7 @@ std::shared_ptr<Installable> SourceExprCommand::modifyInstallable (
         auto vOverrideFunctor = vOverrideFunctorAttr->value;
         state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
     } else if (installableWithPackages) {
-        state->eval(state->parseExprFromString(fmt("ps: with ps; %s",*installableWithPackages), absPath(".")), *vApply);
+        state->eval(state->parseExprFromString(fmt("ps: with ps; %s",*installableWithPackages), state->rootPath(CanonPath::fromCwd())), *vApply);
         auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("withPackages"));
         if (!vOverrideFunctorAttr) {
             throw Error("%s cannot be extended with additional packages", installableName);
@@ -73,7 +73,7 @@ std::shared_ptr<Installable> SourceExprCommand::modifyInstallable (
         state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
     }
     return
-        std::make_shared<InstallableAttrPath>(InstallableAttrPath::parse(
+        make_ref<InstallableAttrPath>(InstallableAttrPath::parse(
             state, *this, vRes, prefix, extendedOutputsSpec
         ));
 }

@@ -33,12 +33,11 @@ ActivatableBuildCommand<ActivatableCommand>::ActivatableBuildCommand()
 };
 
 template<class ActivatableCommand>
-void ActivatableBuildCommand<ActivatableCommand>::run(nix::ref<Store> store)
+void ActivatableBuildCommand<ActivatableCommand>::runActivatable(ref<Store> store, ref<Installable> installable)
 {
-    auto installableFlake = std::dynamic_pointer_cast<InstallableFlake>(ActivatableCommand::installable);
     if (dryRun) {
         std::vector<std::shared_ptr<Installable>> installableContext;
-        installableContext.emplace_back(ActivatableCommand::installable);
+        installableContext.emplace_back(installable);
         std::vector<DerivedPath> pathsToBuild;
 
         for (auto & i : installableContext) {
@@ -50,7 +49,7 @@ void ActivatableBuildCommand<ActivatableCommand>::run(nix::ref<Store> store)
         return;
     }
 
-    auto out = ActivatableCommand::buildActivatable(store);
+    auto out = ActivatableCommand::buildActivatable(store, installable);
 
     if (outLink != "") {
         if (auto store2 = store.dynamic_pointer_cast<LocalFSStore>()) {

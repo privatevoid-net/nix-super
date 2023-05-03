@@ -8,12 +8,12 @@ ActivatableCommand::ActivatableCommand(std::string activationPackageAttrPath)
     : activationPackageAttrPath(activationPackageAttrPath)
 { }
 
-void ActivatableCommand::prepare() {
-    InstallableCommand::prepare();
-    auto installableFlake = std::dynamic_pointer_cast<InstallableFlake>(installable);
+void ActivatableCommand::run(ref<Store> store, ref<Installable> installable) {
+    auto _installable = installable;
+    auto installableFlake = installable.dynamic_pointer_cast<InstallableFlake>();;
     if (installableFlake) {
         auto fragment = *installableFlake->attrPaths.begin();
-        installable = std::make_shared<InstallableFlake>(
+        auto _installable = std::make_shared<InstallableFlake>(
                 this,
                 getEvalState(),
                 std::move(installableFlake->flakeRef),
@@ -24,11 +24,11 @@ void ActivatableCommand::prepare() {
                 installableFlake->lockFlags
             );
     }
+    runActivatable(store, _installable);
 }
 
-StorePath ActivatableCommand::buildActivatable(nix::ref<nix::Store> store, bool dryRun) {
-    auto installableFlake = std::dynamic_pointer_cast<InstallableFlake>(installable);
-    std::vector<std::shared_ptr<Installable>> installableContext;
+StorePath ActivatableCommand::buildActivatable(nix::ref<nix::Store> store, ref<Installable> installable, bool dryRun) {
+    std::vector<ref<Installable>> installableContext;
     installableContext.emplace_back(installable);
     auto buildables = Installable::build(
         getEvalStore(), store,

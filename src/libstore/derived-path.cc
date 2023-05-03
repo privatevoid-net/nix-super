@@ -62,15 +62,31 @@ std::string DerivedPath::Opaque::to_string(const Store & store) const
 std::string DerivedPath::Built::to_string(const Store & store) const
 {
     return store.printStorePath(drvPath)
-        + "!"
+        + '^'
+        + outputs.to_string();
+}
+
+std::string DerivedPath::Built::to_string_legacy(const Store & store) const
+{
+    return store.printStorePath(drvPath)
+        + '!'
         + outputs.to_string();
 }
 
 std::string DerivedPath::to_string(const Store & store) const
 {
-    return std::visit(
-        [&](const auto & req) { return req.to_string(store); },
-        this->raw());
+    return std::visit(overloaded {
+        [&](const DerivedPath::Built & req) { return req.to_string(store); },
+        [&](const DerivedPath::Opaque & req) { return req.to_string(store); },
+    }, this->raw());
+}
+
+std::string DerivedPath::to_string_legacy(const Store & store) const
+{
+    return std::visit(overloaded {
+        [&](const DerivedPath::Built & req) { return req.to_string_legacy(store); },
+        [&](const DerivedPath::Opaque & req) { return req.to_string(store); },
+    }, this->raw());
 }
 
 
@@ -87,12 +103,22 @@ DerivedPath::Built DerivedPath::Built::parse(const Store & store, std::string_vi
     };
 }
 
-DerivedPath DerivedPath::parse(const Store & store, std::string_view s)
+static inline DerivedPath parseWith(const Store & store, std::string_view s, std::string_view separator)
 {
-    size_t n = s.find("!");
+    size_t n = s.find(separator);
     return n == s.npos
         ? (DerivedPath) DerivedPath::Opaque::parse(store, s)
         : (DerivedPath) DerivedPath::Built::parse(store, s.substr(0, n), s.substr(n + 1));
+}
+
+DerivedPath DerivedPath::parse(const Store & store, std::string_view s)
+{
+	return parseWith(store, s, "^");
+}
+
+DerivedPath DerivedPath::parseLegacy(const Store & store, std::string_view s)
+{
+	return parseWith(store, s, "!");
 }
 
 RealisedPath::Set BuiltPath::toRealisedPaths(Store & store) const
@@ -105,7 +131,7 @@ RealisedPath::Set BuiltPath::toRealisedPaths(Store & store) const
                 auto drvHashes =
                     staticOutputHashes(store, store.readDerivation(p.drvPath));
                 for (auto& [outputName, outputPath] : p.outputs) {
-                    if (settings.isExperimentalFeatureEnabled(
+                    if (experimentalFeatureSettings.isEnabled(
                                 Xp::CaDerivations)) {
                         auto drvOutput = get(drvHashes, outputName);
                         if (!drvOutput)

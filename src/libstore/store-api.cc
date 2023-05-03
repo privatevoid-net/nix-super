@@ -7,6 +7,7 @@
 #include "nar-info-disk-cache.hh"
 #include "thread-pool.hh"
 #include "url.hh"
+#include "references.hh"
 #include "archive.hh"
 #include "callback.hh"
 #include "remote-store.hh"
@@ -98,10 +99,12 @@ StorePath Store::followLinksToStorePath(std::string_view path) const
        silly, but it's done that way for compatibility).  <id> is the
        name of the output (usually, "out").
 
-   <h2> = base-16 representation of a SHA-256 hash of:
+   <h2> = base-16 representation of a SHA-256 hash of <s2>
+
+   <s2> =
      if <type> = "text:...":
        the string written to the resulting store path
-     if <type> = "source":
+     if <type> = "source:...":
        the serialisation of the path from which this store path is
        copied, as returned by hashPath()
      if <type> = "output:<id>":
@@ -162,63 +165,63 @@ StorePath Store::makeOutputPath(std::string_view id,
 }
 
 
+/* Stuff the references (if any) into the type.  This is a bit
+   hacky, but we can't put them in, say, <s2> (per the grammar above)
+   since that would be ambiguous. */
 static std::string makeType(
     const Store & store,
     std::string && type,
-    const StorePathSet & references,
-    bool hasSelfReference = false)
+    const StoreReferences & references)
 {
-    for (auto & i : references) {
+    for (auto & i : references.others) {
         type += ":";
         type += store.printStorePath(i);
     }
-    if (hasSelfReference) type += ":self";
+    if (references.self) type += ":self";
     return std::move(type);
 }
 
 
-StorePath Store::makeFixedOutputPath(
-    FileIngestionMethod method,
-    const Hash & hash,
-    std::string_view name,
-    const StorePathSet & references,
-    bool hasSelfReference) const
+StorePath Store::makeFixedOutputPath(std::string_view name, const FixedOutputInfo & info) const
 {
-    if (hash.type == htSHA256 && method == FileIngestionMethod::Recursive) {
-        return makeStorePath(makeType(*this, "source", references, hasSelfReference), hash, name);
+    if (info.hash.hash.type == htSHA256 && info.hash.method == FileIngestionMethod::Recursive) {
+        return makeStorePath(makeType(*this, "source", info.references), info.hash.hash, name);
     } else {
-        assert(references.empty());
+        assert(info.references.size() == 0);
         return makeStorePath("output:out",
             hashString(htSHA256,
                 "fixed:out:"
-                + makeFileIngestionPrefix(method)
-                + hash.to_string(Base16, true) + ":"),
+                + makeFileIngestionPrefix(info.hash.method)
+                + info.hash.hash.to_string(Base16, true) + ":"),
             name);
     }
 }
 
-StorePath Store::makeFixedOutputPathFromCA(std::string_view name, ContentAddress ca,
-    const StorePathSet & references, bool hasSelfReference) const
+
+StorePath Store::makeTextPath(std::string_view name, const TextInfo & info) const
+{
+    assert(info.hash.hash.type == htSHA256);
+    return makeStorePath(
+        makeType(*this, "text", StoreReferences {
+            .others = info.references,
+            .self = false,
+        }),
+        info.hash.hash,
+        name);
+}
+
+
+StorePath Store::makeFixedOutputPathFromCA(std::string_view name, const ContentAddressWithReferences & ca) const
 {
     // New template
     return std::visit(overloaded {
-        [&](const TextHash & th) {
-            return makeTextPath(name, th.hash, references);
+        [&](const TextInfo & ti) {
+            return makeTextPath(name, ti);
         },
-        [&](const FixedOutputHash & fsh) {
-            return makeFixedOutputPath(fsh.method, fsh.hash, name, references, hasSelfReference);
+        [&](const FixedOutputInfo & foi) {
+            return makeFixedOutputPath(name, foi);
         }
-    }, ca);
-}
-
-StorePath Store::makeTextPath(std::string_view name, const Hash & hash,
-    const StorePathSet & references) const
-{
-    assert(hash.type == htSHA256);
-    /* Stuff the references (if any) into the type.  This is a bit
-       hacky, but we can't put them in `s' since that would be
-       ambiguous. */
-    return makeStorePath(makeType(*this, "text", references), hash, name);
+    }, ca.raw);
 }
 
 
@@ -228,7 +231,14 @@ std::pair<StorePath, Hash> Store::computeStorePathForPath(std::string_view name,
     Hash h = method == FileIngestionMethod::Recursive
         ? hashPath(hashAlgo, srcPath, filter).first
         : hashFile(hashAlgo, srcPath);
-    return std::make_pair(makeFixedOutputPath(method, h, name), h);
+    FixedOutputInfo caInfo {
+        .hash = {
+            .method = method,
+            .hash = h,
+        },
+        .references = {},
+    };
+    return std::make_pair(makeFixedOutputPath(name, caInfo), h);
 }
 
 
@@ -237,7 +247,10 @@ StorePath Store::computeStorePathForText(
     std::string_view s,
     const StorePathSet & references) const
 {
-    return makeTextPath(name, hashString(htSHA256, s), references);
+    return makeTextPath(name, TextInfo {
+        { .hash = hashString(htSHA256, s) },
+        references,
+    });
 }
 
 
@@ -425,11 +438,18 @@ ValidPathInfo Store::addToStoreSlow(std::string_view name, const Path & srcPath,
         throw Error("hash mismatch for '%s'", srcPath);
 
     ValidPathInfo info {
-        makeFixedOutputPath(method, hash, name),
+        *this,
+        name,
+        FixedOutputInfo {
+            .hash = {
+                .method = method,
+                .hash = hash,
+            },
+            .references = {},
+        },
         narHash,
     };
     info.narSize = narSize;
-    info.ca = FixedOutputHash { .method = method, .hash = hash };
 
     if (!isValidPath(info.path)) {
         auto source = sinkToSource([&](Sink & scratchpadSink) {
@@ -445,10 +465,10 @@ StringSet StoreConfig::getDefaultSystemFeatures()
 {
     auto res = settings.systemFeatures.get();
 
-    if (settings.isExperimentalFeatureEnabled(Xp::CaDerivations))
+    if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
         res.insert("ca-derivations");
 
-    if (settings.isExperimentalFeatureEnabled(Xp::RecursiveNix))
+    if (experimentalFeatureSettings.isEnabled(Xp::RecursiveNix))
         res.insert("recursive-nix");
 
     return res;
@@ -506,6 +526,57 @@ StorePathSet Store::queryDerivationOutputs(const StorePath & path)
     }
     return outputPaths;
 }
+
+
+void Store::querySubstitutablePathInfos(const StorePathCAMap & paths, SubstitutablePathInfos & infos)
+{
+    if (!settings.useSubstitutes) return;
+    for (auto & sub : getDefaultSubstituters()) {
+        for (auto & path : paths) {
+            if (infos.count(path.first))
+                // Choose first succeeding substituter.
+                continue;
+
+            auto subPath(path.first);
+
+            // Recompute store path so that we can use a different store root.
+            if (path.second) {
+                subPath = makeFixedOutputPathFromCA(
+                    path.first.name(),
+                    ContentAddressWithReferences::withoutRefs(*path.second));
+                if (sub->storeDir == storeDir)
+                    assert(subPath == path.first);
+                if (subPath != path.first)
+                    debug("replaced path '%s' with '%s' for substituter '%s'", printStorePath(path.first), sub->printStorePath(subPath), sub->getUri());
+            } else if (sub->storeDir != storeDir) continue;
+
+            debug("checking substituter '%s' for path '%s'", sub->getUri(), sub->printStorePath(subPath));
+            try {
+                auto info = sub->queryPathInfo(subPath);
+
+                if (sub->storeDir != storeDir && !(info->isContentAddressed(*sub) && info->references.empty()))
+                    continue;
+
+                auto narInfo = std::dynamic_pointer_cast<const NarInfo>(
+                    std::shared_ptr<const ValidPathInfo>(info));
+                infos.insert_or_assign(path.first, SubstitutablePathInfo{
+                    .deriver = info->deriver,
+                    .references = info->references,
+                    .downloadSize = narInfo ? narInfo->fileSize : 0,
+                    .narSize = info->narSize,
+                });
+            } catch (InvalidPath &) {
+            } catch (SubstituterDisabled &) {
+            } catch (Error & e) {
+                if (settings.tryFallback)
+                    logError(e.info());
+                else
+                    throw;
+            }
+        }
+    }
+}
+
 
 bool Store::isValidPath(const StorePath & storePath)
 {
@@ -790,13 +861,13 @@ std::string Store::makeValidityRegistration(const StorePathSet & paths,
 
         if (showHash) {
             s += info->narHash.to_string(Base16, false) + "\n";
-            s += (format("%1%\n") % info->narSize).str();
+            s += fmt("%1%\n", info->narSize);
         }
 
         auto deriver = showDerivers && info->deriver ? printStorePath(*info->deriver) : "";
         s += deriver + "\n";
 
-        s += (format("%1%\n") % info->references.size()).str();
+        s += fmt("%1%\n", info->references.size());
 
         for (auto & j : info->references)
             s += printStorePath(j) + "\n";
@@ -855,6 +926,7 @@ json Store::pathInfoToJSON(const StorePathSet & storePaths,
             auto info = queryPathInfo(storePath);
 
             jsonPath["path"] = printStorePath(info->path);
+            jsonPath["valid"] = true;
             jsonPath["narHash"] = info->narHash.to_string(hashBase, true);
             jsonPath["narSize"] = info->narSize;
 
@@ -976,7 +1048,9 @@ void copyStorePath(
     // recompute store path on the chance dstStore does it differently
     if (info->ca && info->references.empty()) {
         auto info2 = make_ref<ValidPathInfo>(*info);
-        info2->path = dstStore.makeFixedOutputPathFromCA(info->path.name(), *info->ca);
+        info2->path = dstStore.makeFixedOutputPathFromCA(
+            info->path.name(),
+            info->contentAddressWithReferences().value());
         if (dstStore.storeDir == srcStore.storeDir)
             assert(info->path == info2->path);
         info = info2;
@@ -1016,7 +1090,7 @@ std::map<StorePath, StorePath> copyPaths(
     for (auto & path : paths) {
         storePaths.insert(path.path());
         if (auto realisation = std::get_if<Realisation>(&path.raw)) {
-            settings.requireExperimentalFeature(Xp::CaDerivations);
+            experimentalFeatureSettings.require(Xp::CaDerivations);
             toplevelRealisations.insert(*realisation);
         }
     }
@@ -1088,7 +1162,9 @@ std::map<StorePath, StorePath> copyPaths(
         auto storePathForSrc = currentPathInfo.path;
         auto storePathForDst = storePathForSrc;
         if (currentPathInfo.ca && currentPathInfo.references.empty()) {
-            storePathForDst = dstStore.makeFixedOutputPathFromCA(storePathForSrc.name(), *currentPathInfo.ca);
+            storePathForDst = dstStore.makeFixedOutputPathFromCA(
+                currentPathInfo.path.name(),
+                currentPathInfo.contentAddressWithReferences().value());
             if (dstStore.storeDir == srcStore.storeDir)
                 assert(storePathForDst == storePathForSrc);
             if (storePathForDst != storePathForSrc)
@@ -1099,6 +1175,9 @@ std::map<StorePath, StorePath> copyPaths(
         }
         return storePathForDst;
     };
+
+    // total is accessed by each copy, which are each handled in separate threads
+    std::atomic<uint64_t> total = 0;
 
     for (auto & missingPath : sortedMissing) {
         auto info = srcStore.queryPathInfo(missingPath);
@@ -1120,7 +1199,13 @@ std::map<StorePath, StorePath> copyPaths(
                 {storePathS, srcUri, dstUri});
             PushActivity pact(act.id);
 
-            srcStore.narFromPath(missingPath, sink);
+            LambdaSink progressSink([&](std::string_view data) {
+                total += data.size();
+                act.progress(total, info->narSize);
+            });
+            TeeSink tee { sink, progressSink };
+
+            srcStore.narFromPath(missingPath, tee);
         });
         pathsToCopy.push_back(std::pair{infoForDst, std::move(source)});
     }
@@ -1241,7 +1326,7 @@ std::optional<StorePath> Store::getBuildDerivationPath(const StorePath & path)
         }
     }
 
-    if (!settings.isExperimentalFeatureEnabled(Xp::CaDerivations) || !isValidPath(path))
+    if (!experimentalFeatureSettings.isEnabled(Xp::CaDerivations) || !isValidPath(path))
         return path;
 
     auto drv = readDerivation(path);

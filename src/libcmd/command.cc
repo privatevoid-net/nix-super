@@ -121,6 +121,8 @@ ref<EvalState> EvalCommand::getEvalState()
             #endif
             ;
 
+        evalState->repair = repair;
+
         if (startReplOnEvalErrors) {
             evalState->debugRepl = &AbstractNixRepl::runSimple;
         };
@@ -165,7 +167,7 @@ BuiltPathsCommand::BuiltPathsCommand(bool recursive)
     });
 }
 
-void BuiltPathsCommand::run(ref<Store> store)
+void BuiltPathsCommand::run(ref<Store> store, Installables && installables)
 {
     BuiltPaths paths;
     if (all) {
@@ -211,7 +213,7 @@ void StorePathsCommand::run(ref<Store> store, BuiltPaths && paths)
     run(store, std::move(sorted));
 }
 
-void StorePathCommand::run(ref<Store> store, std::vector<StorePath> && storePaths)
+void StorePathCommand::run(ref<Store> store, StorePaths && storePaths)
 {
     if (storePaths.size() != 1)
         throw UsageError("this command requires exactly one store path");
@@ -246,7 +248,7 @@ void MixProfile::updateProfile(const BuiltPaths & buildables)
 {
     if (!profile) return;
 
-    std::vector<StorePath> result;
+    StorePaths result;
 
     for (auto & buildable : buildables) {
         std::visit(overloaded {

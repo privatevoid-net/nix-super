@@ -47,9 +47,9 @@ struct HomeActivationCommand : ActivationCommand<HomeCommand>
         : ActivationCommand<HomeCommand>(activationType, selfCommandName)
     { }
 
-    void run(nix::ref<nix::Store> store) override
+    void runActivatable(nix::ref<Store> store, ref<Installable> installable) override
     {
-        auto out = buildActivatable(store);
+        auto out = buildActivatable(store, installable);
         execute(store->printStorePath(out) + "/activate", Strings{});
     }
 };
@@ -114,8 +114,6 @@ struct CmdHome : NixMultiCommand
     {
         if (!command)
             throw UsageError("'nix home' requires a sub-command.");
-        settings.requireExperimentalFeature(Xp::NixCommand);
-        command->second->prepare();
         command->second->run();
     }
 };

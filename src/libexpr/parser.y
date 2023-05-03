@@ -31,7 +31,7 @@ namespace nix {
         EvalState & state;
         SymbolTable & symbols;
         Expr * result;
-        Path basePath;
+        SourcePath basePath;
         PosTable::Origin origin;
         std::optional<ErrorInfo> error;
     };
@@ -471,7 +471,7 @@ expr_simple
            new ExprString(std::move(path))});
   }
   | URI {
-      static bool noURLLiterals = settings.isExperimentalFeatureEnabled(Xp::NoUrlLiterals);
+      static bool noURLLiterals = experimentalFeatureSettings.isEnabled(Xp::NoUrlLiterals);
       if (noURLLiterals)
           throw ParseError({
               .msg = hintfmt("URL literals are disabled"),
@@ -511,7 +511,7 @@ string_parts_interpolated
 
 path_start
   : PATH {
-    Path path(absPath({$1.p, $1.l}, data->basePath));
+    Path path(absPath({$1.p, $1.l}, data->basePath.path.abs()));
     /* add back in the trailing '/' to the first segment */
     if ($1.p[$1.l-1] == '/' && $1.l > 1)
       path += "/";
@@ -653,7 +653,7 @@ Expr * EvalState::parse(
     char * text,
     size_t length,
     Pos::Origin origin,
-    Path basePath,
+    const SourcePath & basePath,
     std::shared_ptr<StaticEnv> & staticEnv)
 {
     yyscan_t scanner;
@@ -677,48 +677,36 @@ Expr * EvalState::parse(
 }
 
 
-Path resolveExprPath(Path path)
+SourcePath resolveExprPath(const SourcePath & path)
 {
-    assert(path[0] == '/');
-
-    unsigned int followCount = 0, maxFollow = 1024;
-
     /* If `path' is a symlink, follow it.  This is so that relative
        path references work. */
-    struct stat st;
-    while (true) {
-        // Basic cycle/depth limit to avoid infinite loops.
-        if (++followCount >= maxFollow)
-            throw Error("too many symbolic links encountered while traversing the path '%s'", path);
-        st = lstat(path);
-        if (!S_ISLNK(st.st_mode)) break;
-        path = absPath(readLink(path), dirOf(path));
-    }
+    auto path2 = path.resolveSymlinks();
 
     /* If `path' refers to a directory, append `/default.nix'. */
-    if (S_ISDIR(st.st_mode))
-        path = canonPath(path + "/default.nix");
+    if (path2.lstat().type == InputAccessor::tDirectory)
+        return path2 + "default.nix";
 
-    return path;
+    return path2;
 }
 
 
-Expr * EvalState::parseExprFromFile(const Path & path)
+Expr * EvalState::parseExprFromFile(const SourcePath & path)
 {
     return parseExprFromFile(path, staticBaseEnv);
 }
 
 
-Expr * EvalState::parseExprFromFile(const Path & path, std::shared_ptr<StaticEnv> & staticEnv)
+Expr * EvalState::parseExprFromFile(const SourcePath & path, std::shared_ptr<StaticEnv> & staticEnv)
 {
-    auto buffer = readFile(path);
-    // readFile should have left some extra space for terminators
+    auto buffer = path.readFile();
+    // readFile hopefully have left some extra space for terminators
     buffer.append("\0\0", 2);
-    return parse(buffer.data(), buffer.size(), path, dirOf(path), staticEnv);
+    return parse(buffer.data(), buffer.size(), Pos::Origin(path), path.parent(), staticEnv);
 }
 
 
-Expr * EvalState::parseExprFromString(std::string s_, const Path & basePath, std::shared_ptr<StaticEnv> & staticEnv)
+Expr * EvalState::parseExprFromString(std::string s_, const SourcePath & basePath, std::shared_ptr<StaticEnv> & staticEnv)
 {
     auto s = make_ref<std::string>(std::move(s_));
     s->append("\0\0", 2);
@@ -726,7 +714,7 @@ Expr * EvalState::parseExprFromString(std::string s_, const Path & basePath, std
 }
 
 
-Expr * EvalState::parseExprFromString(std::string s, const Path & basePath)
+Expr * EvalState::parseExprFromString(std::string s, const SourcePath & basePath)
 {
     return parseExprFromString(std::move(s), basePath, staticBaseEnv);
 }
@@ -734,12 +722,12 @@ Expr * EvalState::parseExprFromString(std::string s, const Path & basePath)
 
 Expr * EvalState::parseStdin()
 {
-    //Activity act(*logger, lvlTalkative, format("parsing standard input"));
+    //Activity act(*logger, lvlTalkative, "parsing standard input");
     auto buffer = drainFD(0);
     // drainFD should have left some extra space for terminators
     buffer.append("\0\0", 2);
     auto s = make_ref<std::string>(std::move(buffer));
-    return parse(s->data(), s->size(), Pos::Stdin{.source = s}, absPath("."), staticBaseEnv);
+    return parse(s->data(), s->size(), Pos::Stdin{.source = s}, rootPath(CanonPath::fromCwd()), staticBaseEnv);
 }
 
 
@@ -759,13 +747,13 @@ void EvalState::addToSearchPath(const std::string & s)
 }
 
 
-Path EvalState::findFile(const std::string_view path)
+SourcePath EvalState::findFile(const std::string_view path)
 {
     return findFile(searchPath, path);
 }
 
 
-Path EvalState::findFile(SearchPath & searchPath, const std::string_view path, const PosIdx pos)
+SourcePath EvalState::findFile(SearchPath & searchPath, const std::string_view path, const PosIdx pos)
 {
     for (auto & i : searchPath) {
         std::string suffix;
@@ -781,11 +769,11 @@ Path EvalState::findFile(SearchPath & searchPath, const std::string_view path, c
         auto r = resolveSearchPathElem(i);
         if (!r.first) continue;
         Path res = r.second + suffix;
-        if (pathExists(res)) return canonPath(res);
+        if (pathExists(res)) return CanonPath(canonPath(res));
     }
 
     if (hasPrefix(path, "nix/"))
-        return concatStrings(corepkgsPrefix, path.substr(4));
+        return CanonPath(concatStrings(corepkgsPrefix, path.substr(4)));
 
     debugThrow(ThrownError({
         .msg = hintfmt(evalSettings.pureEval
@@ -818,7 +806,7 @@ std::pair<bool, std::string> EvalState::resolveSearchPathElem(const SearchPathEl
     }
 
     else if (hasPrefix(elem.second, "flake:")) {
-        settings.requireExperimentalFeature(Xp::Flakes);
+        experimentalFeatureSettings.require(Xp::Flakes);
         auto flakeRef = parseFlakeRef(elem.second.substr(6), {}, true, false);
         debug("fetching flake search path element '%s''", elem.second);
         auto storePath = flakeRef.resolve(store).fetchTree(store).first.storePath;
@@ -837,7 +825,7 @@ std::pair<bool, std::string> EvalState::resolveSearchPathElem(const SearchPathEl
         }
     }
 
-    debug(format("resolved search path element '%s' to '%s'") % elem.second % res.second);
+    debug("resolved search path element '%s' to '%s'", elem.second, res.second);
 
     searchPathResolved[elem.second] = res;
     return res;

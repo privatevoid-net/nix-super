@@ -1,7 +1,7 @@
 #pragma once
+///@file
 
-#include "common-args.hh"
-#include "installables.hh"
+#include "installable-value.hh"
 #include "args.hh"
 #include "common-eval-args.hh"
 #include "outputs-spec.hh"
@@ -20,16 +20,20 @@ class EvalState;
 struct Pos;
 class Store;
 
+static constexpr Command::Category catHelp = -1;
 static constexpr Command::Category catSecondary = 100;
 static constexpr Command::Category catUtility = 101;
 static constexpr Command::Category catNixInstallation = 102;
 
-static constexpr auto installablesCategory = "Options that change the interpretation of installables";
+static constexpr auto installablesCategory = "Options that change the interpretation of [installables](@docroot@/command-ref/new-cli/nix.md#installables)";
 
 struct NixMultiCommand : virtual MultiCommand, virtual Command
 {
     nlohmann::json toJSON() override;
 };
+
+// For the overloaded run methods
+#pragma GCC diagnostic ignored "-Woverloaded-virtual"
 
 /* A command that requires a Nix store. */
 struct StoreCommand : virtual Command
@@ -104,19 +108,19 @@ struct SourceExprCommand : virtual Args, MixFlakeOptions
 
     SourceExprCommand();
 
-    std::vector<std::shared_ptr<Installable>> parseInstallables(
-        ref<Store> store, std::vector<std::string> ss,
-        bool applyOverrides = true, bool nestedIsExprOk = true);
-
-    std::shared_ptr<Installable> modifyInstallable(
+    ref<Installable> modifyInstallable(
         ref<Store> store, ref<EvalState> state,
-        std::shared_ptr<Installable> installable,
+        ref<InstallableValue> installable,
         std::string_view installableName,
         std::string_view prefix, ExtendedOutputsSpec extendedOutputsSpec);
 
     Bindings * getOverrideArgs(EvalState & state, ref<Store> store);
 
-    std::shared_ptr<Installable> parseInstallable(
+    Installables parseInstallables(
+        ref<Store> store, std::vector<std::string> ss,
+        bool applyOverrides = true, bool nestedIsExprOk = true);
+
+    ref<Installable> parseInstallable(
         ref<Store> store, const std::string & installable,
         bool applyOverrides = true, bool nestedIsExprOk = true);
 
@@ -132,34 +136,43 @@ struct MixReadOnlyOption : virtual Args
     MixReadOnlyOption();
 };
 
-/* A command that operates on a list of "installables", which can be
-   store paths, attribute paths, Nix expressions, etc. */
-struct InstallablesCommand : virtual Args, SourceExprCommand
+/* Like InstallablesCommand but the installables are not loaded */
+struct RawInstallablesCommand : virtual Args, SourceExprCommand
 {
-    std::vector<std::shared_ptr<Installable>> installables;
+    RawInstallablesCommand();
 
-    InstallablesCommand();
+    virtual void run(ref<Store> store, std::vector<std::string> && rawInstallables) = 0;
 
-    void prepare() override;
-    Installables load();
+    void run(ref<Store> store) override;
 
-    virtual bool useDefaultInstallables() { return true; }
+    // FIXME make const after CmdRepl's override is fixed up
+    virtual void applyDefaultInstallables(std::vector<std::string> & rawInstallables);
+
+    bool readFromStdIn = false;
 
     std::vector<std::string> getFlakesForCompletion() override;
 
-protected:
+private:
 
-    std::vector<std::string> _installables;
+    std::vector<std::string> rawInstallables;
+};
+/* A command that operates on a list of "installables", which can be
+   store paths, attribute paths, Nix expressions, etc. */
+struct InstallablesCommand : RawInstallablesCommand
+{
+    virtual void run(ref<Store> store, Installables && installables) = 0;
+
+    void run(ref<Store> store, std::vector<std::string> && rawInstallables) override;
 };
 
 /* A command that operates on exactly one "installable" */
 struct InstallableCommand : virtual Args, SourceExprCommand
 {
-    std::shared_ptr<Installable> installable;
-
     InstallableCommand();
 
-    void prepare() override;
+    virtual void run(ref<Store> store, ref<Installable> installable) = 0;
+
+    void run(ref<Store> store) override;
 
     std::vector<std::string> getFlakesForCompletion() override
     {
@@ -194,22 +207,18 @@ public:
 
     BuiltPathsCommand(bool recursive = false);
 
-    using StoreCommand::run;
-
     virtual void run(ref<Store> store, BuiltPaths && paths) = 0;
 
-    void run(ref<Store> store) override;
+    void run(ref<Store> store, Installables && installables) override;
 
-    bool useDefaultInstallables() override { return !all; }
+    void applyDefaultInstallables(std::vector<std::string> & rawInstallables) override;
 };
 
 struct StorePathsCommand : public BuiltPathsCommand
 {
     StorePathsCommand(bool recursive = false);
 
-    using BuiltPathsCommand::run;
-
-    virtual void run(ref<Store> store, std::vector<StorePath> && storePaths) = 0;
+    virtual void run(ref<Store> store, StorePaths && storePaths) = 0;
 
     void run(ref<Store> store, BuiltPaths && paths) override;
 };
@@ -217,11 +226,9 @@ struct StorePathsCommand : public BuiltPathsCommand
 /* A command that operates on exactly one store path. */
 struct StorePathCommand : public StorePathsCommand
 {
-    using StorePathsCommand::run;
-
     virtual void run(ref<Store> store, const StorePath & storePath) = 0;
 
-    void run(ref<Store> store, std::vector<StorePath> && storePaths) override;
+    void run(ref<Store> store, StorePaths && storePaths) override;
 };
 
 /* A helper class for registering commands globally. */
@@ -289,8 +296,12 @@ struct ActivatableCommand : public InstallableCommand
 {
     ActivatableCommand(std::string activationPackageAttrPath);
     std::string activationPackageAttrPath;
-    void prepare() override;
-    StorePath buildActivatable(nix::ref<Store> store, bool dryRun = false);
+    StorePath buildActivatable(ref<Store> store, ref<Installable> installable, bool dryRun = false);
+
+    // user entrypoint
+    virtual void runActivatable(ref<Store> store, ref<Installable> installable) = 0;
+
+    void run(ref<Store> store, ref<Installable> installable) override;
 };
 
 template<class ActivatableCommand>
@@ -299,7 +310,7 @@ struct ActivatableBuildCommand : public ActivatableCommand, public MixDryRun
     ActivatableBuildCommand();
     Path outLink = "result";
     bool printOutputPaths = false;
-    void run(nix::ref<Store>) override;
+    void runActivatable(nix::ref<Store>, ref<Installable> installable) override;
 };
 
 /* A command that manages the activation of exactly one "activatable" */

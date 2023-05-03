@@ -54,17 +54,17 @@ static bool haveInternet()
 
 std::string programPath;
 
-struct HelpRequested { };
-
 struct NixArgs : virtual MultiCommand, virtual MixCommonArgs
 {
     bool useNet = true;
     bool refresh = false;
+    bool helpRequested = false;
     bool showVersion = false;
 
     NixArgs() : MultiCommand(RegisterCommand::getCommandsFor({})), MixCommonArgs("nix")
     {
         categories.clear();
+        categories[catHelp] = "Help commands";
         categories[Command::catDefault] = "Main commands";
         categories[catSecondary] = "Infrequently used commands";
         categories[catUtility] = "Utility/scripting commands";
@@ -74,7 +74,7 @@ struct NixArgs : virtual MultiCommand, virtual MixCommonArgs
             .longName = "help",
             .description = "Show usage information.",
             .category = miscCategory,
-            .handler = {[&]() { throw HelpRequested(); }},
+            .handler = {[this]() { this->helpRequested = true; }},
         });
 
         addFlag({
@@ -83,6 +83,7 @@ struct NixArgs : virtual MultiCommand, virtual MixCommonArgs
             .description = "Print full build logs on standard error.",
             .category = loggingCategory,
             .handler = {[&]() { logger->setPrintBuildLogs(true); }},
+            .experimentalFeature = Xp::NixCommand,
         });
 
         addFlag({
@@ -98,6 +99,7 @@ struct NixArgs : virtual MultiCommand, virtual MixCommonArgs
             .description = "Disable substituters and consider all previously downloaded files up-to-date.",
             .category = miscCategory,
             .handler = {[&]() { useNet = false; }},
+            .experimentalFeature = Xp::NixCommand,
         });
 
         addFlag({
@@ -105,6 +107,7 @@ struct NixArgs : virtual MultiCommand, virtual MixCommonArgs
             .description = "Consider all previously downloaded files out-of-date.",
             .category = miscCategory,
             .handler = {[&]() { refresh = true; }},
+            .experimentalFeature = Xp::NixCommand,
         });
     }
 
@@ -124,6 +127,7 @@ struct NixArgs : virtual MultiCommand, virtual MixCommonArgs
         {"optimise-store", {"store", "optimise"}},
         {"ping-store", {"store", "ping"}},
         {"sign-paths", {"store", "sign"}},
+        {"show-derivation", {"derivation", "show"}},
         {"to-base16", {"hash", "to-base16"}},
         {"to-base32", {"hash", "to-base32"}},
         {"to-base64", {"hash", "to-base64"}},
@@ -164,11 +168,29 @@ struct NixArgs : virtual MultiCommand, virtual MixCommonArgs
     {
         commands = RegisterCommand::getCommandsFor({});
     }
+
+    std::string dumpCli()
+    {
+        auto res = nlohmann::json::object();
+
+        res["args"] = toJSON();
+
+        auto stores = nlohmann::json::object();
+        for (auto & implem : *Implementations::registered) {
+            auto storeConfig = implem.getConfig();
+            auto storeName = storeConfig->name();
+            stores[storeName]["doc"] = storeConfig->doc();
+            stores[storeName]["settings"] = storeConfig->toJSON();
+        }
+        res["stores"] = std::move(stores);
+
+        return res.dump();
+    }
 };
 
 /* Render the help for the specified subcommand to stdout using
    lowdown. */
-static void showHelp(std::vector<std::string> subcommand, MultiCommand & toplevel)
+static void showHelp(std::vector<std::string> subcommand, NixArgs & toplevel)
 {
     auto mdName = subcommand.empty() ? "nix" : fmt("nix3-%s", concatStringsSep("-", subcommand));
 
@@ -179,21 +201,21 @@ static void showHelp(std::vector<std::string> subcommand, MultiCommand & topleve
     auto vGenerateManpage = state.allocValue();
     state.eval(state.parseExprFromString(
         #include "generate-manpage.nix.gen.hh"
-        , "/"), *vGenerateManpage);
+        , CanonPath::root), *vGenerateManpage);
 
     auto vUtils = state.allocValue();
     state.cacheFile(
-        "/utils.nix", "/utils.nix",
+        CanonPath("/utils.nix"), CanonPath("/utils.nix"),
         state.parseExprFromString(
             #include "utils.nix.gen.hh"
-            , "/"),
+            , CanonPath::root),
         *vUtils);
 
-    auto attrs = state.buildBindings(16);
-    attrs.alloc("toplevel").mkString(toplevel.toJSON().dump());
+    auto vDump = state.allocValue();
+    vDump->mkString(toplevel.dumpCli());
 
     auto vRes = state.allocValue();
-    state.callFunction(*vGenerateManpage, state.allocValue()->mkAttrs(attrs), *vRes, noPos);
+    state.callFunction(*vGenerateManpage, *vDump, *vRes, noPos);
 
     auto attr = vRes->attrs->get(state.symbols.create(mdName + ".md"));
     if (!attr)
@@ -203,6 +225,14 @@ static void showHelp(std::vector<std::string> subcommand, MultiCommand & topleve
 
     RunPager pager;
     std::cout << renderMarkdownToTerminal(markdown) << "\n";
+}
+
+static NixArgs & getNixArgs(Command & cmd)
+{
+    assert(cmd.parent);
+    MultiCommand * toplevel = cmd.parent;
+    while (toplevel->parent) toplevel = toplevel->parent;
+    return dynamic_cast<NixArgs &>(*toplevel);
 }
 
 struct CmdHelp : Command
@@ -229,16 +259,42 @@ struct CmdHelp : Command
           ;
     }
 
+    Category category() override { return catHelp; }
+
     void run() override
     {
         assert(parent);
         MultiCommand * toplevel = parent;
         while (toplevel->parent) toplevel = toplevel->parent;
-        showHelp(subcommand, *toplevel);
+        showHelp(subcommand, getNixArgs(*this));
     }
 };
 
 static auto rCmdHelp = registerCommand<CmdHelp>("help");
+
+struct CmdHelpStores : Command
+{
+    std::string description() override
+    {
+        return "show help about store types and their settings";
+    }
+
+    std::string doc() override
+    {
+        return
+          #include "help-stores.md"
+          ;
+    }
+
+    Category category() override { return catHelp; }
+
+    void run() override
+    {
+        showHelp({"help-stores"}, getNixArgs(*this));
+    }
+};
+
+static auto rCmdHelpStores = registerCommand<CmdHelpStores>("help-stores");
 
 void mainWrapped(int argc, char * * argv)
 {
@@ -291,13 +347,16 @@ void mainWrapped(int argc, char * * argv)
 
     NixArgs args;
 
-    if (argc == 2 && std::string(argv[1]) == "__dump-args") {
-        std::cout << args.toJSON().dump() << "\n";
+    if (argc == 2 && std::string(argv[1]) == "__dump-cli") {
+        logger->cout(args.dumpCli());
         return;
     }
 
     if (argc == 2 && std::string(argv[1]) == "__dump-builtins") {
-        settings.experimentalFeatures = {Xp::Flakes, Xp::FetchClosure};
+        experimentalFeatureSettings.experimentalFeatures = {
+            Xp::Flakes,
+            Xp::FetchClosure,
+        };
         evalSettings.pureEval = false;
         EvalState state({}, openStore("dummy://"));
         auto res = nlohmann::json::object();
@@ -312,7 +371,12 @@ void mainWrapped(int argc, char * * argv)
             b["doc"] = trim(stripIndentation(primOp->doc));
             res[state.symbols[builtin.name]] = std::move(b);
         }
-        std::cout << res.dump() << "\n";
+        logger->cout("%s", res);
+        return;
+    }
+
+    if (argc == 2 && std::string(argv[1]) == "__dump-xp-features") {
+        logger->cout(documentExperimentalFeatures().dump());
         return;
     }
 
@@ -321,20 +385,24 @@ void mainWrapped(int argc, char * * argv)
         if (completions) {
             switch (completionType) {
             case ctNormal:
-                std::cout << "normal\n"; break;
+                logger->cout("normal"); break;
             case ctFilenames:
-                std::cout << "filenames\n"; break;
+                logger->cout("filenames"); break;
             case ctAttrs:
-                std::cout << "attrs\n"; break;
+                logger->cout("attrs"); break;
             }
             for (auto & s : *completions)
-                std::cout << s.completion << "\t" << trim(s.description) << "\n";
+                logger->cout(s.completion + "\t" + trim(s.description));
         }
     });
 
     try {
         args.parseCmdline(argvToStrings(argc, argv));
-    } catch (HelpRequested &) {
+    } catch (UsageError &) {
+        if (!args.helpRequested && !completions) throw;
+    }
+
+    if (args.helpRequested) {
         std::vector<std::string> subcommand;
         MultiCommand * command = &args;
         while (command) {
@@ -346,8 +414,6 @@ void mainWrapped(int argc, char * * argv)
         }
         showHelp(subcommand, args);
         return;
-    } catch (UsageError &) {
-        if (!completions) throw;
     }
 
     if (completions) {
@@ -363,10 +429,8 @@ void mainWrapped(int argc, char * * argv)
     if (!args.command)
         throw UsageError("no subcommand specified");
 
-    if (args.command->first != "repl"
-        && args.command->first != "doctor"
-        && args.command->first != "upgrade-nix")
-        settings.requireExperimentalFeature(Xp::NixCommand);
+    experimentalFeatureSettings.require(
+        args.command->second->experimentalFeature());
 
     if (args.useNet && !haveInternet()) {
         warn("you don't have Internet access; disabling some network-dependent features");
@@ -394,7 +458,6 @@ void mainWrapped(int argc, char * * argv)
     if (args.command->second->forceImpureByDefault() && !evalSettings.pureEval.overridden) {
         evalSettings.pureEval = false;
     }
-    args.command->second->prepare();
     args.command->second->run();
 }
 

@@ -17,9 +17,6 @@ nix-instantiate --restrict-eval --eval -E 'builtins.readDir ../src/nix-channel' 
 (! nix-instantiate --restrict-eval --eval -E 'let __nixPath = [ { prefix = "foo"; path = ./.; } ]; in <foo>')
 nix-instantiate --restrict-eval --eval -E 'let __nixPath = [ { prefix = "foo"; path = ./.; } ]; in <foo>' -I src=.
 
-# no default NIX_PATH
-(unset NIX_PATH; ! nix-instantiate --restrict-eval --find-file .)
-
 p=$(nix eval --raw --expr "builtins.fetchurl file://$(pwd)/restricted.sh" --impure --restrict-eval --allowed-uris "file://$(pwd)")
 cmp $p restricted.sh
 
@@ -51,4 +48,4 @@ output="$(nix eval --raw --restrict-eval -I "$traverseDir" \
     --expr "builtins.readFile \"$traverseDir/$goUp$(pwd)/restricted-innocent\"" \
     2>&1 || :)"
 echo "$output" | grep "is forbidden"
-! echo "$output" | grep -F restricted-secret
+echo "$output" | grepInverse -F restricted-secret

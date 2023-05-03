@@ -219,7 +219,7 @@ static int main_build_remote(int argc, char * * argv)
                                 % concatStringsSep<StringSet>(", ", m.supportedFeatures)
                                 % concatStringsSep<StringSet>(", ", m.mandatoryFeatures);
 
-                        printMsg(couldBuildLocally ? lvlChatty : lvlWarn, error);
+                        printMsg(couldBuildLocally ? lvlChatty : lvlWarn, error.str());
 
                         std::cerr << "# decline\n";
                     }
@@ -305,14 +305,15 @@ connected:
 
         std::set<Realisation> missingRealisations;
         StorePathSet missingPaths;
-        if (settings.isExperimentalFeatureEnabled(Xp::CaDerivations) && !drv.type().hasKnownOutputPaths()) {
+        if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !drv.type().hasKnownOutputPaths()) {
             for (auto & outputName : wantedOutputs) {
                 auto thisOutputHash = outputHashes.at(outputName);
                 auto thisOutputId = DrvOutput{ thisOutputHash, outputName };
                 if (!store->queryRealisation(thisOutputId)) {
                     debug("missing output %s", outputName);
-                    assert(result.builtOutputs.count(thisOutputId));
-                    auto newRealisation = result.builtOutputs.at(thisOutputId);
+                    auto i = result.builtOutputs.find(outputName);
+                    assert(i != result.builtOutputs.end());
+                    auto & newRealisation = i->second;
                     missingRealisations.insert(newRealisation);
                     missingPaths.insert(newRealisation.outPath);
                 }
@@ -337,7 +338,7 @@ connected:
         for (auto & realisation : missingRealisations) {
             // Should hold, because if the feature isn't enabled the set
             // of missing realisations should be empty
-            settings.requireExperimentalFeature(Xp::CaDerivations);
+            experimentalFeatureSettings.require(Xp::CaDerivations);
             store->registerDrvOutput(realisation);
         }
 

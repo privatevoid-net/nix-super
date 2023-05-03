@@ -1,5 +1,5 @@
 // FIXME: integrate this with nix path-info?
-// FIXME: rename to 'nix store show-derivation' or 'nix debug show-derivation'?
+// FIXME: rename to 'nix store derivation show' or 'nix debug derivation show'?
 
 #include "command.hh"
 #include "common-args.hh"
@@ -33,13 +33,13 @@ struct CmdShowDerivation : InstallablesCommand
     std::string doc() override
     {
         return
-          #include "show-derivation.md"
+          #include "derivation-show.md"
           ;
     }
 
     Category category() override { return catUtility; }
 
-    void run(ref<Store> store) override
+    void run(ref<Store> store, Installables && installables) override
     {
         auto drvPaths = Installable::toDerivations(store, installables, true);
 
@@ -57,8 +57,8 @@ struct CmdShowDerivation : InstallablesCommand
             jsonRoot[store->printStorePath(drvPath)] =
                 store->readDerivation(drvPath).toJSON(*store);
         }
-        std::cout << jsonRoot.dump(2) << std::endl;
+        logger->cout(jsonRoot.dump(2));
     }
 };
 
-static auto rCmdShowDerivation = registerCommand<CmdShowDerivation>("show-derivation");
+static auto rCmdShowDerivation = registerCommand2<CmdShowDerivation>({"derivation", "show"});

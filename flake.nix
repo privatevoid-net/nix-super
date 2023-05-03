@@ -4,8 +4,9 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-22.11-small";
   inputs.nixpkgs-regression.url = "github:NixOS/nixpkgs/215d4d0fd80ca5163643b03a33fde804a29cc1e2";
   inputs.lowdown-src = { url = "github:kristapsdz/lowdown"; flake = false; };
+  inputs.flake-compat = { url = "github:edolstra/flake-compat"; flake = false; };
 
-  outputs = { self, nixpkgs, nixpkgs-regression, lowdown-src }:
+  outputs = { self, nixpkgs, nixpkgs-regression, lowdown-src, flake-compat }:
 
     let
       inherit (nixpkgs) lib;
@@ -89,15 +90,21 @@
         });
 
         configureFlags =
-          [
-            "CXXFLAGS=-I${lib.getDev rapidcheck}/extras/gtest/include"
-          ] ++ lib.optionals stdenv.isLinux [
+          lib.optionals stdenv.isLinux [
             "--with-boost=${boost}/lib"
             "--with-sandbox-shell=${sh}/bin/busybox"
           ]
           ++ lib.optionals (stdenv.isLinux && !(isStatic && stdenv.system == "aarch64-linux")) [
             "LDFLAGS=-fuse-ld=gold"
           ];
+
+        testConfigureFlags = [
+          "RAPIDCHECK_HEADERS=${lib.getDev rapidcheck}/extras/gtest/include"
+        ];
+
+        internalApiDocsConfigureFlags = [
+          "--enable-internal-api-docs"
+        ];
 
         nativeBuildDeps =
           [
@@ -124,12 +131,19 @@
             libarchive
             boost
             lowdown-nix
-            gtest
-            rapidcheck
           ]
           ++ lib.optionals stdenv.isLinux [libseccomp]
           ++ lib.optional (stdenv.isLinux || stdenv.isDarwin) libsodium
           ++ lib.optional stdenv.hostPlatform.isx86_64 libcpuid;
+
+        checkDeps = [
+          gtest
+          rapidcheck
+        ];
+
+        internalApiDocsDeps = [
+          buildPackages.doxygen
+        ];
 
         awsDeps = lib.optional (stdenv.isLinux || stdenv.isDarwin)
           (aws-sdk-cpp.override {
@@ -200,11 +214,12 @@
         VERSION_SUFFIX = versionSuffix;
 
         nativeBuildInputs = nativeBuildDeps;
-        buildInputs = buildDeps ++ awsDeps;
+        buildInputs = buildDeps ++ awsDeps ++ checkDeps;
         propagatedBuildInputs = propagatedDeps;
 
         enableParallelBuilding = true;
 
+        configureFlags = testConfigureFlags; # otherwise configure fails
         dontBuild = true;
         doInstallCheck = true;
 
@@ -305,12 +320,18 @@
           };
           let
             canRunInstalled = currentStdenv.buildPlatform.canExecute currentStdenv.hostPlatform;
-          in currentStdenv.mkDerivation {
+
+            sourceByRegexInverted = rxs: origSrc: final.lib.cleanSourceWith {
+              filter = (path: type:
+                let relPath = final.lib.removePrefix (toString origSrc + "/") (toString path);
+                in ! lib.any (re: builtins.match re relPath != null) rxs);
+              src = origSrc;
+            };
+          in currentStdenv.mkDerivation (finalAttrs: {
             name = "nix-super-${version}";
             inherit version;
 
-            src = self;
-
+            src = sourceByRegexInverted [ "tests/nixos/.*" "tests/installer/.*" ] self;
             VERSION_SUFFIX = versionSuffix;
 
             outputs = [ "out" "dev" "doc" ];
@@ -318,7 +339,8 @@
             nativeBuildInputs = nativeBuildDeps;
             buildInputs = buildDeps
               # There have been issues building these dependencies
-              ++ lib.optionals (currentStdenv.hostPlatform == currentStdenv.buildPlatform) awsDeps;
+              ++ lib.optionals (currentStdenv.hostPlatform == currentStdenv.buildPlatform) awsDeps
+              ++ lib.optionals finalAttrs.doCheck checkDeps;
 
             propagatedBuildInputs = propagatedDeps;
 
@@ -348,6 +370,8 @@
             configureFlags = configureFlags ++
               [ "--sysconfdir=/etc" ] ++
               lib.optional stdenv.hostPlatform.isStatic "--enable-embedded-sandbox-shell" ++
+              [ (lib.enableFeature finalAttrs.doCheck "tests") ] ++
+              lib.optionals finalAttrs.doCheck testConfigureFlags ++
               lib.optional (!canRunInstalled) "--disable-doc-gen";
 
             enableParallelBuilding = true;
@@ -361,6 +385,10 @@
             postInstall = ''
               mkdir -p $doc/nix-support
               echo "doc manual $doc/share/doc/nix/manual" >> $doc/nix-support/hydra-build-products
+              ${lib.optionalString currentStdenv.hostPlatform.isStatic ''
+              mkdir -p $out/nix-support
+              echo "file binary-dist $out/bin/nix" >> $out/nix-support/hydra-build-products
+              ''}
               ${lib.optionalString currentStdenv.isDarwin ''
               install_name_tool \
                 -change ${boost}/lib/libboost_context.dylib \
@@ -369,8 +397,9 @@
               ''}
             '';
 
-            doInstallCheck = true;
+            doInstallCheck = finalAttrs.doCheck;
             installCheckFlags = "sysconfdir=$(out)/etc";
+            installCheckTarget = "installcheck"; # work around buggy detection in stdenv
 
             separateDebugInfo = !currentStdenv.hostPlatform.isStatic;
 
@@ -411,7 +440,7 @@
             });
 
             meta.platforms = lib.platforms.unix;
-          };
+          });
 
           lowdown-nix = with final; currentStdenv.mkDerivation rec {
             name = "lowdown-0.9.0";
@@ -444,8 +473,6 @@
       };
 
     in {
-      inherit nixpkgsFor;
-
       # A Nixpkgs overlay that overrides the 'nix' and
       # 'nix.perl-bindings' packages.
       overlays.default = overlayFor (p: p.stdenv);
@@ -461,6 +488,14 @@
           lib.genAttrs ["x86_64-linux"] (system: self.packages.${system}."nix-${crossSystem}"));
 
         buildNoGc = forAllSystems (system: self.packages.${system}.nix.overrideAttrs (a: { configureFlags = (a.configureFlags or []) ++ ["--enable-gc=no"];}));
+
+        buildNoTests = forAllSystems (system:
+          self.packages.${system}.nix.overrideAttrs (a: {
+            doCheck =
+              assert ! a?dontCheck;
+              false;
+          })
+        );
 
         # Perl bindings for various platforms.
         perlBindings = forAllSystems (system: nixpkgsFor.${system}.native.nix.perl-bindings);
@@ -496,25 +531,48 @@
 
             src = self;
 
-            configureFlags = [
-              "CXXFLAGS=-I${lib.getDev pkgs.rapidcheck}/extras/gtest/include"
-            ];
+            configureFlags = testConfigureFlags;
 
             enableParallelBuilding = true;
 
             nativeBuildInputs = nativeBuildDeps;
-            buildInputs = buildDeps ++ propagatedDeps ++ awsDeps;
+            buildInputs = buildDeps ++ propagatedDeps ++ awsDeps ++ checkDeps;
 
             dontInstall = false;
 
             doInstallCheck = true;
+            installCheckTarget = "installcheck"; # work around buggy detection in stdenv
 
             lcovFilter = [ "*/boost/*" "*-tab.*" ];
 
-            # We call `dot', and even though we just use it to
-            # syntax-check generated dot files, it still requires some
-            # fonts.  So provide those.
-            FONTCONFIG_FILE = texFunctions.fontsConf;
+            hardeningDisable = ["fortify"];
+          };
+
+        # API docs for Nix's unstable internal C++ interfaces.
+        internal-api-docs =
+          with nixpkgsFor.x86_64-linux.native;
+          with commonDeps { inherit pkgs; };
+
+          stdenv.mkDerivation {
+            pname = "nix-internal-api-docs";
+            inherit version;
+
+            src = self;
+
+            configureFlags = testConfigureFlags ++ internalApiDocsConfigureFlags;
+
+            nativeBuildInputs = nativeBuildDeps;
+            buildInputs = buildDeps ++ propagatedDeps
+              ++ awsDeps ++ checkDeps ++ internalApiDocsDeps;
+
+            dontBuild = true;
+
+            installTargets = [ "internal-api-html" ];
+
+            postInstall = ''
+              mkdir -p $out/nix-support
+              echo "doc internal-api-docs $out/share/doc/nix/internal-api/html" >> $out/nix-support/hydra-build-products
+            '';
           };
 
         # System tests.
@@ -523,6 +581,8 @@
         tests.remoteBuilds = runNixOSTestFor "x86_64-linux" ./tests/nixos/remote-builds.nix;
 
         tests.nix-copy-closure = runNixOSTestFor "x86_64-linux" ./tests/nixos/nix-copy-closure.nix;
+
+        tests.nix-copy = runNixOSTestFor "x86_64-linux" ./tests/nixos/nix-copy.nix;
 
         tests.nssPreload = runNixOSTestFor "x86_64-linux" ./tests/nixos/nss-preload.nix;
 
@@ -634,9 +694,11 @@
             nativeBuildInputs = nativeBuildDeps
                                 ++ (lib.optionals stdenv.cc.isClang [ pkgs.bear pkgs.clang-tools ]);
 
-            buildInputs = buildDeps ++ propagatedDeps ++ awsDeps;
+            buildInputs = buildDeps ++ propagatedDeps
+              ++ awsDeps ++ checkDeps ++ internalApiDocsDeps;
 
-            inherit configureFlags;
+            configureFlags = configureFlags
+              ++ testConfigureFlags ++ internalApiDocsConfigureFlags;
 
             enableParallelBuilding = true;
 

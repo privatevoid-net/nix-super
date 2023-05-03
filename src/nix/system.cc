@@ -58,9 +58,9 @@ struct SystemActivationCommand : ActivationCommand<SystemCommand>, MixProfile
         : ActivationCommand<SystemCommand>(activationType, selfCommandName)
     { }
 
-    void run(nix::ref<nix::Store> store) override
+    void runActivatable(ref<Store> store, ref<Installable> installable) override
     {
-        auto out = buildActivatable(store);
+        auto out = buildActivatable(store, installable);
 
         if (getuid() != 0) {
             Strings args {
@@ -120,9 +120,9 @@ struct CmdSystemActivate : SystemCommand, MixDryRun
           #include "system-activate.md"
           ;
     }
-    void run(nix::ref<nix::Store> store) override
+    void runActivatable(ref<Store> store, ref<Installable> installable) override
     {
-        auto out = buildActivatable(store);
+        auto out = buildActivatable(store, installable);
 
         executePrivileged(store->printStorePath(out) + "/bin/switch-to-configuration", Strings{dryRun ? "dry-activate" : "test"});
     }
@@ -194,8 +194,6 @@ struct CmdSystem : NixMultiCommand
     {
         if (!command)
             throw UsageError("'nix system' requires a sub-command.");
-        settings.requireExperimentalFeature(Xp::NixCommand);
-        command->second->prepare();
         command->second->run();
     }
 };
