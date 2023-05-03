@@ -4,6 +4,7 @@
 #include "installables.hh"
 #include "args.hh"
 #include "common-eval-args.hh"
+#include "outputs-spec.hh"
 #include "path.hh"
 #include "flake/lockfile.hh"
 
@@ -106,6 +107,12 @@ struct SourceExprCommand : virtual Args, MixFlakeOptions
     std::vector<std::shared_ptr<Installable>> parseInstallables(
         ref<Store> store, std::vector<std::string> ss,
         bool applyOverrides = true, bool nestedIsExprOk = true);
+
+    std::shared_ptr<Installable> modifyInstallable(
+        ref<Store> store, ref<EvalState> state,
+        std::shared_ptr<Installable> installable,
+        std::string_view installableName,
+        std::string_view prefix, ExtendedOutputsSpec extendedOutputsSpec);
 
     Bindings * getOverrideArgs(EvalState & state, ref<Store> store);
 
