@@ -477,6 +477,17 @@ static GlobalConfig::Register rSettings(&experimentalFeatureSettings);
 
 bool ExperimentalFeatureSettings::isEnabled(const ExperimentalFeature & feature) const
 {
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wswitch-enum"
+    switch (feature) {
+    case ExperimentalFeature::Flakes:
+    case ExperimentalFeature::NixCommand:
+    case ExperimentalFeature::ReplFlake:
+        return true;
+    default:
+        break;
+    }
+    #pragma GCC diagnostic pop
     auto & f = experimentalFeatures.get();
     return std::find(f.begin(), f.end(), feature) != f.end();
 }
