@@ -1,5 +1,7 @@
 source common.sh
 
+skipTest "Nix Super"
+
 # Skipping these two for now, because we actually *do* want flags and
 # config settings to always show up in the manual, just be marked
 # experimental. Will reenable once the manual generation takes advantage

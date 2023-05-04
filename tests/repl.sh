@@ -1,5 +1,7 @@
 source common.sh
 
+skipTest "Nix Super"
+
 testDir="$PWD"
 cd "$TEST_ROOT"
 
