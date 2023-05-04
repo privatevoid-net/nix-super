@@ -9,11 +9,10 @@ ActivatableCommand::ActivatableCommand(std::string activationPackageAttrPath)
 { }
 
 void ActivatableCommand::run(ref<Store> store, ref<Installable> installable) {
-    auto _installable = installable;
     auto installableFlake = installable.dynamic_pointer_cast<InstallableFlake>();;
     if (installableFlake) {
         auto fragment = *installableFlake->attrPaths.begin();
-        auto _installable = std::make_shared<InstallableFlake>(
+        auto _installable = make_ref<InstallableFlake>(
                 this,
                 getEvalState(),
                 std::move(installableFlake->flakeRef),
@@ -23,8 +22,10 @@ void ActivatableCommand::run(ref<Store> store, ref<Installable> installable) {
                 getDefaultFlakeAttrPathPrefixes(),
                 installableFlake->lockFlags
             );
+        runActivatable(store, _installable);
+    } else {
+        runActivatable(store, installable);
     }
-    runActivatable(store, _installable);
 }
 
 StorePath ActivatableCommand::buildActivatable(nix::ref<nix::Store> store, ref<Installable> installable, bool dryRun) {
