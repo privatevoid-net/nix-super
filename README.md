@@ -6,9 +6,13 @@ This is an upstream-tracking fork of Nix that includes various patches, some con
 
 Some of the patches included are: 
 - nix-flake-default from [nix-dram](https://github.com/dramforever/nix-dram)
-- enable-all-experimental from the old [nixExperimental](https://github.com/NixOS/nixpkgs/pull/120141)
+- experimental features enabled by default:
+  - `Xp::Flakes`
+  - `Xp::NixCommand`
+  - `Xp::ReplFlake`
 - Full thunk evaluation in flake inputs
-- Some UI improvements
+- Some UI improvements, particularly around `nix profile`
 - New subcommands
-  - [nix system](https://cache.privatevoid.net/nix/store/x3iy7mf5ly5yqg4zxm551l9ns151jvr7-nix-super-2.14.0pre20230125_4aaaa3c-doc/share/doc/nix/manual/command-ref/new-cli/nix3-system.html) for managing NixOS, as a replacement for `nixos-rebuild`
-  - [nix home](https://cache.privatevoid.net/nix/store/x3iy7mf5ly5yqg4zxm551l9ns151jvr7-nix-super-2.14.0pre20230125_4aaaa3c-doc/share/doc/nix/manual/command-ref/new-cli/nix3-home.html) for managing home-manager configurations, as a replacement for the `home-manager` CLI tool
+  - [nix system](https://cache.privatevoid.net/nix/store/6wq71q0lwgkr4l900flf26cn0lk79miw-nix-super-2.16.0pre20230504_3822d33-doc/share/doc/nix/manual/command-ref/new-cli/nix3-system.html) for managing NixOS, as a replacement for `nixos-rebuild`
+  - [nix home](https://cache.privatevoid.net/nix/store/6wq71q0lwgkr4l900flf26cn0lk79miw-nix-super-2.16.0pre20230504_3822d33-doc/share/doc/nix/manual/command-ref/new-cli/nix3-home.html) for managing home-manager configurations, as a replacement for the `home-manager` CLI tool
+- [The `$` operator](https://github.com/NixOS/nix/pull/5577)

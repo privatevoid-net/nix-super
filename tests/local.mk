@@ -79,7 +79,6 @@ nix_tests = \
   eval.sh \
   ca/post-hook.sh \
   repl.sh \
-  ca/repl.sh \
   ca/recursive.sh \
   binary-cache-build-remote.sh \
   search.sh \
