@@ -18,189 +18,6 @@
 
 namespace nix {
 
-namespace worker_proto {
-
-std::string read(const Store & store, Source & from, Phantom<std::string> _)
-{
-    return readString(from);
-}
-
-void write(const Store & store, Sink & out, const std::string & str)
-{
-    out << str;
-}
-
-
-StorePath read(const Store & store, Source & from, Phantom<StorePath> _)
-{
-    return store.parseStorePath(readString(from));
-}
-
-void write(const Store & store, Sink & out, const StorePath & storePath)
-{
-    out << store.printStorePath(storePath);
-}
-
-
-std::optional<TrustedFlag> read(const Store & store, Source & from, Phantom<std::optional<TrustedFlag>> _)
-{
-    auto temp = readNum<uint8_t>(from);
-    switch (temp) {
-        case 0:
-            return std::nullopt;
-        case 1:
-            return { Trusted };
-        case 2:
-            return { NotTrusted };
-        default:
-            throw Error("Invalid trusted status from remote");
-    }
-}
-
-void write(const Store & store, Sink & out, const std::optional<TrustedFlag> & optTrusted)
-{
-    if (!optTrusted)
-        out << (uint8_t)0;
-    else {
-        switch (*optTrusted) {
-        case Trusted:
-            out << (uint8_t)1;
-            break;
-        case NotTrusted:
-            out << (uint8_t)2;
-            break;
-        default:
-            assert(false);
-        };
-    }
-}
-
-
-ContentAddress read(const Store & store, Source & from, Phantom<ContentAddress> _)
-{
-    return ContentAddress::parse(readString(from));
-}
-
-void write(const Store & store, Sink & out, const ContentAddress & ca)
-{
-    out << renderContentAddress(ca);
-}
-
-
-DerivedPath read(const Store & store, Source & from, Phantom<DerivedPath> _)
-{
-    auto s = readString(from);
-    return DerivedPath::parseLegacy(store, s);
-}
-
-void write(const Store & store, Sink & out, const DerivedPath & req)
-{
-    out << req.to_string_legacy(store);
-}
-
-
-Realisation read(const Store & store, Source & from, Phantom<Realisation> _)
-{
-    std::string rawInput = readString(from);
-    return Realisation::fromJSON(
-        nlohmann::json::parse(rawInput),
-        "remote-protocol"
-    );
-}
-
-void write(const Store & store, Sink & out, const Realisation & realisation)
-{
-    out << realisation.toJSON().dump();
-}
-
-
-DrvOutput read(const Store & store, Source & from, Phantom<DrvOutput> _)
-{
-    return DrvOutput::parse(readString(from));
-}
-
-void write(const Store & store, Sink & out, const DrvOutput & drvOutput)
-{
-    out << drvOutput.to_string();
-}
-
-
-KeyedBuildResult read(const Store & store, Source & from, Phantom<KeyedBuildResult> _)
-{
-    auto path = worker_proto::read(store, from, Phantom<DerivedPath> {});
-    auto br = worker_proto::read(store, from, Phantom<BuildResult> {});
-    return KeyedBuildResult {
-        std::move(br),
-        /* .path = */ std::move(path),
-    };
-}
-
-void write(const Store & store, Sink & to, const KeyedBuildResult & res)
-{
-    worker_proto::write(store, to, res.path);
-    worker_proto::write(store, to, static_cast<const BuildResult &>(res));
-}
-
-
-BuildResult read(const Store & store, Source & from, Phantom<BuildResult> _)
-{
-    BuildResult res;
-    res.status = (BuildResult::Status) readInt(from);
-    from
-        >> res.errorMsg
-        >> res.timesBuilt
-        >> res.isNonDeterministic
-        >> res.startTime
-        >> res.stopTime;
-    auto builtOutputs = worker_proto::read(store, from, Phantom<DrvOutputs> {});
-    for (auto && [output, realisation] : builtOutputs)
-        res.builtOutputs.insert_or_assign(
-            std::move(output.outputName),
-            std::move(realisation));
-    return res;
-}
-
-void write(const Store & store, Sink & to, const BuildResult & res)
-{
-    to
-        << res.status
-        << res.errorMsg
-        << res.timesBuilt
-        << res.isNonDeterministic
-        << res.startTime
-        << res.stopTime;
-    DrvOutputs builtOutputs;
-    for (auto & [output, realisation] : res.builtOutputs)
-        builtOutputs.insert_or_assign(realisation.id, realisation);
-    worker_proto::write(store, to, builtOutputs);
-}
-
-
-std::optional<StorePath> read(const Store & store, Source & from, Phantom<std::optional<StorePath>> _)
-{
-    auto s = readString(from);
-    return s == "" ? std::optional<StorePath> {} : store.parseStorePath(s);
-}
-
-void write(const Store & store, Sink & out, const std::optional<StorePath> & storePathOpt)
-{
-    out << (storePathOpt ? store.printStorePath(*storePathOpt) : "");
-}
-
-
-std::optional<ContentAddress> read(const Store & store, Source & from, Phantom<std::optional<ContentAddress>> _)
-{
-    return ContentAddress::parseOpt(readString(from));
-}
-
-void write(const Store & store, Sink & out, const std::optional<ContentAddress> & caOpt)
-{
-    out << (caOpt ? renderContentAddress(*caOpt) : "");
-}
-
-}
-
-
 /* TODO: Separate these store impls into different files, give them better names */
 RemoteStore::RemoteStore(const Params & params)
     : RemoteStoreConfig(params)
@@ -597,6 +414,7 @@ ref<const ValidPathInfo> RemoteStore::addCAToStore(
     Source & dump,
     std::string_view name,
     ContentAddressMethod caMethod,
+    HashType hashType,
     const StorePathSet & references,
     RepairFlag repair)
 {
@@ -608,7 +426,7 @@ ref<const ValidPathInfo> RemoteStore::addCAToStore(
         conn->to
             << wopAddToStore
             << name
-            << caMethod.render();
+            << caMethod.render(hashType);
         worker_proto::write(*this, conn->to, references);
         conn->to << repair;
 
@@ -628,26 +446,29 @@ ref<const ValidPathInfo> RemoteStore::addCAToStore(
         if (repair) throw Error("repairing is not supported when building through the Nix daemon protocol < 1.25");
 
         std::visit(overloaded {
-            [&](const TextHashMethod & thm) -> void {
+            [&](const TextIngestionMethod & thm) -> void {
+                if (hashType != htSHA256)
+                    throw UnimplementedError("When adding text-hashed data called '%s', only SHA-256 is supported but '%s' was given",
+                        name, printHashType(hashType));
                 std::string s = dump.drain();
                 conn->to << wopAddTextToStore << name << s;
                 worker_proto::write(*this, conn->to, references);
                 conn.processStderr();
             },
-            [&](const FixedOutputHashMethod & fohm) -> void {
+            [&](const FileIngestionMethod & fim) -> void {
                 conn->to
                     << wopAddToStore
                     << name
-                    << ((fohm.hashType == htSHA256 && fohm.fileIngestionMethod == FileIngestionMethod::Recursive) ? 0 : 1) /* backwards compatibility hack */
-                    << (fohm.fileIngestionMethod == FileIngestionMethod::Recursive ? 1 : 0)
-                    << printHashType(fohm.hashType);
+                    << ((hashType == htSHA256 && fim == FileIngestionMethod::Recursive) ? 0 : 1) /* backwards compatibility hack */
+                    << (fim == FileIngestionMethod::Recursive ? 1 : 0)
+                    << printHashType(hashType);
 
                 try {
                     conn->to.written = 0;
                     connections->incCapacity();
                     {
                         Finally cleanup([&]() { connections->decCapacity(); });
-                        if (fohm.fileIngestionMethod == FileIngestionMethod::Recursive) {
+                        if (fim == FileIngestionMethod::Recursive) {
                             dump.drainInto(conn->to);
                         } else {
                             std::string contents = dump.drain();
@@ -678,7 +499,7 @@ ref<const ValidPathInfo> RemoteStore::addCAToStore(
 StorePath RemoteStore::addToStoreFromDump(Source & dump, std::string_view name,
       FileIngestionMethod method, HashType hashType, RepairFlag repair, const StorePathSet & references)
 {
-    return addCAToStore(dump, name, FixedOutputHashMethod{ .fileIngestionMethod = method, .hashType = hashType }, references, repair)->path;
+    return addCAToStore(dump, name, method, hashType, references, repair)->path;
 }
 
 
@@ -778,7 +599,7 @@ StorePath RemoteStore::addTextToStore(
     RepairFlag repair)
 {
     StringSource source(s);
-    return addCAToStore(source, name, TextHashMethod{}, references, repair)->path;
+    return addCAToStore(source, name, TextIngestionMethod {}, htSHA256, references, repair)->path;
 }
 
 void RemoteStore::registerDrvOutput(const Realisation & info)
