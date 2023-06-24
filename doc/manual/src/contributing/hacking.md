@@ -12,14 +12,15 @@ The following instructions assume you already have some version of Nix installed
 
 [installation instructions]: ../installation/installation.md
 
-## Nix with flakes
+## Building Nix with flakes
 
-This section assumes you are using Nix with [flakes] enabled. See the [next section](#classic-nix) for equivalent instructions which don't require flakes.
+This section assumes you are using Nix with the [`flakes`] and [`nix-command`] experimental features enabled.
+See the [Building Nix](#building-nix) section for equivalent instructions using stable Nix interfaces.
 
-[flakes]: ../command-ref/new-cli/nix3-flake.md#description
+[`flakes`]: @docroot@/contributing/experimental-features.md#xp-feature-flakes
+[`nix-command`]: @docroot@/contributing/experimental-features.md#xp-nix-command
 
-To build all dependencies and start a shell in which all environment
-variables are set up so that those dependencies can be found:
+To build all dependencies and start a shell in which all environment variables are set up so that those dependencies can be found:
 
 ```console
 $ nix develop
@@ -55,20 +56,17 @@ To install it in `$(pwd)/outputs` and test it:
 nix (Nix) 2.12
 ```
 
-To build a release version of Nix:
+To build a release version of Nix for the current operating system and CPU architecture:
 
 ```console
 $ nix build
 ```
 
-You can also build Nix for one of the [supported target platforms](#target-platforms).
+You can also build Nix for one of the [supported platforms](#platforms).
 
-## Classic Nix
+## Building Nix
 
-This section is for Nix without [flakes].
-
-To build all dependencies and start a shell in which all environment
-variables are set up so that those dependencies can be found:
+To build all dependencies and start a shell in which all environment variables are set up so that those dependencies can be found:
 
 ```console
 $ nix-shell
@@ -102,13 +100,13 @@ To install it in `$(pwd)/outputs` and test it:
 nix (Nix) 2.12
 ```
 
-To build Nix for the current operating system and CPU architecture use
+To build a release version of Nix for the current operating system and CPU architecture:
 
 ```console
 $ nix-build
 ```
 
-You can also build Nix for one of the [supported target platforms](#target-platforms).
+You can also build Nix for one of the [supported platforms](#platforms).
 
 ## Platforms
 
@@ -378,7 +376,7 @@ rm $(git ls-files doc/manual/ -o | grep -F '.md') && rmdir doc/manual/src/comman
 [`mdbook-linkcheck`] does not implement checking [URI fragments] yet.
 
 [`mdbook-linkcheck`]: https://github.com/Michael-F-Bryan/mdbook-linkcheck
-[URI fragments]: https://en.m.wikipedia.org/wiki/URI_fragment
+[URI fragments]: https://en.wikipedia.org/wiki/URI_fragment
 
 #### `@docroot@` variable
 

@@ -22,7 +22,7 @@ void emitTreeAttrs(
 {
     assert(input.isLocked());
 
-    auto attrs = state.buildBindings(8);
+    auto attrs = state.buildBindings(10);
 
 
     state.mkStorePathString(tree.storePath, attrs.alloc(state.sOutPath));
@@ -54,6 +54,11 @@ void emitTreeAttrs(
         else if (emptyRevFallback)
             attrs.alloc("revCount").mkInt(0);
 
+    }
+
+    if (auto dirtyRev = fetchers::maybeGetStrAttr(input.attrs, "dirtyRev")) {
+        attrs.alloc("dirtyRev").mkString(*dirtyRev);
+        attrs.alloc("dirtyShortRev").mkString(*fetchers::maybeGetStrAttr(input.attrs, "dirtyShortRev"));
     }
 
     if (auto lastModified = input.getLastModified()) {
@@ -194,7 +199,11 @@ static void prim_fetchTree(EvalState & state, const PosIdx pos, Value * * args, 
 }
 
 // FIXME: document
-static RegisterPrimOp primop_fetchTree("fetchTree", 1, prim_fetchTree);
+static RegisterPrimOp primop_fetchTree({
+    .name = "fetchTree",
+    .arity = 1,
+    .fun = prim_fetchTree
+});
 
 static void fetch(EvalState & state, const PosIdx pos, Value * * args, Value & v,
     const std::string & who, bool unpack, std::string name)
@@ -262,7 +271,7 @@ static void fetch(EvalState & state, const PosIdx pos, Value * * args, Value & v
     //       https://github.com/NixOS/nix/issues/4313
     auto storePath =
         unpack
-        ? fetchers::downloadTarball(state.store, *url, name, (bool) expectedHash).first.storePath
+        ? fetchers::downloadTarball(state.store, *url, name, (bool) expectedHash).tree.storePath
         : fetchers::downloadFile(state.store, *url, name, (bool) expectedHash).storePath;
 
     if (expectedHash) {

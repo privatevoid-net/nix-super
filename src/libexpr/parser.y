@@ -330,7 +330,7 @@ void yyerror(YYLTYPE * loc, yyscan_t scanner, ParseData * data, const char * err
 %type <ind_string_parts> ind_string_parts
 %type <e> path_start string_parts string_attr
 %type <id> attr
-%token <id> ID ATTRPATH
+%token <id> ID
 %token <str> STR IND_STR
 %token <n> INT
 %token <nf> FLOAT
@@ -795,7 +795,7 @@ std::pair<bool, std::string> EvalState::resolveSearchPathElem(const SearchPathEl
     if (EvalSettings::isPseudoUrl(elem.second)) {
         try {
             auto storePath = fetchers::downloadTarball(
-                store, EvalSettings::resolvePseudoUrl(elem.second), "source", false).first.storePath;
+                store, EvalSettings::resolvePseudoUrl(elem.second), "source", false).tree.storePath;
             res = { true, store->toRealPath(storePath) };
         } catch (FileTransferError & e) {
             logWarning({
