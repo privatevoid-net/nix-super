@@ -208,6 +208,19 @@ SourceExprCommand::SourceExprCommand()
     });
 
     addFlag({
+        .longName = "call-package",
+        .shortName = 'C',
+        .description =
+            "Interpret [*installables*](@docroot@/command-ref/new-cli/nix.md#installables) as attribute paths relative to the callPackageable Nix expression stored in *file*. "
+            "The `callPackage` function is taken from `<nixpkgs>`. "
+            "Implies `--impure`.",
+        .category = installablesCategory,
+        .labels = {"file"},
+        .handler = {&callPackageFile},
+        .completer = completePath
+    });
+
+    addFlag({
         .longName = "apply-to-installable",
         .description = "Apply the function *expr* to each installable.",
         .category = installablesCategory,
@@ -542,12 +555,12 @@ Installables SourceExprCommand::parseInstallables(
     auto doModifyInstallable = applyOverrides && ( applyToInstallable
         || installableOverrideAttrs || installableWithPackages || overrideArgs.size() > 0 );
 
-    if (nestedIsExprOk && (file || expr)) {
-        if (file && expr)
-            throw UsageError("'--file' and '--expr' are exclusive");
+    if (nestedIsExprOk && (file || expr || callPackageFile)) {
+        if ((file && expr) || (file && callPackageFile) || (expr && callPackageFile))
+            throw UsageError("'--file', '--expr' and '--call-package' are exclusive");
 
         // FIXME: backward compatibility hack
-        if (file) evalSettings.pureEval = false;
+        if (file || callPackageFile) evalSettings.pureEval = false;
 
         auto state = getEvalState();
         auto vFile = state->allocValue();
@@ -558,7 +571,10 @@ Installables SourceExprCommand::parseInstallables(
         }
         else if (file)
             state->evalFile(lookupFileArg(*state, *file), *vFile);
-        else {
+        else if (callPackageFile) {
+            auto e = state->parseExprFromString(fmt("(import <nixpkgs> {}).callPackage %s {}", CanonPath::fromCwd(*callPackageFile)), state->rootPath(CanonPath::fromCwd()));
+            state->eval(e, *vFile);
+        } else {
             auto e = state->parseExprFromString(*expr, state->rootPath(CanonPath::fromCwd()));
             state->eval(e, *vFile);
         }

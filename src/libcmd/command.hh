@@ -100,6 +100,7 @@ struct SourceExprCommand : virtual Args, MixFlakeOptions
 {
     std::optional<Path> file;
     std::optional<std::string> expr;
+    std::optional<Path> callPackageFile;
     std::optional<std::string> applyToInstallable;
     std::optional<std::string> installableOverrideAttrs;
     std::optional<std::string> installableWithPackages;
