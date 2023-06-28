@@ -4293,7 +4293,12 @@ void EvalState::createBaseEnv()
     });
 
     v.mkBool(true);
-    addConstant("__super", v);
+    addConstant("__super", v, {
+        .type = nBool,
+        .doc = R"(
+          Used to determine if Nix Super is in use.
+        )",
+    });
 
     // Miscellaneous
     if (evalSettings.enableNativeCode) {
