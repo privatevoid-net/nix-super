@@ -21,7 +21,7 @@ $ nix shell jq gron kubectl
 
 ### Experimental features enabled by default
 
-The experimental features are enabled by default:
+The following experimental features are enabled by default:
 - `flakes` (`Xp::Flakes`)
 - `nix-command` (`Xp::NixCommand`)
 - `repl-flake` (`Xp::ReplFlake`)
@@ -73,6 +73,8 @@ builtins.trace "asdf" $ map toString [ 1 2 3 ]
 ### Easy use of `callPackage` from the CLI
 
 The flag `-C`/`--call-package` allows you to directly build *callPackageable expressions* from the CLI.
+This invokes `import <nixpkgs> {}` to get access to `callPackage`.
+
 
 ```shell-session
 $ cat hello.nix
