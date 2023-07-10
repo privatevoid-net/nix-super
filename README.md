@@ -35,20 +35,9 @@ such as `nix flake metadata`.
 Nonetheless, people were often annoyed by this limitation. Nix Super includes patches to disable the triviality checks,
 to encourage experimentation with fancy new ways of handling flake inputs.
 
-### UI improvements around `nix profile`
+### Named packages in `nix profile`
 
-`nix profile list` looks like this for profile entries coming from a flake:
-
-```
-005:
-	Installable: github:EmaApps/emanote#packages.x86_64-linux.default
-	Store paths: /nix/store/hdkbmj480nn2c5v9whzm2p1ip2cwqlpx-emanote-0.7.9.0
-006:
-	Installable: flake:default#legacyPackages.x86_64-linux.just
-	Store paths: /nix/store/8x9yfyhs9innj3y3g6q953fqbjfiqnp4-just-1.13.0
-```
-
-Non-flake entries still look like normal to preserve compatibility with home-manager.
+A preemptive merge of https://github.com/NixOS/nix/pull/8678
 
 ### Activatables
 
