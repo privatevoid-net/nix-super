@@ -43,6 +43,7 @@ const int defaultPriority = 5;
 struct ProfileElement
 {
     StorePathSet storePaths;
+    std::string name;
     std::optional<ProfileElementSource> source;
     bool active = true;
     int priority = defaultPriority;
@@ -116,10 +117,13 @@ struct ProfileManifest
 
         if (pathExists(manifestPath)) {
             auto json = nlohmann::json::parse(readFile(manifestPath));
+            std::set<std::string> foundNames;
 
             auto version = json.value("version", 0);
             std::string sUrl;
             std::string sOriginalUrl;
+            std::regex matchPackagesPrefix("((legacyP)|(p))ackages(\\.[a-z0-9_-]+)?\\.");
+            std::regex matchFlakeUrlPrefix("(.*?):(.*\\/)?");
             switch (version) {
                 case 1:
                     sUrl = "uri";
@@ -149,6 +153,34 @@ struct ProfileManifest
                         e["outputs"].get<ExtendedOutputsSpec>()
                     };
                 }
+
+                std::string nameCandidate;
+                if (e.contains("name")) {
+                    nameCandidate = e["name"];
+                }
+                else {
+                    /* Heuristically determine a decent name for the element. */
+                    if (element.source) {
+                        nameCandidate = std::regex_replace(static_cast<std::string>(e["attrPath"]), matchPackagesPrefix, "");
+                        if (nameCandidate == "default") {
+                            auto originalRef = element.source->originalRef;
+                            nameCandidate = originalRef.input.getName();
+                            if (nameCandidate == "source") {
+                                nameCandidate = std::regex_replace(originalRef.to_string(), matchFlakeUrlPrefix , "");
+                            }
+                        }
+                    }
+                    else {
+                        nameCandidate = element.identifier();
+                    }
+                }
+                std::string finalName = nameCandidate;
+                for (int i = 1; foundNames.contains(finalName); ++i) {
+                    finalName = nameCandidate + std::to_string(i);
+                }
+                element.name = finalName;
+                foundNames.insert(element.name);
+
                 elements.emplace_back(std::move(element));
             }
         }
@@ -163,6 +195,7 @@ struct ProfileManifest
             for (auto & drvInfo : drvInfos) {
                 ProfileElement element;
                 element.storePaths = {drvInfo.queryOutPath()};
+                element.name = element.identifier();
                 elements.emplace_back(std::move(element));
             }
         }
@@ -474,7 +507,7 @@ public:
                 if (element.storePaths.count(store.parseStorePath(*path))) return true;
             } else if (auto regex = std::get_if<RegexPattern>(&matcher)) {
                 if (element.source
-                    && std::regex_match(element.source->attrPath, regex->reg))
+                    && std::regex_match(element.name, regex->reg))
                     return true;
             }
         }
@@ -659,8 +692,8 @@ struct CmdProfileList : virtual EvalCommand, virtual StoreCommand, MixDefaultPro
             for (size_t i = 0; i < manifest.elements.size(); ++i) {
                 auto & element(manifest.elements[i]);
                 if (i) logger->cout("");
-                logger->cout("Index:              " ANSI_BOLD "%s" ANSI_NORMAL "%s",
-                    i,
+                logger->cout("Name:               " ANSI_BOLD "%s" ANSI_NORMAL "%s",
+                    element.name,
                     element.active ? "" : " " ANSI_RED "(inactive)" ANSI_NORMAL);
                 if (element.source) {
                     logger->cout("Flake attribute:    %s%s", element.source->attrPath, element.source->outputs.to_string());
