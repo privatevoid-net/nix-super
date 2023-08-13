@@ -1,5 +1,5 @@
 #include "local-derivation-goal.hh"
-#include "gc-store.hh"
+#include "indirect-root-store.hh"
 #include "hook-instance.hh"
 #include "worker.hh"
 #include "builtins.hh"
@@ -594,6 +594,10 @@ void LocalDerivationGoal::startBuilder()
             else
                 dirsInChroot[i.substr(0, p)] = {i.substr(p + 1), optional};
         }
+        if (hasPrefix(worker.store.storeDir, tmpDirInSandbox))
+        {
+            throw Error("`sandbox-build-dir` must not contain the storeDir");
+        }
         dirsInChroot[tmpDirInSandbox] = tmpDir;
 
         /* Add the closure of store paths to the chroot. */
@@ -908,15 +912,13 @@ void LocalDerivationGoal::startBuilder()
             openSlave();
 
             /* Drop additional groups here because we can't do it
-               after we've created the new user namespace.  FIXME:
-               this means that if we're not root in the parent
-               namespace, we can't drop additional groups; they will
-               be mapped to nogroup in the child namespace. There does
-               not seem to be a workaround for this. (But who can tell
-               from reading user_namespaces(7)?)
-               See also https://lwn.net/Articles/621612/. */
-            if (getuid() == 0 && setgroups(0, 0) == -1)
-                throw SysError("setgroups failed");
+               after we've created the new user namespace. */
+            if (setgroups(0, 0) == -1) {
+                if (errno != EPERM)
+                    throw SysError("setgroups failed");
+                if (settings.requireDropSupplementaryGroups)
+                    throw Error("setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.");
+            }
 
             ProcessOptions options;
             options.cloneFlags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_PARENT | SIGCHLD;
@@ -1170,6 +1172,19 @@ void LocalDerivationGoal::writeStructuredAttrs()
 }
 
 
+static StorePath pathPartOfReq(const SingleDerivedPath & req)
+{
+    return std::visit(overloaded {
+        [&](const SingleDerivedPath::Opaque & bo) {
+            return bo.path;
+        },
+        [&](const SingleDerivedPath::Built & bfd)  {
+            return pathPartOfReq(*bfd.drvPath);
+        },
+    }, req.raw());
+}
+
+
 static StorePath pathPartOfReq(const DerivedPath & req)
 {
     return std::visit(overloaded {
@@ -1177,7 +1192,7 @@ static StorePath pathPartOfReq(const DerivedPath & req)
             return bo.path;
         },
         [&](const DerivedPath::Built & bfd)  {
-            return bfd.drvPath;
+            return pathPartOfReq(*bfd.drvPath);
         },
     }, req.raw());
 }
@@ -1198,7 +1213,7 @@ struct RestrictedStoreConfig : virtual LocalFSStoreConfig
 /* A wrapper around LocalStore that only allows building/querying of
    paths that are in the input closures of the build or were added via
    recursive Nix calls. */
-struct RestrictedStore : public virtual RestrictedStoreConfig, public virtual LocalFSStore, public virtual GcStore
+struct RestrictedStore : public virtual RestrictedStoreConfig, public virtual IndirectRootStore, public virtual GcStore
 {
     ref<LocalStore> next;
 
@@ -1249,11 +1264,13 @@ struct RestrictedStore : public virtual RestrictedStoreConfig, public virtual Lo
     void queryReferrers(const StorePath & path, StorePathSet & referrers) override
     { }
 
-    std::map<std::string, std::optional<StorePath>> queryPartialDerivationOutputMap(const StorePath & path) override
+    std::map<std::string, std::optional<StorePath>> queryPartialDerivationOutputMap(
+        const StorePath & path,
+        Store * evalStore = nullptr) override
     {
         if (!goal.isAllowed(path))
             throw InvalidPath("cannot query output map for unknown path '%s' in recursive Nix", printStorePath(path));
-        return next->queryPartialDerivationOutputMap(path);
+        return next->queryPartialDerivationOutputMap(path, evalStore);
     }
 
     std::optional<StorePath> queryPathFromHashPart(const std::string & hashPart) override
@@ -2303,7 +2320,6 @@ SingleDrvOutputs LocalDerivationGoal::registerOutputs()
         bool discardReferences = false;
         if (auto structuredAttrs = parsedDrv->getStructuredAttrs()) {
             if (auto udr = get(*structuredAttrs, "unsafeDiscardReferences")) {
-                experimentalFeatureSettings.require(Xp::DiscardReferences);
                 if (auto output = get(*udr, outputName)) {
                     if (!output->is_boolean())
                         throw Error("attribute 'unsafeDiscardReferences.\"%s\"' of derivation '%s' must be a Boolean", outputName, drvPath.to_string());
@@ -2538,16 +2554,16 @@ SingleDrvOutputs LocalDerivationGoal::registerOutputs()
             },
 
             [&](const DerivationOutput::CAFixed & dof) {
-                auto wanted = dof.ca.getHash();
+                auto & wanted = dof.ca.hash;
 
                 auto newInfo0 = newInfoFromCA(DerivationOutput::CAFloating {
-                    .method = dof.ca.getMethod(),
+                    .method = dof.ca.method,
                     .hashType = wanted.type,
                 });
 
                 /* Check wanted hash */
                 assert(newInfo0.ca);
-                auto got = newInfo0.ca->getHash();
+                auto & got = newInfo0.ca->hash;
                 if (wanted != got) {
                     /* Throw an error after registering the path as
                        valid. */

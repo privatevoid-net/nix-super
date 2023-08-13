@@ -4,6 +4,7 @@
 #include "shared.hh"
 #include "eval.hh"
 #include "eval-inline.hh"
+#include "eval-settings.hh"
 #include "flake/flake.hh"
 #include "get-drvs.hh"
 #include "store-api.hh"
@@ -543,9 +544,9 @@ struct CmdFlakeCheck : FlakeCommand
                                             *attr2.value, attr2.pos);
                                         if (drvPath && attr_name == settings.thisSystem.get()) {
                                             drvPaths.push_back(DerivedPath::Built {
-                                                    .drvPath = *drvPath,
-                                                        .outputs = OutputsSpec::All { },
-                                                        });
+                                                .drvPath = makeConstantStorePathRef(*drvPath),
+                                                .outputs = OutputsSpec::All { },
+                                            });
                                         }
                                     }
                                 }

@@ -3,6 +3,7 @@
 #include "downstream-placeholder.hh"
 #include "eval-inline.hh"
 #include "eval.hh"
+#include "eval-settings.hh"
 #include "globals.hh"
 #include "json-to-value.hh"
 #include "names.hh"
@@ -55,7 +56,7 @@ StringMap EvalState::realiseContext(const NixStringContext & context)
                     .drvPath = b.drvPath,
                     .outputs = OutputsSpec::Names { b.output },
                 });
-                ensureValid(b.drvPath);
+                ensureValid(b.drvPath->getBaseStorePath());
             },
             [&](const NixStringContextElem::Opaque & o) {
                 auto ctxS = store->printStorePath(o.path);
@@ -76,29 +77,32 @@ StringMap EvalState::realiseContext(const NixStringContext & context)
     if (!evalSettings.enableImportFromDerivation)
         debugThrowLastTrace(Error(
             "cannot build '%1%' during evaluation because the option 'allow-import-from-derivation' is disabled",
-            store->printStorePath(drvs.begin()->drvPath)));
+            drvs.begin()->to_string(*store)));
 
     /* Build/substitute the context. */
     std::vector<DerivedPath> buildReqs;
     for (auto & d : drvs) buildReqs.emplace_back(DerivedPath { d });
     store->buildPaths(buildReqs);
 
-    /* Get all the output paths corresponding to the placeholders we had */
     for (auto & drv : drvs) {
         auto outputs = resolveDerivedPath(*store, drv);
         for (auto & [outputName, outputPath] : outputs) {
-            res.insert_or_assign(
-                DownstreamPlaceholder::unknownCaOutput(drv.drvPath, outputName).render(),
-                store->printStorePath(outputPath)
-            );
-        }
-    }
-
-    /* Add the output of this derivations to the allowed
-       paths. */
-    if (allowedPaths) {
-        for (auto & [_placeholder, outputPath] : res) {
-            allowPath(store->toRealPath(outputPath));
+            /* Add the output of this derivations to the allowed
+               paths. */
+            if (allowedPaths) {
+                allowPath(outputPath);
+            }
+            /* Get all the output paths corresponding to the placeholders we had */
+            if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations)) {
+                res.insert_or_assign(
+                    DownstreamPlaceholder::fromSingleDerivedPathBuilt(
+                        SingleDerivedPath::Built {
+                            .drvPath = drv.drvPath,
+                            .output = outputName,
+                        }).render(),
+                    store->printStorePath(outputPath)
+                );
+            }
         }
     }
 
@@ -1251,7 +1255,10 @@ drvName, Bindings * attrs, Value & v)
                 }
             },
             [&](const NixStringContextElem::Built & b) {
-                drv.inputDrvs[b.drvPath].insert(b.output);
+                if (auto * p = std::get_if<DerivedPath::Opaque>(&*b.drvPath))
+                    drv.inputDrvs[p->path].insert(b.output);
+                else
+                    throw UnimplementedError("Dependencies on the outputs of dynamic derivations are not yet supported");
             },
             [&](const NixStringContextElem::Opaque & o) {
                 drv.inputSrcs.insert(o.path);
@@ -1300,9 +1307,10 @@ drvName, Bindings * attrs, Value & v)
         auto method = ingestionMethod.value_or(FileIngestionMethod::Flat);
 
         DerivationOutput::CAFixed dof {
-            .ca = ContentAddress::fromParts(
-                std::move(method),
-                std::move(h)),
+            .ca = ContentAddress {
+                .method = std::move(method),
+                .hash = std::move(h),
+            },
         };
 
         drv.env["out"] = state.store->printStorePath(dof.path(*state.store, drvName, "out"));
@@ -1658,9 +1666,9 @@ static void prim_findFile(EvalState & state, const PosIdx pos, Value * * args, V
             }));
         }
 
-        searchPath.emplace_back(SearchPathElem {
-            .prefix = prefix,
-            .path = path,
+        searchPath.elements.emplace_back(SearchPath::Elem {
+            .prefix = SearchPath::Prefix { .s = prefix },
+            .path = SearchPath::Path { .s = path },
         });
     }
 
@@ -2164,10 +2172,8 @@ static void addPath(
         std::optional<StorePath> expectedStorePath;
         if (expectedHash)
             expectedStorePath = state.store->makeFixedOutputPath(name, FixedOutputInfo {
-                .hash = {
-                    .method = method,
-                    .hash = *expectedHash,
-                },
+                .method = method,
+                .hash = *expectedHash,
                 .references = {},
             });
 
@@ -4329,12 +4335,12 @@ void EvalState::createBaseEnv()
     });
 
     /* Add a value containing the current Nix expression search path. */
-    mkList(v, searchPath.size());
+    mkList(v, searchPath.elements.size());
     int n = 0;
-    for (auto & i : searchPath) {
+    for (auto & i : searchPath.elements) {
         auto attrs = buildBindings(2);
-        attrs.alloc("path").mkString(i.path);
-        attrs.alloc("prefix").mkString(i.prefix);
+        attrs.alloc("path").mkString(i.path.s);
+        attrs.alloc("prefix").mkString(i.prefix.s);
         (v.listElems()[n++] = allocValue())->mkAttrs(attrs);
     }
     addConstant("__nixPath", v, {

@@ -232,9 +232,10 @@ static DerivationOutput parseDerivationOutput(const Store & store,
             validatePath(pathS);
             auto hash = Hash::parseNonSRIUnprefixed(hashS, hashType);
             return DerivationOutput::CAFixed {
-                .ca = ContentAddress::fromParts(
-                    std::move(method),
-                    std::move(hash)),
+                .ca = ContentAddress {
+                    .method = std::move(method),
+                    .hash = std::move(hash),
+                },
             };
         } else {
             experimentalFeatureSettings.require(Xp::CaDerivations);
@@ -395,7 +396,7 @@ std::string Derivation::unparse(const Store & store, bool maskOutputs,
             [&](const DerivationOutput::CAFixed & dof) {
                 s += ','; printUnquotedString(s, maskOutputs ? "" : store.printStorePath(dof.path(store, name, i.first)));
                 s += ','; printUnquotedString(s, dof.ca.printMethodAlgo());
-                s += ','; printUnquotedString(s, dof.ca.getHash().to_string(Base16, false));
+                s += ','; printUnquotedString(s, dof.ca.hash.to_string(Base16, false));
             },
             [&](const DerivationOutput::CAFloating & dof) {
                 s += ','; printUnquotedString(s, "");
@@ -628,7 +629,7 @@ DrvHash hashDerivationModulo(Store & store, const Derivation & drv, bool maskOut
             auto & dof = std::get<DerivationOutput::CAFixed>(i.second.raw());
             auto hash = hashString(htSHA256, "fixed:out:"
                 + dof.ca.printMethodAlgo() + ":"
-                + dof.ca.getHash().to_string(Base16, false) + ":"
+                + dof.ca.hash.to_string(Base16, false) + ":"
                 + store.printStorePath(dof.path(store, drv.name, i.first)));
             outputHashes.insert_or_assign(i.first, std::move(hash));
         }
@@ -780,7 +781,7 @@ void writeDerivation(Sink & out, const Store & store, const BasicDerivation & dr
             [&](const DerivationOutput::CAFixed & dof) {
                 out << store.printStorePath(dof.path(store, drv.name, i.first))
                     << dof.ca.printMethodAlgo()
-                    << dof.ca.getHash().to_string(Base16, false);
+                    << dof.ca.hash.to_string(Base16, false);
             },
             [&](const DerivationOutput::CAFloating & dof) {
                 out << ""
@@ -878,9 +879,11 @@ std::optional<BasicDerivation> Derivation::tryResolve(
     for (auto & [inputDrv, inputOutputs] : inputDrvs) {
         for (auto & outputName : inputOutputs) {
             if (auto actualPath = get(inputDrvOutputs, { inputDrv, outputName })) {
-                inputRewrites.emplace(
-                    DownstreamPlaceholder::unknownCaOutput(inputDrv, outputName).render(),
-                    store.printStorePath(*actualPath));
+                if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations)) {
+                    inputRewrites.emplace(
+                        DownstreamPlaceholder::unknownCaOutput(inputDrv, outputName).render(),
+                        store.printStorePath(*actualPath));
+                }
                 resolved.inputSrcs.insert(*actualPath);
             } else {
                 warn("output '%s' of input '%s' missing, aborting the resolving",
@@ -970,7 +973,7 @@ nlohmann::json DerivationOutput::toJSON(
         [&](const DerivationOutput::CAFixed & dof) {
             res["path"] = store.printStorePath(dof.path(store, drvName, outputName));
             res["hashAlgo"] = dof.ca.printMethodAlgo();
-            res["hash"] = dof.ca.getHash().to_string(Base16, false);
+            res["hash"] = dof.ca.hash.to_string(Base16, false);
             // FIXME print refs?
         },
         [&](const DerivationOutput::CAFloating & dof) {
@@ -992,6 +995,7 @@ DerivationOutput DerivationOutput::fromJSON(
     const ExperimentalFeatureSettings & xpSettings)
 {
     std::set<std::string_view> keys;
+    ensureType(_json, nlohmann::detail::value_t::object);
     auto json = (std::map<std::string, nlohmann::json>) _json;
 
     for (const auto & [key, _] : json)
@@ -1017,9 +1021,10 @@ DerivationOutput DerivationOutput::fromJSON(
     else if (keys == (std::set<std::string_view> { "path", "hashAlgo", "hash" })) {
         auto [method, hashType] = methodAlgo();
         auto dof = DerivationOutput::CAFixed {
-            .ca = ContentAddress::fromParts(
-                std::move(method),
-                Hash::parseNonSRIUnprefixed((std::string) json["hash"], hashType)),
+            .ca = ContentAddress {
+                .method = std::move(method),
+                .hash = Hash::parseNonSRIUnprefixed((std::string) json["hash"], hashType),
+            },
         };
         if (dof.path(store, drvName, outputName) != store.parseStorePath((std::string) json["path"]))
             throw Error("Path doesn't match derivation output");
@@ -1095,36 +1100,51 @@ Derivation Derivation::fromJSON(
     const Store & store,
     const nlohmann::json & json)
 {
+    using nlohmann::detail::value_t;
+
     Derivation res;
 
-    res.name = json["name"];
+    ensureType(json, value_t::object);
 
-    {
-        auto & outputsObj = json["outputs"];
+    res.name = ensureType(valueAt(json, "name"), value_t::string);
+
+    try {
+        auto & outputsObj = ensureType(valueAt(json, "outputs"), value_t::object);
         for (auto & [outputName, output] : outputsObj.items()) {
             res.outputs.insert_or_assign(
                 outputName,
                 DerivationOutput::fromJSON(store, res.name, outputName, output));
         }
+    } catch (Error & e) {
+        e.addTrace({}, "while reading key 'outputs'");
+        throw;
     }
 
-    {
-        auto & inputsList = json["inputSrcs"];
+    try {
+        auto & inputsList = ensureType(valueAt(json, "inputSrcs"), value_t::array);
         for (auto & input : inputsList)
             res.inputSrcs.insert(store.parseStorePath(static_cast<const std::string &>(input)));
+    } catch (Error & e) {
+        e.addTrace({}, "while reading key 'inputSrcs'");
+        throw;
     }
 
-    {
-        auto & inputDrvsObj = json["inputDrvs"];
-        for (auto & [inputDrvPath, inputOutputs] : inputDrvsObj.items())
+    try {
+        auto & inputDrvsObj = ensureType(valueAt(json, "inputDrvs"), value_t::object);
+        for (auto & [inputDrvPath, inputOutputs] : inputDrvsObj.items()) {
+            ensureType(inputOutputs, value_t::array);
             res.inputDrvs[store.parseStorePath(inputDrvPath)] =
                 static_cast<const StringSet &>(inputOutputs);
+        }
+    } catch (Error & e) {
+        e.addTrace({}, "while reading key 'inputDrvs'");
+        throw;
     }
 
-    res.platform = json["system"];
-    res.builder = json["builder"];
-    res.args = json["args"];
-    res.env = json["env"];
+    res.platform = ensureType(valueAt(json, "system"), value_t::string);
+    res.builder = ensureType(valueAt(json, "builder"), value_t::string);
+    res.args = ensureType(valueAt(json, "args"), value_t::array);
+    res.env = ensureType(valueAt(json, "env"), value_t::object);
 
     return res;
 }
