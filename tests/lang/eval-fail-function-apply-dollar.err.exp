@@ -1,0 +1,27 @@
+error:
+       … from call site
+
+         at /pwd/lang/eval-fail-function-apply-dollar.nix:6:10:
+
+            5|   add = a: b: a + b;
+            6| in add a $ a $ b
+             |          ^
+            7|
+
+       … while calling 'add'
+
+         at /pwd/lang/eval-fail-function-apply-dollar.nix:5:12:
+
+            4|
+            5|   add = a: b: a + b;
+             |            ^
+            6| in add a $ a $ b
+
+       error: attempt to call something which is not a function but an integer
+
+       at /pwd/lang/eval-fail-function-apply-dollar.nix:6:14:
+
+            5|   add = a: b: a + b;
+            6| in add a $ a $ b
+             |              ^
+            7|
