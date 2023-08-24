@@ -74,7 +74,7 @@ ref<Installable> SourceExprCommand::modifyInstallable (
     }
     return
         make_ref<InstallableAttrPath>(InstallableAttrPath::parse(
-            state, *this, vRes, prefix, extendedOutputsSpec
+            state, *this, vRes, std::move(prefix), std::move(extendedOutputsSpec)
         ));
 }
 
