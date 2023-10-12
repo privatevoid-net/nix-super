@@ -383,11 +383,16 @@ void completeFlakeRefWithFragment(
                 ? prefix
                 : prefix.substr(hash + 1);
 
+            std::string prefixRoot = "";
+            if (fragment.starts_with(".")){
+                fragment = fragment.substr(1);
+                prefixRoot = ".";
+            }
+
             auto flakeRefS =
                 isAttrPath
                 ? std::string("flake:default")
                 : std::string(prefix.substr(0, hash));
-
             auto flakeRef = parseFlakeRef(expandTilde(flakeRefS), absPath("."));
 
             auto evalCache = openEvalCache(*evalState,
@@ -395,6 +400,9 @@ void completeFlakeRefWithFragment(
 
             auto root = evalCache->getRoot();
 
+            if (prefixRoot == "."){
+                attrPathPrefixes.clear();
+            }
             /* Complete 'fragment' relative to all the
                attrpath prefixes as well as the root of the
                flake. */
@@ -422,7 +430,7 @@ void completeFlakeRefWithFragment(
                         if (isAttrPath)
                             completions->add(concatStringsSep(".", evalState->symbols.resolve(attrPath2)));
                         else
-                            completions->add(flakeRefS + "#" + concatStringsSep(".", evalState->symbols.resolve(attrPath2)));
+                            completions->add(flakeRefS + "#" + prefixRoot + concatStringsSep(".", evalState->symbols.resolve(attrPath2)));
                     }
                 }
             }
@@ -433,7 +441,7 @@ void completeFlakeRefWithFragment(
                 for (auto & attrPath : defaultFlakeAttrPaths) {
                     auto attr = root->findAlongAttrPath(parseAttrPath(*evalState, attrPath));
                     if (!attr) continue;
-                    completions->add(flakeRefS + "#");
+                    completions->add(flakeRefS + "#" + prefixRoot);
                 }
             }
         }

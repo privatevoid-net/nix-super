@@ -1,8 +1,7 @@
 {
   description = "The purely functional package manager - but super!";
 
-  #inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.05-small";
-  inputs.nixpkgs.url = "github:edolstra/nixpkgs/fix-aws-sdk-cpp";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.05-small";
   inputs.nixpkgs-regression.url = "github:NixOS/nixpkgs/215d4d0fd80ca5163643b03a33fde804a29cc1e2";
   inputs.lowdown-src = { url = "github:kristapsdz/lowdown"; flake = false; };
   inputs.flake-compat = { url = "github:edolstra/flake-compat"; flake = false; };
@@ -25,8 +24,11 @@
       linuxSystems = linux32BitSystems ++ linux64BitSystems;
       darwinSystems = [ "x86_64-darwin" "aarch64-darwin" ];
       systems = linuxSystems ++ darwinSystems;
-      
-      crossSystems = [ "armv6l-linux" "armv7l-linux" ];
+
+      crossSystems = [
+        "armv6l-linux" "armv7l-linux"
+        "x86_64-freebsd13" "x86_64-netbsd"
+      ];
 
       stdenvs = [ "gccStdenv" "clangStdenv" "clang11Stdenv" "stdenv" "libcxxStdenv" "ccacheStdenv" ];
 
@@ -57,44 +59,55 @@
         # that would interfere with repo semantics.
         fileset.fileFilter (f: f.name != ".gitignore") ./.;
 
+      configureFiles = fileset.unions [
+        ./.version
+        ./configure.ac
+        ./m4
+        # TODO: do we really need README.md? It doesn't seem used in the build.
+        ./README.md
+      ];
+
+      topLevelBuildFiles = fileset.unions [
+        ./local.mk
+        ./Makefile
+        ./Makefile.config.in
+        ./mk
+      ];
+
+      functionalTestFiles = fileset.unions [
+        ./tests/functional
+        (fileset.fileFilter (f: lib.strings.hasPrefix "nix-profile" f.name) ./scripts)
+      ];
+
       nixSrc = fileset.toSource {
         root = ./.;
-        fileset = fileset.intersect baseFiles (
-          fileset.difference
-            (fileset.unions [
-              ./.version
-              ./boehmgc-coroutine-sp-fallback.diff
-              ./bootstrap.sh
-              ./configure.ac
-              ./doc
-              ./local.mk
-              ./m4
-              ./Makefile
-              ./Makefile.config.in
-              ./misc
-              ./mk
-              ./precompiled-headers.h
-              ./src
-              ./tests
-              ./COPYING
-              ./scripts/local.mk
-              (fileset.fileFilter (f: lib.strings.hasPrefix "nix-profile" f.name) ./scripts)
-              # TODO: do we really need README.md? It doesn't seem used in the build.
-              ./README.md
-            ])
-            (fileset.unions [
-              # Removed file sets
-              ./tests/nixos
-              ./tests/installer
-            ])
-        );
+        fileset = fileset.intersect baseFiles (fileset.unions [
+          configureFiles
+          topLevelBuildFiles
+          ./boehmgc-coroutine-sp-fallback.diff
+          ./doc
+          ./misc
+          ./precompiled-headers.h
+          ./src
+          ./unit-test-data
+          ./COPYING
+          ./scripts/local.mk
+          functionalTestFiles
+        ]);
       };
 
       # Memoize nixpkgs for different platforms for efficiency.
       nixpkgsFor = forAllSystems
         (system: let
           make-pkgs = crossSystem: stdenv: import nixpkgs {
-            inherit system crossSystem;
+            localSystem = {
+              inherit system;
+            };
+            crossSystem = if crossSystem == null then null else {
+              system = crossSystem;
+            } // lib.optionalAttrs (crossSystem == "x86_64-freebsd13") {
+              useLLVM = true;
+            };
             overlays = [
               (overlayFor (p: p.${stdenv}))
             ];
@@ -180,9 +193,9 @@
             libarchive
             boost
             lowdown-nix
+            libsodium
           ]
           ++ lib.optionals stdenv.isLinux [libseccomp]
-          ++ lib.optional (stdenv.isLinux || stdenv.isDarwin) libsodium
           ++ lib.optional stdenv.hostPlatform.isx86_64 libcpuid;
 
         checkDeps = [
@@ -258,7 +271,14 @@
             "-${client.version}-against-${daemon.version}";
         inherit version;
 
-        src = nixSrc;
+        src = fileset.toSource {
+          root = ./.;
+          fileset = fileset.intersect baseFiles (fileset.unions [
+            configureFiles
+            topLevelBuildFiles
+            functionalTestFiles
+          ]);
+        };
 
         VERSION_SUFFIX = versionSuffix;
 
@@ -268,7 +288,9 @@
 
         enableParallelBuilding = true;
 
-        configureFlags = testConfigureFlags; # otherwise configure fails
+        configureFlags =
+          testConfigureFlags # otherwise configure fails
+          ++ [ "--disable-build" ];
         dontBuild = true;
         doInstallCheck = true;
 
@@ -276,7 +298,10 @@
           mkdir -p $out
         '';
 
-        installCheckPhase = "make installcheck -j$NIX_BUILD_CORES -l$NIX_BUILD_CORES";
+        installCheckPhase = ''
+          mkdir -p src/nix-channel
+          make installcheck -j$NIX_BUILD_CORES -l$NIX_BUILD_CORES
+        '';
       };
 
       binaryTarball = nix: pkgs:
@@ -452,7 +477,15 @@
             passthru.perl-bindings = with final; perl.pkgs.toPerlModule (currentStdenv.mkDerivation {
               name = "nix-super-perl-${version}";
 
-              src = self;
+              src = fileset.toSource {
+                root = ./.;
+                fileset = fileset.intersect baseFiles (fileset.unions [
+                  ./perl
+                  ./.version
+                  ./m4
+                  ./mk
+                ]);
+              };
 
               nativeBuildInputs =
                 [ buildPackages.autoconf-archive
@@ -501,18 +534,6 @@
             '';
           };
         };
-
-      nixos-lib = import (nixpkgs + "/nixos/lib") { };
-
-      # https://nixos.org/manual/nixos/unstable/index.html#sec-calling-nixos-tests
-      runNixOSTestFor = system: test: nixos-lib.runTest {
-        imports = [ test ];
-        hostPkgs = nixpkgsFor.${system}.native;
-        defaults = {
-          nixpkgs.pkgs = nixpkgsFor.${system}.native;
-        };
-        _module.args.nixpkgs = nixpkgs;
-      };
 
     in {
       # A Nixpkgs overlay that overrides the 'nix' and
@@ -620,49 +641,29 @@
           };
 
         # System tests.
-        tests.authorization = runNixOSTestFor "x86_64-linux" ./tests/nixos/authorization.nix;
+        tests = import ./tests/nixos { inherit lib nixpkgs nixpkgsFor; } // {
 
-        tests.remoteBuilds = runNixOSTestFor "x86_64-linux" ./tests/nixos/remote-builds.nix;
+          # Make sure that nix-env still produces the exact same result
+          # on a particular version of Nixpkgs.
+          evalNixpkgs =
+            with nixpkgsFor.x86_64-linux.native;
+            runCommand "eval-nixos" { buildInputs = [ nix ]; }
+              ''
+                type -p nix-env
+                # Note: we're filtering out nixos-install-tools because https://github.com/NixOS/nixpkgs/pull/153594#issuecomment-1020530593.
+                time nix-env --store dummy:// -f ${nixpkgs-regression} -qaP --drv-path | sort | grep -v nixos-install-tools > packages
+                [[ $(sha1sum < packages | cut -c1-40) = ff451c521e61e4fe72bdbe2d0ca5d1809affa733 ]]
+                mkdir $out
+              '';
 
-        tests.nix-copy-closure = runNixOSTestFor "x86_64-linux" ./tests/nixos/nix-copy-closure.nix;
-
-        tests.nix-copy = runNixOSTestFor "x86_64-linux" ./tests/nixos/nix-copy.nix;
-
-        tests.nssPreload = runNixOSTestFor "x86_64-linux" ./tests/nixos/nss-preload.nix;
-
-        tests.githubFlakes = runNixOSTestFor "x86_64-linux" ./tests/nixos/github-flakes.nix;
-
-        tests.sourcehutFlakes = runNixOSTestFor "x86_64-linux" ./tests/nixos/sourcehut-flakes.nix;
-
-        tests.tarballFlakes = runNixOSTestFor "x86_64-linux" ./tests/nixos/tarball-flakes.nix;
-
-        tests.containers = runNixOSTestFor "x86_64-linux" ./tests/nixos/containers/containers.nix;
-
-        tests.setuid = lib.genAttrs
-          ["i686-linux" "x86_64-linux"]
-          (system: runNixOSTestFor system ./tests/nixos/setuid.nix);
-
-
-        # Make sure that nix-env still produces the exact same result
-        # on a particular version of Nixpkgs.
-        tests.evalNixpkgs =
-          with nixpkgsFor.x86_64-linux.native;
-          runCommand "eval-nixos" { buildInputs = [ nix ]; }
-            ''
-              type -p nix-env
-              # Note: we're filtering out nixos-install-tools because https://github.com/NixOS/nixpkgs/pull/153594#issuecomment-1020530593.
-              time nix-env --store dummy:// -f ${nixpkgs-regression} -qaP --drv-path | sort | grep -v nixos-install-tools > packages
-              [[ $(sha1sum < packages | cut -c1-40) = ff451c521e61e4fe72bdbe2d0ca5d1809affa733 ]]
-              mkdir $out
-            '';
-
-        tests.nixpkgsLibTests =
-          forAllSystems (system:
-            import (nixpkgs + "/lib/tests/release.nix")
-              { pkgs = nixpkgsFor.${system}.native;
-                nixVersions = [ self.packages.${system}.nix ];
-              }
-          );
+          nixpkgsLibTests =
+            forAllSystems (system:
+              import (nixpkgs + "/lib/tests/release.nix")
+                { pkgs = nixpkgsFor.${system}.native;
+                  nixVersions = [ self.packages.${system}.nix ];
+                }
+            );
+        };
 
         metrics.nixpkgs = import "${nixpkgs-regression}/pkgs/top-level/metrics.nix" {
           pkgs = nixpkgsFor.x86_64-linux.native;
@@ -733,6 +734,9 @@
 
       devShells = let
         makeShell = pkgs: stdenv:
+          let
+            canRunInstalled = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
+          in
           with commonDeps { inherit pkgs; };
           stdenv.mkDerivation {
             name = "nix-super";
@@ -740,13 +744,18 @@
             outputs = [ "out" "dev" "doc" ];
 
             nativeBuildInputs = nativeBuildDeps
-                                ++ (lib.optionals stdenv.cc.isClang [ pkgs.bear pkgs.clang-tools ]);
+              ++ lib.optional stdenv.cc.isClang pkgs.buildPackages.bear
+              ++ lib.optional
+                (stdenv.cc.isClang && stdenv.hostPlatform == stdenv.buildPlatform)
+                pkgs.buildPackages.clang-tools
+              ;
 
             buildInputs = buildDeps ++ propagatedDeps
               ++ awsDeps ++ checkDeps ++ internalApiDocsDeps;
 
             configureFlags = configureFlags
-              ++ testConfigureFlags ++ internalApiDocsConfigureFlags;
+              ++ testConfigureFlags ++ internalApiDocsConfigureFlags
+              ++ lib.optional (!canRunInstalled) "--disable-doc-gen";
 
             enableParallelBuilding = true;
 
