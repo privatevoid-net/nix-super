@@ -294,7 +294,6 @@ struct GitInputScheme : InputScheme
             if (name != "type" && name != "url" && name != "ref" && name != "rev" && name != "shallow" && name != "submodules" && name != "lastModified" && name != "revCount" && name != "narHash" && name != "allRefs" && name != "name" && name != "dirtyRev" && name != "dirtyShortRev")
                 throw Error("unsupported Git input attribute '%s'", name);
 
-        parseURL(getStrAttr(attrs, "url"));
         maybeGetBoolAttr(attrs, "shallow");
         maybeGetBoolAttr(attrs, "submodules");
         maybeGetBoolAttr(attrs, "allRefs");
@@ -306,6 +305,9 @@ struct GitInputScheme : InputScheme
 
         Input input;
         input.attrs = attrs;
+        auto url = fixGitURL(getStrAttr(attrs, "url"));
+        parseURL(url);
+        input.attrs["url"] = url;
         return input;
     }
 
