@@ -5,6 +5,7 @@
 #include "fetchers.hh"
 #include "filetransfer.hh"
 #include "registry.hh"
+#include "tarball.hh"
 #include "url.hh"
 
 #include <ctime>
@@ -15,7 +16,7 @@ namespace nix {
 
 void emitTreeAttrs(
     EvalState & state,
-    const fetchers::Tree & tree,
+    const StorePath & storePath,
     const fetchers::Input & input,
     Value & v,
     bool emptyRevFallback,
@@ -25,13 +26,13 @@ void emitTreeAttrs(
 
     auto attrs = state.buildBindings(10);
 
-    state.mkStorePathString(tree.storePath, attrs.alloc(state.sOutPath));
+    state.mkStorePathString(storePath, attrs.alloc(state.sOutPath));
 
     // FIXME: support arbitrary input attributes.
 
     auto narHash = input.getNarHash();
     assert(narHash);
-    attrs.alloc("narHash").mkString(narHash->to_string(SRI, true));
+    attrs.alloc("narHash").mkString(narHash->to_string(HashFormat::SRI, true));
 
     if (input.getType() == "git")
         attrs.alloc("submodules").mkBool(
@@ -148,6 +149,11 @@ static void fetchTree(
             attrs.emplace("url", fixGitURL(url));
             input = fetchers::Input::fromAttrs(std::move(attrs));
         } else {
+            if (!experimentalFeatureSettings.isEnabled(Xp::Flakes))
+                state.debugThrowLastTrace(EvalError({
+                    .msg = hintfmt("passing a string argument to 'fetchTree' requires the 'flakes' experimental feature"),
+                    .errPos = state.positions[pos]
+                }));
             input = fetchers::Input::fromURL(url);
         }
     }
@@ -160,11 +166,11 @@ static void fetchTree(
 
     state.checkURI(input.toURLString());
 
-    auto [tree, input2] = input.fetch(state.store);
+    auto [storePath, input2] = input.fetch(state.store);
 
-    state.allowPath(tree.storePath);
+    state.allowPath(storePath);
 
-    emitTreeAttrs(state, tree, input2, v, params.emptyRevFallback, false);
+    emitTreeAttrs(state, storePath, input2, v, params.emptyRevFallback, false);
 }
 
 static void prim_fetchTree(EvalState & state, const PosIdx pos, Value * * args, Value & v)
@@ -179,6 +185,10 @@ static RegisterPrimOp primop_fetchTree({
       Fetch a source tree or a plain file using one of the supported backends.
       *input* must be a [flake reference](@docroot@/command-ref/new-cli/nix3-flake.md#flake-references), either in attribute set representation or in the URL-like syntax.
       The input should be "locked", that is, it should contain a commit hash or content hash unless impure evaluation (`--impure`) is enabled.
+
+      > **Note**
+      >
+      > The URL-like syntax requires the [`flakes` experimental feature](@docroot@/contributing/experimental-features.md#xp-feature-flakes) to be enabled.
 
       Here are some examples of how to use `fetchTree`:
 
@@ -213,7 +223,6 @@ static RegisterPrimOp primop_fetchTree({
           ```
     )",
     .fun = prim_fetchTree,
-    .experimentalFeature = Xp::Flakes,
 });
 
 static void fetch(EvalState & state, const PosIdx pos, Value * * args, Value & v,
@@ -280,7 +289,7 @@ static void fetch(EvalState & state, const PosIdx pos, Value * * args, Value & v
     //       https://github.com/NixOS/nix/issues/4313
     auto storePath =
         unpack
-        ? fetchers::downloadTarball(state.store, *url, name, (bool) expectedHash).tree.storePath
+        ? fetchers::downloadTarball(state.store, *url, name, (bool) expectedHash).storePath
         : fetchers::downloadFile(state.store, *url, name, (bool) expectedHash).storePath;
 
     if (expectedHash) {
@@ -289,7 +298,7 @@ static void fetch(EvalState & state, const PosIdx pos, Value * * args, Value & v
             : hashFile(htSHA256, state.store->toRealPath(storePath));
         if (hash != *expectedHash)
             state.debugThrowLastTrace(EvalError((unsigned int) 102, "hash mismatch in file downloaded from '%s':\n  specified: %s\n  got:       %s",
-                *url, expectedHash->to_string(Base32, true), hash.to_string(Base32, true)));
+                *url, expectedHash->to_string(HashFormat::Base32, true), hash.to_string(HashFormat::Base32, true)));
     }
 
     state.allowAndSetStorePathString(storePath, v);
@@ -383,7 +392,7 @@ static RegisterPrimOp primop_fetchGit({
 
         The URL of the repo.
 
-      - `name` (default: *basename of the URL*)
+      - `name` (default: `source`)
 
         The name of the directory the repo should be exported to in the store.
 

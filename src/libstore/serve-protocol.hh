@@ -16,6 +16,9 @@ namespace nix {
 class Store;
 struct Source;
 
+// items being serialised
+struct BuildResult;
+
 
 /**
  * The "serve protocol", used by ssh:// stores.
@@ -31,25 +34,28 @@ struct ServeProto
     enum struct Command : uint64_t;
 
     /**
+     * Version type for the protocol.
+     *
+     * @todo Convert to struct with separate major vs minor fields.
+     */
+    using Version = unsigned int;
+
+    /**
      * A unidirectional read connection, to be used by the read half of the
      * canonical serializers below.
-     *
-     * This currently is just a `Source &`, but more fields will be added
-     * later.
      */
     struct ReadConn {
         Source & from;
+        Version version;
     };
 
     /**
      * A unidirectional write connection, to be used by the write half of the
      * canonical serializers below.
-     *
-     * This currently is just a `Sink &`, but more fields will be added
-     * later.
      */
     struct WriteConn {
         Sink & to;
+        Version version;
     };
 
     /**
@@ -132,6 +138,9 @@ inline std::ostream & operator << (std::ostream & s, ServeProto::Command op)
         static T read(const Store & store, ServeProto::ReadConn conn); \
         static void write(const Store & store, ServeProto::WriteConn conn, const T & t); \
     };
+
+template<>
+DECLARE_SERVE_SERIALISER(BuildResult);
 
 template<typename T>
 DECLARE_SERVE_SERIALISER(std::vector<T>);

@@ -45,7 +45,7 @@ struct LegacySSHStore : public virtual LegacySSHStoreConfig, public virtual Stor
         std::unique_ptr<SSHMaster::Connection> sshConn;
         FdSink to;
         FdSource from;
-        int remoteVersion;
+        ServeProto::Version remoteVersion;
         bool good = true;
 
         /**
@@ -60,6 +60,7 @@ struct LegacySSHStore : public virtual LegacySSHStoreConfig, public virtual Stor
         {
             return ServeProto::ReadConn {
                 .from = from,
+                .version = remoteVersion,
             };
         }
 
@@ -75,6 +76,7 @@ struct LegacySSHStore : public virtual LegacySSHStoreConfig, public virtual Stor
         {
             return ServeProto::WriteConn {
                 .to = to,
+                .version = remoteVersion,
             };
         }
     };
@@ -209,7 +211,7 @@ struct LegacySSHStore : public virtual LegacySSHStoreConfig, public virtual Stor
                 << ServeProto::Command::AddToStoreNar
                 << printStorePath(info.path)
                 << (info.deriver ? printStorePath(*info.deriver) : "")
-                << info.narHash.to_string(Base16, false);
+                << info.narHash.to_string(HashFormat::Base16, false);
             ServeProto::write(*this, *conn, info.references);
             conn->to
                 << info.registrationTime
@@ -317,20 +319,7 @@ public:
 
         conn->to.flush();
 
-        BuildResult status;
-        status.status = (BuildResult::Status) readInt(conn->from);
-        conn->from >> status.errorMsg;
-
-        if (GET_PROTOCOL_MINOR(conn->remoteVersion) >= 3)
-            conn->from >> status.timesBuilt >> status.isNonDeterministic >> status.startTime >> status.stopTime;
-        if (GET_PROTOCOL_MINOR(conn->remoteVersion) >= 6) {
-            auto builtOutputs = ServeProto::Serialise<DrvOutputs>::read(*this, *conn);
-            for (auto && [output, realisation] : builtOutputs)
-                status.builtOutputs.insert_or_assign(
-                    std::move(output.outputName),
-                    std::move(realisation));
-        }
-        return status;
+        return ServeProto::Serialise<BuildResult>::read(*this, *conn);
     }
 
     void buildPaths(const std::vector<DerivedPath> & drvPaths, BuildMode buildMode, std::shared_ptr<Store> evalStore) override

@@ -32,15 +32,18 @@ const static std::regex attrPathRegex(
     R"((?:[a-zA-Z0-9_"-][a-zA-Z0-9_".,^\*-]*))",
     std::regex::ECMAScript);
 
-void completeFlakeInputPath(
+static void completeFlakeInputPath(
+    AddCompletions & completions,
     ref<EvalState> evalState,
-    const FlakeRef & flakeRef,
+    const std::vector<FlakeRef> & flakeRefs,
     std::string_view prefix)
 {
-    auto flake = flake::getFlake(*evalState, flakeRef, true);
-    for (auto & input : flake.inputs)
-        if (hasPrefix(input.first, prefix))
-            completions->add(input.first);
+    for (auto & flakeRef : flakeRefs) {
+        auto flake = flake::getFlake(*evalState, flakeRef, true);
+        for (auto & input : flake.inputs)
+            if (hasPrefix(input.first, prefix))
+                completions.add(input.first);
+    }
 }
 
 MixFlakeOptions::MixFlakeOptions()
@@ -94,8 +97,8 @@ MixFlakeOptions::MixFlakeOptions()
         .handler = {[&](std::string s) {
             lockFlags.inputUpdates.insert(flake::parseInputPath(s));
         }},
-        .completer = {[&](size_t, std::string_view prefix) {
-            needsFlakeInputCompletion = {std::string(prefix)};
+        .completer = {[&](AddCompletions & completions, size_t, std::string_view prefix) {
+            completeFlakeInputPath(completions, getEvalState(), getFlakeRefsForCompletion(), prefix);
         }}
     });
 
@@ -110,11 +113,12 @@ MixFlakeOptions::MixFlakeOptions()
                 flake::parseInputPath(inputPath),
                 parseFlakeRef(flakeRef, absPath("."), true));
         }},
-        .completer = {[&](size_t n, std::string_view prefix) {
-            if (n == 0)
-                needsFlakeInputCompletion = {std::string(prefix)};
-            else if (n == 1)
-                completeFlakeRef(getEvalState()->store, prefix);
+        .completer = {[&](AddCompletions & completions, size_t n, std::string_view prefix) {
+            if (n == 0) {
+                completeFlakeInputPath(completions, getEvalState(), getFlakeRefsForCompletion(), prefix);
+            } else if (n == 1) {
+                completeFlakeRef(completions, getEvalState()->store, prefix);
+            }
         }}
     });
 
@@ -161,28 +165,10 @@ MixFlakeOptions::MixFlakeOptions()
                 }
             }
         }},
-        .completer = {[&](size_t, std::string_view prefix) {
-            completeFlakeRef(getEvalState()->store, prefix);
+        .completer = {[&](AddCompletions & completions, size_t, std::string_view prefix) {
+            completeFlakeRef(completions, getEvalState()->store, prefix);
         }}
     });
-}
-
-void MixFlakeOptions::completeFlakeInput(std::string_view prefix)
-{
-    auto evalState = getEvalState();
-    for (auto & flakeRefS : getFlakesForCompletion()) {
-        auto flakeRef = parseFlakeRefWithFragment(expandTilde(flakeRefS), absPath(".")).first;
-        auto flake = flake::getFlake(*evalState, flakeRef, true);
-        for (auto & input : flake.inputs)
-            if (hasPrefix(input.first, prefix))
-                completions->add(input.first);
-    }
-}
-
-void MixFlakeOptions::completionHook()
-{
-    if (auto & prefix = needsFlakeInputCompletion)
-        completeFlakeInput(*prefix);
 }
 
 SourceExprCommand::SourceExprCommand()
@@ -302,11 +288,18 @@ Strings SourceExprCommand::getDefaultFlakeAttrPathPrefixes()
     };
 }
 
-void SourceExprCommand::completeInstallable(std::string_view prefix)
+Args::CompleterClosure SourceExprCommand::getCompleteInstallable()
+{
+    return [this](AddCompletions & completions, size_t, std::string_view prefix) {
+        completeInstallable(completions, prefix);
+    };
+}
+
+void SourceExprCommand::completeInstallable(AddCompletions & completions, std::string_view prefix)
 {
     try {
         if (file) {
-            completionType = ctAttrs;
+            completions.setType(AddCompletions::Type::Attrs);
 
             evalSettings.pureEval = false;
             auto state = getEvalState();
@@ -341,14 +334,15 @@ void SourceExprCommand::completeInstallable(std::string_view prefix)
                     std::string name = state->symbols[i.name];
                     if (name.find(searchWord) == 0) {
                         if (prefix_ == "")
-                            completions->add(name);
+                            completions.add(name);
                         else
-                            completions->add(prefix_ + "." + name);
+                            completions.add(prefix_ + "." + name);
                     }
                 }
             }
         } else {
             completeFlakeRefWithFragment(
+                completions,
                 getEvalState(),
                 lockFlags,
                 getDefaultFlakeAttrPathPrefixes(),
@@ -361,6 +355,7 @@ void SourceExprCommand::completeInstallable(std::string_view prefix)
 }
 
 void completeFlakeRefWithFragment(
+    AddCompletions & completions,
     ref<EvalState> evalState,
     flake::LockFlags lockFlags,
     Strings attrPathPrefixes,
@@ -373,10 +368,9 @@ void completeFlakeRefWithFragment(
         bool isAttrPath = std::regex_match(prefix.begin(), prefix.end(), attrPathRegex);
         auto hash = prefix.find('#');
         if (!isAttrPath && hash == std::string::npos) {
-            completeFlakeRef(evalState->store, prefix);
+            completeFlakeRef(completions, evalState->store, prefix);
         } else {
-
-            completionType = ctAttrs;
+            completions.setType(AddCompletions::Type::Attrs);
 
             auto fragment =
                 isAttrPath
@@ -428,9 +422,9 @@ void completeFlakeRefWithFragment(
                         /* Strip the attrpath prefix. */
                         attrPath2.erase(attrPath2.begin(), attrPath2.begin() + attrPathPrefix.size());
                         if (isAttrPath)
-                            completions->add(concatStringsSep(".", evalState->symbols.resolve(attrPath2)));
+                            completions.add(concatStringsSep(".", evalState->symbols.resolve(attrPath2)));
                         else
-                            completions->add(flakeRefS + "#" + prefixRoot + concatStringsSep(".", evalState->symbols.resolve(attrPath2)));
+                            completions.add(flakeRefS + "#" + prefixRoot + concatStringsSep(".", evalState->symbols.resolve(attrPath2)));
                     }
                 }
             }
@@ -441,7 +435,7 @@ void completeFlakeRefWithFragment(
                 for (auto & attrPath : defaultFlakeAttrPaths) {
                     auto attr = root->findAlongAttrPath(parseAttrPath(*evalState, attrPath));
                     if (!attr) continue;
-                    completions->add(flakeRefS + "#" + prefixRoot);
+                    completions.add(flakeRefS + "#" + prefixRoot);
                 }
             }
         }
@@ -450,15 +444,15 @@ void completeFlakeRefWithFragment(
     }
 }
 
-void completeFlakeRef(ref<Store> store, std::string_view prefix)
+void completeFlakeRef(AddCompletions & completions, ref<Store> store, std::string_view prefix)
 {
     if (!experimentalFeatureSettings.isEnabled(Xp::Flakes))
         return;
 
     if (prefix == "")
-        completions->add(".");
+        completions.add(".");
 
-    completeDir(0, prefix);
+    Args::completeDir(completions, 0, prefix);
 
     /* Look for registry entries that match the prefix. */
     for (auto & registry : fetchers::getRegistries(store)) {
@@ -467,10 +461,10 @@ void completeFlakeRef(ref<Store> store, std::string_view prefix)
             if (!hasPrefix(prefix, "flake:") && hasPrefix(from, "flake:")) {
                 std::string from2(from, 6);
                 if (hasPrefix(from2, prefix))
-                    completions->add(from2);
+                    completions.add(from2);
             } else {
                 if (hasPrefix(from, prefix))
-                    completions->add(from);
+                    completions.add(from);
             }
         }
     }
@@ -905,9 +899,7 @@ RawInstallablesCommand::RawInstallablesCommand()
     expectArgs({
         .label = "installables",
         .handler = {&rawInstallables},
-        .completer = {[&](size_t, std::string_view prefix) {
-            completeInstallable(prefix);
-        }}
+        .completer = getCompleteInstallable(),
     });
 }
 
@@ -918,6 +910,17 @@ void RawInstallablesCommand::applyDefaultInstallables(std::vector<std::string> &
         // default, probably.
         rawInstallables.push_back(".");
     }
+}
+
+std::vector<FlakeRef> RawInstallablesCommand::getFlakeRefsForCompletion()
+{
+    applyDefaultInstallables(rawInstallables);
+    std::vector<FlakeRef> res;
+    for (auto i : rawInstallables)
+        res.push_back(parseFlakeRefWithFragment(
+            expandTilde(i),
+            absPath(".")).first);
+    return res;
 }
 
 void RawInstallablesCommand::run(ref<Store> store)
@@ -933,10 +936,13 @@ void RawInstallablesCommand::run(ref<Store> store)
     run(store, std::move(rawInstallables));
 }
 
-std::vector<std::string> RawInstallablesCommand::getFlakesForCompletion()
+std::vector<FlakeRef> InstallableCommand::getFlakeRefsForCompletion()
 {
-    applyDefaultInstallables(rawInstallables);
-    return rawInstallables;
+    return {
+        parseFlakeRefWithFragment(
+            expandTilde(_installable),
+            absPath(".")).first
+    };
 }
 
 void InstallablesCommand::run(ref<Store> store, std::vector<std::string> && rawInstallables)
@@ -952,9 +958,7 @@ InstallableCommand::InstallableCommand()
         .label = "installable",
         .optional = true,
         .handler = {&_installable},
-        .completer = {[&](size_t, std::string_view prefix) {
-            completeInstallable(prefix);
-        }}
+        .completer = getCompleteInstallable(),
     });
 }
 
