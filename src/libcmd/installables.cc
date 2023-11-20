@@ -4,6 +4,7 @@
 #include "installable-attr-path.hh"
 #include "installable-flake.hh"
 #include "outputs-spec.hh"
+#include "users.hh"
 #include "util.hh"
 #include "command.hh"
 #include "attr-path.hh"
@@ -32,7 +33,7 @@ const static std::regex attrPathRegex(
     R"((?:[a-zA-Z0-9_"-][a-zA-Z0-9_".,^\*-]*))",
     std::regex::ECMAScript);
 
-static void completeFlakeInputPath(
+void completeFlakeInputPath(
     AddCompletions & completions,
     ref<EvalState> evalState,
     const std::vector<FlakeRef> & flakeRefs,
@@ -49,13 +50,6 @@ static void completeFlakeInputPath(
 MixFlakeOptions::MixFlakeOptions()
 {
     auto category = "Common flake-related options";
-
-    addFlag({
-        .longName = "recreate-lock-file",
-        .description = "Recreate the flake's lock file from scratch.",
-        .category = category,
-        .handler = {&lockFlags.recreateLockFile, true}
-    });
 
     addFlag({
         .longName = "no-update-lock-file",
@@ -90,19 +84,6 @@ MixFlakeOptions::MixFlakeOptions()
     });
 
     addFlag({
-        .longName = "update-input",
-        .description = "Update a specific flake input (ignoring its previous entry in the lock file).",
-        .category = category,
-        .labels = {"input-path"},
-        .handler = {[&](std::string s) {
-            lockFlags.inputUpdates.insert(flake::parseInputPath(s));
-        }},
-        .completer = {[&](AddCompletions & completions, size_t, std::string_view prefix) {
-            completeFlakeInputPath(completions, getEvalState(), getFlakeRefsForCompletion(), prefix);
-        }}
-    });
-
-    addFlag({
         .longName = "override-input",
         .description = "Override a specific flake input (e.g. `dwarffs/nixpkgs`). This implies `--no-write-lock-file`.",
         .category = category,
@@ -111,7 +92,7 @@ MixFlakeOptions::MixFlakeOptions()
             lockFlags.writeLockFile = false;
             lockFlags.inputOverrides.insert_or_assign(
                 flake::parseInputPath(inputPath),
-                parseFlakeRef(flakeRef, absPath("."), true));
+                parseFlakeRef(flakeRef, absPath(getCommandBaseDir()), true));
         }},
         .completer = {[&](AddCompletions & completions, size_t n, std::string_view prefix) {
             if (n == 0) {
@@ -153,7 +134,7 @@ MixFlakeOptions::MixFlakeOptions()
             auto evalState = getEvalState();
             auto flake = flake::lockFlake(
                 *evalState,
-                parseFlakeRef(flakeRef, absPath(".")),
+                parseFlakeRef(flakeRef, absPath(getCommandBaseDir())),
                 { .writeLockFile = false });
             for (auto & [inputName, input] : flake.lockFile.root->inputs) {
                 auto input2 = flake.lockFile.findInput({inputName}); // resolve 'follows' nodes
@@ -387,6 +368,8 @@ void completeFlakeRefWithFragment(
                 isAttrPath
                 ? std::string("flake:default")
                 : std::string(prefix.substr(0, hash));
+
+            // TODO: ideally this would use the command base directory instead of assuming ".".
             auto flakeRef = parseFlakeRef(expandTilde(flakeRefS), absPath("."));
 
             auto evalCache = openEvalCache(*evalState,
@@ -573,12 +556,13 @@ Installables SourceExprCommand::parseInstallables(
             state->eval(e, *vFile);
         }
         else if (file)
-            state->evalFile(lookupFileArg(*state, *file), *vFile);
+            state->evalFile(lookupFileArg(*state, *file, CanonPath::fromCwd(getCommandBaseDir())), *vFile);
         else if (callPackageFile) {
             auto e = state->parseExprFromString(fmt("(import <nixpkgs> {}).callPackage %s {}", CanonPath::fromCwd(*callPackageFile)), state->rootPath(CanonPath::fromCwd()));
             state->eval(e, *vFile);
         } else {
-            auto e = state->parseExprFromString(*expr, state->rootPath(CanonPath::fromCwd()));
+            CanonPath dir(CanonPath::fromCwd(getCommandBaseDir()));
+            auto e = state->parseExprFromString(*expr, state->rootPath(dir));
             state->eval(e, *vFile);
         }
 
@@ -629,7 +613,7 @@ Installables SourceExprCommand::parseInstallables(
 
                 auto actualRef = isAttrPath ? "flake:default#" + prefixS : prefixS;
                 
-                auto [flakeRef, fragment] = parseFlakeRefWithFragment(actualRef, absPath("."));
+                auto [flakeRef, fragment] = parseFlakeRefWithFragment(actualRef, absPath(getCommandBaseDir()));
 
                 auto state = getEvalState();
 
@@ -829,7 +813,7 @@ BuiltPaths Installable::toBuiltPaths(
 
         BuiltPaths res;
         for (auto & drvPath : Installable::toDerivations(store, installables, true))
-            res.push_back(BuiltPath::Opaque{drvPath});
+            res.emplace_back(BuiltPath::Opaque{drvPath});
         return res;
     }
 }
@@ -919,7 +903,7 @@ std::vector<FlakeRef> RawInstallablesCommand::getFlakeRefsForCompletion()
     for (auto i : rawInstallables)
         res.push_back(parseFlakeRefWithFragment(
             expandTilde(i),
-            absPath(".")).first);
+            absPath(getCommandBaseDir())).first);
     return res;
 }
 
@@ -941,7 +925,7 @@ std::vector<FlakeRef> InstallableCommand::getFlakeRefsForCompletion()
     return {
         parseFlakeRefWithFragment(
             expandTilde(_installable),
-            absPath(".")).first
+            absPath(getCommandBaseDir())).first
     };
 }
 

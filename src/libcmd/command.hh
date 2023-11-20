@@ -375,6 +375,12 @@ public:
     const std::string selfCommandName;
 };
 
+void completeFlakeInputPath(
+    AddCompletions & completions,
+    ref<EvalState> evalState,
+    const std::vector<FlakeRef> & flakeRefs,
+    std::string_view prefix);
+
 void completeFlakeRef(AddCompletions & completions, ref<Store> store, std::string_view prefix);
 
 void completeFlakeRefWithFragment(
