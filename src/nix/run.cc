@@ -151,7 +151,7 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             auto pathString = store->printStorePath(path);
 
             for (auto const& pathV : pathVarMapping) {
-                if (accessor->stat(pathString + pathV.second).type != FSAccessor::tMissing)
+                if (auto st = accessor->maybeLstat(CanonPath(pathString + pathV.second)); st)
                     pathVars[pathV.first].push_front(pathString + pathV.second);
             }
 

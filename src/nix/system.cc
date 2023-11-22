@@ -1,6 +1,7 @@
 #include "command.hh"
 #include "activatables.hh"
 #include "progress-bar.hh"
+#include "current-process.hh"
 
 using namespace nix;
 
