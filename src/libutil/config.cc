@@ -510,6 +510,7 @@ bool ExperimentalFeatureSettings::isEnabled(const ExperimentalFeature & feature)
     case ExperimentalFeature::Flakes:
     case ExperimentalFeature::NixCommand:
     case ExperimentalFeature::ReplFlake:
+    case ExperimentalFeature::FetchTree:
         return true;
     default:
         break;

@@ -25,6 +25,7 @@ The following experimental features are enabled by default:
 - `flakes` (`Xp::Flakes`)
 - `nix-command` (`Xp::NixCommand`)
 - `repl-flake` (`Xp::ReplFlake`)
+- `fetch-tree` (`Xp::FetchTree`)
 
 ### Full thunk evaluation in `flake.nix`
 
