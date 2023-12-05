@@ -14,6 +14,9 @@
 
       officialRelease = false;
 
+      # Set to true to build the release notes for the next release.
+      buildUnreleasedNotes = false;
+
       version = lib.fileContents ./.version + versionSuffix;
       versionSuffix =
         if officialRelease
@@ -90,7 +93,7 @@
           ./misc
           ./precompiled-headers.h
           ./src
-          ./unit-test-data
+          ./tests/unit
           ./COPYING
           ./scripts/local.mk
           functionalTestFiles
@@ -173,6 +176,8 @@
           "--enable-internal-api-docs"
         ];
 
+        changelog-d = pkgs.buildPackages.changelog-d;
+
         nativeBuildDeps =
           [
             buildPackages.bison
@@ -190,7 +195,10 @@
             buildPackages.jq # Also for custom mdBook preprocessor.
             buildPackages.openssh # only needed for tests (ssh-keygen)
           ]
-          ++ lib.optionals stdenv.hostPlatform.isLinux [(buildPackages.util-linuxMinimal or buildPackages.utillinuxMinimal)];
+          ++ lib.optionals stdenv.hostPlatform.isLinux [(buildPackages.util-linuxMinimal or buildPackages.utillinuxMinimal)]
+          # Official releases don't have rl-next, so we don't need to compile a changelog
+          ++ lib.optional (!officialRelease && buildUnreleasedNotes) changelog-d
+          ;
 
         buildDeps =
           [ curl
@@ -230,6 +238,9 @@
             }).overrideAttrs(o: {
               patches = (o.patches or []) ++ [
                 ./boehmgc-coroutine-sp-fallback.diff
+
+                # https://github.com/ivmai/bdwgc/pull/586
+                ./boehmgc-traceable_allocator-public.diff
               ];
             })
             )
@@ -727,6 +738,8 @@
               ++ lib.optional
                 (stdenv.cc.isClang && stdenv.hostPlatform == stdenv.buildPlatform)
                 pkgs.buildPackages.clang-tools
+              # We want changelog-d in the shell even if the current build doesn't need it
+              ++ lib.optional (officialRelease || ! buildUnreleasedNotes) changelog-d
               ;
 
             buildInputs = buildDeps ++ propagatedDeps

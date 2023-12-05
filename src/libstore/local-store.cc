@@ -4,6 +4,7 @@
 #include "pathlocks.hh"
 #include "worker-protocol.hh"
 #include "derivations.hh"
+#include "realisation.hh"
 #include "nar-info.hh"
 #include "references.hh"
 #include "callback.hh"
@@ -34,7 +35,6 @@
 #include <sys/statvfs.h>
 #include <sys/mount.h>
 #include <sys/ioctl.h>
-#include <sys/xattr.h>
 #endif
 
 #ifdef __CYGWIN__

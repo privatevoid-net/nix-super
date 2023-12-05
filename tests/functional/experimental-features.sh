@@ -33,7 +33,7 @@ skipTest "Nix Super"
 NIX_CONFIG='
   experimental-features = nix-command
   accept-flake-config = true
-' nix show-config accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
+' nix config show accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
 grepQuiet "false" $TEST_ROOT/stdout
 grepQuiet "Ignoring setting 'accept-flake-config' because experimental feature 'flakes' is not enabled" $TEST_ROOT/stderr
 
@@ -41,7 +41,7 @@ grepQuiet "Ignoring setting 'accept-flake-config' because experimental feature '
 NIX_CONFIG='
   accept-flake-config = true
   experimental-features = nix-command
-' nix show-config accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
+' nix config show accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
 grepQuiet "false" $TEST_ROOT/stdout
 grepQuiet "Ignoring setting 'accept-flake-config' because experimental feature 'flakes' is not enabled" $TEST_ROOT/stderr
 
@@ -49,7 +49,7 @@ grepQuiet "Ignoring setting 'accept-flake-config' because experimental feature '
 NIX_CONFIG='
   experimental-features = nix-command flakes
   accept-flake-config = true
-' nix show-config accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
+' nix config show accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
 grepQuiet "true" $TEST_ROOT/stdout
 grepQuietInverse "Ignoring setting 'accept-flake-config'" $TEST_ROOT/stderr
 
@@ -57,7 +57,7 @@ grepQuietInverse "Ignoring setting 'accept-flake-config'" $TEST_ROOT/stderr
 NIX_CONFIG='
   accept-flake-config = true
   experimental-features = nix-command flakes
-' nix show-config accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
+' nix config show accept-flake-config 1>$TEST_ROOT/stdout 2>$TEST_ROOT/stderr
 grepQuiet "true" $TEST_ROOT/stdout
 grepQuietInverse "Ignoring setting 'accept-flake-config'" $TEST_ROOT/stderr
 

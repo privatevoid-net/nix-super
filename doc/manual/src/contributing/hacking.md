@@ -10,7 +10,7 @@ $ cd nix
 
 The following instructions assume you already have some version of Nix installed locally, so that you can use it to set up the development environment. If you don't have it installed, follow the [installation instructions].
 
-[installation instructions]: ../installation/installation.md
+[installation instructions]: ../installation/index.md
 
 ## Building Nix with flakes
 
@@ -146,6 +146,31 @@ $ nix build .#packages.aarch64-linux.default
 Cross-compiled builds are available for ARMv6 (`armv6l-linux`) and ARMv7 (`armv7l-linux`).
 Add more [system types](#system-type) to `crossSystems` in `flake.nix` to bootstrap Nix on unsupported platforms.
 
+### Building for multiple platforms at once
+
+It is useful to perform multiple cross and native builds on the same source tree,
+for example to ensure that better support for one platform doesn't break the build for another.
+In order to facilitate this, Nix has some support for being built out of tree – that is, placing build artefacts in a different directory than the source code:
+
+1. Create a directory for the build, e.g.
+
+   ```bash
+   mkdir build
+   ```
+
+2. Run the configure script from that directory, e.g.
+
+   ```bash
+   cd build
+   ../configure <configure flags>
+   ```
+
+3. Run make from the source directory, but with the build directory specified, e.g.
+
+   ```bash
+   make builddir=build <make flags>
+   ```
+
 ## System type
 
 Nix uses a string with he following format to identify the *system type* or *platform* it runs on:
@@ -220,3 +245,41 @@ Configure your editor to use the `clangd` from the shell, either by running it i
 > For some editors (e.g. Visual Studio Code), you may need to install a [special extension](https://open-vsx.org/extension/llvm-vs-code-extensions/vscode-clangd) for the editor to interact with `clangd`.
 > Some other editors (e.g. Emacs, Vim) need a plugin to support LSP servers in general (e.g. [lsp-mode](https://github.com/emacs-lsp/lsp-mode) for Emacs and [vim-lsp](https://github.com/prabirshrestha/vim-lsp) for vim).
 > Editor-specific setup is typically opinionated, so we will not cover it here in more detail.
+
+## Add a release note
+
+`doc/manual/rl-next` contains release notes entries for all unreleased changes.
+
+User-visible changes should come with a release note.
+
+### Add an entry
+
+Here's what a complete entry looks like. The file name is not incorporated in the document.
+
+```
+synopsis: Basically a title
+issues: #1234
+prs: #1238
+description: {
+
+Here's one or more paragraphs that describe the change.
+
+- It's markdown
+- Add references to the manual using @docroot@
+
+}
+```
+
+Significant changes should add the following header, which moves them to the top.
+
+```
+significance: significant
+```
+
+<!-- Keep an eye on https://codeberg.org/fgaz/changelog-d/issues/1 -->
+See also the [format documentation](https://github.com/haskell/cabal/blob/master/CONTRIBUTING.md#changelog).
+
+### Build process
+
+Releases have a precomputed `rl-MAJOR.MINOR.md`, and no `rl-next.md`.
+Set `buildUnreleasedNotes = true;` in `flake.nix` to build the release notes on the fly.
