@@ -27,6 +27,11 @@ The following experimental features are enabled by default:
 - `repl-flake` (`Xp::ReplFlake`)
 - `fetch-tree` (`Xp::FetchTree`)
 
+### Additional settings
+
+The following settings are added to this fork:
+- `reject-flake-config`: rejects all flake configuration (including whitelisted settings) and warns about it
+
 ### Full thunk evaluation in `flake.nix`
 
 In stock Nix, only the outputs section of `flake.nix` is able to make full use of the Nix language.

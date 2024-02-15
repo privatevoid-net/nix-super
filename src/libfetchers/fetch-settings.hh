@@ -87,6 +87,10 @@ struct FetchSettings : public Config
         "Whether to accept nix configuration from a flake without prompting.",
         {}, true, Xp::Flakes};
 
+    Setting<bool> rejectFlakeConfig{this, false, "reject-flake-config",
+        "Whether to reject nix configuration (including whitelisted settings) from a flake without prompting.",
+        {}, true, Xp::Flakes};
+
     Setting<std::string> commitLockFileSummary{
         this, "", "commit-lockfile-summary",
         R"(
