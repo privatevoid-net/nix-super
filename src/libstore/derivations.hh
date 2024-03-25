@@ -75,9 +75,9 @@ struct DerivationOutput
         /**
          * How the serialization will be hashed
          */
-        HashType hashType;
+        HashAlgorithm hashAlgo;
 
-        GENERATE_CMP(CAFloating, me->method, me->hashType);
+        GENERATE_CMP(CAFloating, me->method, me->hashAlgo);
     };
 
     /**
@@ -102,9 +102,9 @@ struct DerivationOutput
         /**
          * How the serialization will be hashed
          */
-        HashType hashType;
+        HashAlgorithm hashAlgo;
 
-        GENERATE_CMP(Impure, me->method, me->hashType);
+        GENERATE_CMP(Impure, me->method, me->hashAlgo);
     };
 
     typedef std::variant<
@@ -253,12 +253,17 @@ struct DerivationType {
     bool isSandboxed() const;
 
     /**
-     * Whether the derivation is expected to produce the same result
-     * every time, and therefore it only needs to be built once. This is
-     * only false for derivations that have the attribute '__impure =
+     * Whether the derivation is expected to produce a different result
+     * every time, and therefore it needs to be rebuilt every time. This is
+     * only true for derivations that have the attribute '__impure =
      * true'.
+     *
+     * Non-impure derivations can still behave impurely, to the degree permitted
+     * by the sandbox. Hence why this method isn't `isPure`: impure derivations
+     * are not the negation of pure derivations. Purity can not be ascertained
+     * except by rather heavy tools.
      */
-    bool isPure() const;
+    bool isImpure() const;
 
     /**
      * Does the derivation knows its own output paths?
@@ -342,7 +347,7 @@ struct Derivation : BasicDerivation
      * 2. Input placeholders are replaced with realized input store
      *    paths.
      */
-    std::optional<BasicDerivation> tryResolve(Store & store) const;
+    std::optional<BasicDerivation> tryResolve(Store & store, Store * evalStore = nullptr) const;
 
     /**
      * Like the above, but instead of querying the Nix database for

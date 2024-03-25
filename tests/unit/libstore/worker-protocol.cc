@@ -55,15 +55,15 @@ VERSIONED_CHARACTERIZATION_TEST(
     (std::tuple<ContentAddress, ContentAddress, ContentAddress> {
         ContentAddress {
             .method = TextIngestionMethod {},
-            .hash = hashString(HashType::htSHA256, "Derive(...)"),
+            .hash = hashString(HashAlgorithm::SHA256, "Derive(...)"),
         },
         ContentAddress {
             .method = FileIngestionMethod::Flat,
-            .hash = hashString(HashType::htSHA1, "blob blob..."),
+            .hash = hashString(HashAlgorithm::SHA1, "blob blob..."),
         },
         ContentAddress {
             .method = FileIngestionMethod::Recursive,
-            .hash = hashString(HashType::htSHA256, "(...)"),
+            .hash = hashString(HashAlgorithm::SHA256, "(...)"),
         },
     }))
 
@@ -280,13 +280,60 @@ VERSIONED_CHARACTERIZATION_TEST(
                 },
                 .startTime = 30,
                 .stopTime = 50,
-#if 0
-                // These fields are not yet serialized.
-                // FIXME Include in next version of protocol or document
-                // why they are skipped.
-                .cpuUser = std::chrono::milliseconds(500s),
-                .cpuSystem = std::chrono::milliseconds(604s),
-#endif
+            },
+        };
+        t;
+    }))
+
+VERSIONED_CHARACTERIZATION_TEST(
+    WorkerProtoTest,
+    buildResult_1_37,
+    "build-result-1.37",
+    1 << 8 | 37,
+    ({
+        using namespace std::literals::chrono_literals;
+        std::tuple<BuildResult, BuildResult, BuildResult> t {
+            BuildResult {
+                .status = BuildResult::OutputRejected,
+                .errorMsg = "no idea why",
+            },
+            BuildResult {
+                .status = BuildResult::NotDeterministic,
+                .errorMsg = "no idea why",
+                .timesBuilt = 3,
+                .isNonDeterministic = true,
+                .startTime = 30,
+                .stopTime = 50,
+            },
+            BuildResult {
+                .status = BuildResult::Built,
+                .timesBuilt = 1,
+                .builtOutputs = {
+                    {
+                        "foo",
+                        {
+                            .id = DrvOutput {
+                                .drvHash = Hash::parseSRI("sha256-b4afnqKCO9oWXgYHb9DeQ2berSwOjS27rSd9TxXDc/U="),
+                                .outputName = "foo",
+                            },
+                            .outPath = StorePath { "g1w7hy3qg1w7hy3qg1w7hy3qg1w7hy3q-foo" },
+                        },
+                    },
+                    {
+                        "bar",
+                        {
+                            .id = DrvOutput {
+                                .drvHash = Hash::parseSRI("sha256-b4afnqKCO9oWXgYHb9DeQ2berSwOjS27rSd9TxXDc/U="),
+                                .outputName = "bar",
+                            },
+                            .outPath = StorePath { "g1w7hy3qg1w7hy3qg1w7hy3qg1w7hy3q-bar" },
+                        },
+                    },
+                },
+                .startTime = 30,
+                .stopTime = 50,
+                .cpuUser = std::chrono::microseconds(500s),
+                .cpuSystem = std::chrono::microseconds(604s),
             },
         };
         t;
@@ -464,7 +511,7 @@ VERSIONED_CHARACTERIZATION_TEST(
                 "foo",
                 FixedOutputInfo {
                     .method = FileIngestionMethod::Recursive,
-                    .hash = hashString(HashType::htSHA256, "(...)"),
+                    .hash = hashString(HashAlgorithm::SHA256, "(...)"),
                     .references = {
                         .others = {
                             StorePath {
@@ -539,7 +586,7 @@ VERSIONED_CHARACTERIZATION_TEST(
         std::optional {
             ContentAddress {
                 .method = FileIngestionMethod::Flat,
-                .hash = hashString(HashType::htSHA1, "blob blob..."),
+                .hash = hashString(HashAlgorithm::SHA1, "blob blob..."),
             },
         },
     }))

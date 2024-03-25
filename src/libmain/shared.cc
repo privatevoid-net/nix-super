@@ -343,7 +343,7 @@ int handleExceptions(const std::string & programName, std::function<void()> fun)
         return 1;
     } catch (BaseError & e) {
         logError(e.info());
-        return e.status;
+        return e.info().status;
     } catch (std::bad_alloc & e) {
         printError(error + "out of memory");
         return 1;
@@ -410,7 +410,5 @@ PrintFreed::~PrintFreed()
             results.paths.size(),
             showBytes(results.bytesFreed));
 }
-
-Exit::~Exit() { }
 
 }

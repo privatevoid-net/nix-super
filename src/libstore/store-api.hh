@@ -13,6 +13,7 @@
 #include "path-info.hh"
 #include "repair-flag.hh"
 #include "store-dir-config.hh"
+#include "source-path.hh"
 
 #include <nlohmann/json_fwd.hpp>
 #include <atomic>
@@ -107,7 +108,7 @@ struct StoreConfig : public StoreDirConfig
 
     StoreConfig() = delete;
 
-    StringSet getDefaultSystemFeatures();
+    static StringSet getDefaultSystemFeatures();
 
     virtual ~StoreConfig() { }
 
@@ -282,6 +283,16 @@ public:
         Callback<ref<const ValidPathInfo>> callback) noexcept;
 
     /**
+     * Version of queryPathInfo() that only queries the local narinfo cache and not
+     * the actual store.
+     *
+     * @return `std::nullopt` if nothing is known about the path in the local narinfo cache.
+     * @return `std::make_optional(nullptr)` if the path is known to not exist.
+     * @return `std::make_optional(validPathInfo)` if the path is known to exist.
+     */
+    std::optional<std::shared_ptr<const ValidPathInfo>> queryPathInfoFromClientCache(const StorePath & path);
+
+    /**
      * Query the information about a realisation.
      */
     std::shared_ptr<const Realisation> queryRealisation(const DrvOutput &);
@@ -369,7 +380,7 @@ public:
      * Query the mapping outputName=>outputPath for the given derivation.
      * Assume every output has a mapping and throw an exception otherwise.
      */
-    OutputPathMap queryDerivationOutputMap(const StorePath & path);
+    OutputPathMap queryDerivationOutputMap(const StorePath & path, Store * evalStore = nullptr);
 
     /**
      * Query the full store path given the hash part of a valid store
@@ -428,20 +439,26 @@ public:
      */
     virtual StorePath addToStore(
         std::string_view name,
-        const Path & srcPath,
-        FileIngestionMethod method = FileIngestionMethod::Recursive,
-        HashType hashAlgo = htSHA256,
+        SourceAccessor & accessor,
+        const CanonPath & path,
+        ContentAddressMethod method = FileIngestionMethod::Recursive,
+        HashAlgorithm hashAlgo = HashAlgorithm::SHA256,
+        const StorePathSet & references = StorePathSet(),
         PathFilter & filter = defaultPathFilter,
-        RepairFlag repair = NoRepair,
-        const StorePathSet & references = StorePathSet());
+        RepairFlag repair = NoRepair);
 
     /**
      * Copy the contents of a path to the store and register the
      * validity the resulting path, using a constant amount of
      * memory.
      */
-    ValidPathInfo addToStoreSlow(std::string_view name, const Path & srcPath,
-        FileIngestionMethod method = FileIngestionMethod::Recursive, HashType hashAlgo = htSHA256,
+    ValidPathInfo addToStoreSlow(
+        std::string_view name,
+        SourceAccessor & accessor,
+        const CanonPath & path,
+        ContentAddressMethod method = FileIngestionMethod::Recursive,
+        HashAlgorithm hashAlgo = HashAlgorithm::SHA256,
+        const StorePathSet & references = StorePathSet(),
         std::optional<Hash> expectedCAHash = {});
 
     /**
@@ -449,23 +466,25 @@ public:
      * in `dump`, which is either a NAR serialisation (if recursive ==
      * true) or simply the contents of a regular file (if recursive ==
      * false).
-     * `dump` may be drained
      *
-     * \todo remove?
+     * `dump` may be drained.
+     *
+     * @param dumpMethod What serialisation format is `dump`, i.e. how
+     * to deserialize it. Must either match hashMethod or be
+     * `FileSerialisationMethod::Recursive`.
+     *
+     * @param hashMethod How content addressing? Need not match be the
+     * same as `dumpMethod`.
+     *
+     * @todo remove?
      */
-    virtual StorePath addToStoreFromDump(Source & dump, std::string_view name,
-        FileIngestionMethod method = FileIngestionMethod::Recursive, HashType hashAlgo = htSHA256, RepairFlag repair = NoRepair,
-        const StorePathSet & references = StorePathSet())
-    { unsupported("addToStoreFromDump"); }
-
-    /**
-     * Like addToStore, but the contents written to the output path is a
-     * regular file containing the given string.
-     */
-    virtual StorePath addTextToStore(
+    virtual StorePath addToStoreFromDump(
+        Source & dump,
         std::string_view name,
-        std::string_view s,
-        const StorePathSet & references,
+        FileSerialisationMethod dumpMethod = FileSerialisationMethod::Recursive,
+        ContentAddressMethod hashMethod = FileIngestionMethod::Recursive,
+        HashAlgorithm hashAlgo = HashAlgorithm::SHA256,
+        const StorePathSet & references = StorePathSet(),
         RepairFlag repair = NoRepair) = 0;
 
     /**
@@ -762,7 +781,7 @@ protected:
      * Helper for methods that are not unsupported: this is used for
      * default definitions for virtual methods that are meant to be overriden.
      *
-     * \todo Using this should be a last resort. It is better to make
+     * @todo Using this should be a last resort. It is better to make
      * the method "virtual pure" and/or move it to a subclass.
      */
     [[noreturn]] void unsupported(const std::string & op)
@@ -943,6 +962,7 @@ const ContentAddress * getDerivationCA(const BasicDerivation & drv);
 std::map<DrvOutput, StorePath> drvOutputReferences(
     Store & store,
     const Derivation & drv,
-    const StorePath & outputPath);
+    const StorePath & outputPath,
+    Store * evalStore = nullptr);
 
 }

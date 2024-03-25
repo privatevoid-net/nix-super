@@ -8,6 +8,8 @@
 #include "symbol-table.hh"
 #include "value/context.hh"
 #include "input-accessor.hh"
+#include "source-path.hh"
+#include "print-options.hh"
 
 #if HAVE_BOEHMGC
 #include <gc/gc_allocator.h>
@@ -16,6 +18,7 @@
 
 namespace nix {
 
+struct Value;
 class BindingsBuilder;
 
 
@@ -32,7 +35,6 @@ typedef enum {
     tThunk,
     tApp,
     tLambda,
-    tBlackhole,
     tPrimOp,
     tPrimOpApp,
     tExternal,
@@ -62,6 +64,7 @@ class Bindings;
 struct Env;
 struct Expr;
 struct ExprLambda;
+struct ExprBlackHole;
 struct PrimOp;
 class Symbol;
 class PosIdx;
@@ -69,7 +72,7 @@ struct Pos;
 class StorePath;
 class EvalState;
 class XMLWriter;
-
+class Printer;
 
 typedef int64_t NixInt;
 typedef double NixFloat;
@@ -81,6 +84,7 @@ typedef double NixFloat;
 class ExternalValueBase
 {
     friend std::ostream & operator << (std::ostream & str, const ExternalValueBase & v);
+    friend class Printer;
     protected:
     /**
      * Print out the value
@@ -102,7 +106,7 @@ class ExternalValueBase
      * Coerce the value to a string. Defaults to uncoercable, i.e. throws an
      * error.
      */
-    virtual std::string coerceToString(const Pos & pos, NixStringContext & context, bool copyMore, bool copyToStore) const;
+    virtual std::string coerceToString(EvalState & state, const PosIdx & pos, NixStringContext & context, bool copyMore, bool copyToStore) const;
 
     /**
      * Compare to another value of the same type. Defaults to uncomparable,
@@ -131,6 +135,34 @@ class ExternalValueBase
 std::ostream & operator << (std::ostream & str, const ExternalValueBase & v);
 
 
+class ListBuilder
+{
+    const size_t size;
+    Value * inlineElems[2] = {nullptr, nullptr};
+public:
+    Value * * elems;
+    ListBuilder(EvalState & state, size_t size);
+
+    ListBuilder(ListBuilder && x)
+        : size(x.size)
+        , inlineElems{x.inlineElems[0], x.inlineElems[1]}
+        , elems(size <= 2 ? inlineElems : x.elems)
+    { }
+
+    Value * & operator [](size_t n)
+    {
+        return elems[n];
+    }
+
+    typedef Value * * iterator;
+
+    iterator begin() { return &elems[0]; }
+    iterator end() { return &elems[size]; }
+
+    friend struct Value;
+};
+
+
 struct Value
 {
 private:
@@ -138,11 +170,9 @@ private:
 
     friend std::string showType(const Value & v);
 
-    void print(const SymbolTable &symbols, std::ostream &str, std::set<const void *> *seen, int depth) const;
-
 public:
 
-    void print(const SymbolTable &symbols, std::ostream &str, bool showRepeated = false, int depth = INT_MAX) const;
+    void print(EvalState &state, std::ostream &str, PrintOptions options = PrintOptions {});
 
     // Functions needed to distinguish the type
     // These should be removed eventually, by putting the functionality that's
@@ -151,7 +181,7 @@ public:
     // type() == nThunk
     inline bool isThunk() const { return internalType == tThunk; };
     inline bool isApp() const { return internalType == tApp; };
-    inline bool isBlackhole() const { return internalType == tBlackhole; };
+    inline bool isBlackhole() const;
 
     // type() == nFunction
     inline bool isLambda() const { return internalType == tLambda; };
@@ -216,7 +246,7 @@ public:
         Bindings * attrs;
         struct {
             size_t size;
-            Value * * elems;
+            Value * const * elems;
         } bigList;
         Value * smallList[2];
         ClosureThunk thunk;
@@ -248,7 +278,7 @@ public:
             case tLambda: case tPrimOp: case tPrimOpApp: return nFunction;
             case tExternal: return nExternal;
             case tFloat: return nFloat;
-            case tThunk: case tApp: case tBlackhole: return nThunk;
+            case tThunk: case tApp: return nThunk;
         }
         if (invalidIsThunk)
             return nThunk;
@@ -322,16 +352,20 @@ public:
 
     Value & mkAttrs(BindingsBuilder & bindings);
 
-    inline void mkList(size_t size)
+    void mkList(const ListBuilder & builder)
     {
         clearValue();
-        if (size == 1)
+        if (builder.size == 1) {
+            smallList[0] = builder.inlineElems[0];
             internalType = tList1;
-        else if (size == 2)
+        } else if (builder.size == 2) {
+            smallList[0] = builder.inlineElems[0];
+            smallList[1] = builder.inlineElems[1];
             internalType = tList2;
-        else {
+        } else {
+            bigList.size = builder.size;
+            bigList.elems = builder.elems;
             internalType = tListN;
-            bigList.size = size;
         }
     }
 
@@ -356,20 +390,21 @@ public:
         lambda.fun = f;
     }
 
-    inline void mkBlackhole()
-    {
-        internalType = tBlackhole;
-        // Value will be overridden anyways
-    }
+    inline void mkBlackhole();
 
     void mkPrimOp(PrimOp * p);
 
     inline void mkPrimOpApp(Value * l, Value * r)
     {
         internalType = tPrimOpApp;
-        app.left = l;
-        app.right = r;
+        primOpApp.left = l;
+        primOpApp.right = r;
     }
+
+    /**
+     * For a `tPrimOpApp` value, get the original `PrimOp` value.
+     */
+    PrimOp * primOpAppPrimOp() const;
 
     inline void mkExternal(ExternalValueBase * e)
     {
@@ -390,7 +425,7 @@ public:
         return internalType == tList1 || internalType == tList2 || internalType == tListN;
     }
 
-    Value * * listElems()
+    Value * const * listElems()
     {
         return internalType == tList1 || internalType == tList2 ? smallList : bigList.elems;
     }
@@ -423,10 +458,9 @@ public:
     SourcePath path() const
     {
         assert(internalType == tPath);
-        return SourcePath {
-            .accessor = ref(_path.accessor->shared_from_this()),
-            .path = CanonPath(CanonPath::unchecked_t(), _path.path)
-        };
+        return SourcePath(
+            ref(_path.accessor->shared_from_this()),
+            CanonPath(CanonPath::unchecked_t(), _path.path));
     }
 
     std::string_view string_view() const
@@ -446,6 +480,20 @@ public:
         return string.context;
     }
 };
+
+
+extern ExprBlackHole eBlackHole;
+
+bool Value::isBlackhole() const
+{
+    return internalType == tThunk && thunk.expr == (Expr*) &eBlackHole;
+}
+
+void Value::mkBlackhole()
+{
+    internalType = tThunk;
+    thunk.expr = (Expr*) &eBlackHole;
+}
 
 
 #if HAVE_BOEHMGC

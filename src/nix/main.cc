@@ -32,6 +32,24 @@ void chrootHelper(int argc, char * * argv);
 
 namespace nix {
 
+static bool haveProxyEnvironmentVariables()
+{
+    static const std::vector<std::string> proxyVariables = {
+        "http_proxy",
+        "https_proxy",
+        "ftp_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "FTP_PROXY"
+    };
+    for (auto & proxyVariable: proxyVariables) {
+        if (getEnv(proxyVariable).has_value()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Check if we have a non-loopback/link-local network interface. */
 static bool haveInternet()
 {
@@ -55,6 +73,8 @@ static bool haveInternet()
         }
     }
 
+    if (haveProxyEnvironmentVariables()) return true;
+
     return false;
 }
 
@@ -67,7 +87,7 @@ struct NixArgs : virtual MultiCommand, virtual MixCommonArgs, virtual RootArgs
     bool helpRequested = false;
     bool showVersion = false;
 
-    NixArgs() : MultiCommand(RegisterCommand::getCommandsFor({})), MixCommonArgs("nix")
+    NixArgs() : MultiCommand("", RegisterCommand::getCommandsFor({})), MixCommonArgs("nix")
     {
         categories.clear();
         categories[catHelp] = "Help commands";
@@ -373,6 +393,7 @@ void mainWrapped(int argc, char * * argv)
             Xp::Flakes,
             Xp::FetchClosure,
             Xp::DynamicDerivations,
+            Xp::FetchTree,
         };
         evalSettings.pureEval = false;
         EvalState state({}, openStore("dummy://"));

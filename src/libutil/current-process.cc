@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <cstring>
+
 #include "current-process.hh"
 #include "namespaces.hh"
 #include "util.hh"
@@ -35,6 +38,11 @@ unsigned int getMaxCPU()
 
         auto cpuMax = readFile(cpuFile);
         auto cpuMaxParts = tokenizeString<std::vector<std::string>>(cpuMax, " \n");
+
+        if (cpuMaxParts.size() != 2) {
+            return 0;
+        }
+
         auto quota = cpuMaxParts[0];
         auto period = cpuMaxParts[1];
         if (quota != "max")
@@ -49,20 +57,27 @@ unsigned int getMaxCPU()
 //////////////////////////////////////////////////////////////////////
 
 
-#if __linux__
 rlim_t savedStackSize = 0;
-#endif
 
-void setStackSize(size_t stackSize)
+void setStackSize(rlim_t stackSize)
 {
-    #if __linux__
     struct rlimit limit;
     if (getrlimit(RLIMIT_STACK, &limit) == 0 && limit.rlim_cur < stackSize) {
         savedStackSize = limit.rlim_cur;
-        limit.rlim_cur = stackSize;
-        setrlimit(RLIMIT_STACK, &limit);
+        limit.rlim_cur = std::min(stackSize, limit.rlim_max);
+        if (setrlimit(RLIMIT_STACK, &limit) != 0) {
+            logger->log(
+                lvlError,
+                HintFmt(
+                    "Failed to increase stack size from %1% to %2% (maximum allowed stack size: %3%): %4%",
+                    savedStackSize,
+                    stackSize,
+                    limit.rlim_max,
+                    std::strerror(errno)
+                ).str()
+            );
+        }
     }
-    #endif
 }
 
 void restoreProcessContext(bool restoreMounts)
@@ -72,7 +87,6 @@ void restoreProcessContext(bool restoreMounts)
         restoreMountNamespace();
     }
 
-    #if __linux__
     if (savedStackSize) {
         struct rlimit limit;
         if (getrlimit(RLIMIT_STACK, &limit) == 0) {
@@ -80,7 +94,6 @@ void restoreProcessContext(bool restoreMounts)
             setrlimit(RLIMIT_STACK, &limit);
         }
     }
-    #endif
 }
 
 

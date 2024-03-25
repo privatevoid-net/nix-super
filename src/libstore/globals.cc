@@ -15,8 +15,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include <sodium/core.h>
-
 #ifdef __GLIBC__
 # include <gnu/lib-names.h>
 # include <nss.h>
@@ -120,7 +118,7 @@ void loadConfFile()
         try {
             std::string contents = readFile(path);
             globalConfig.applyConfig(contents, path);
-        } catch (SysError &) { }
+        } catch (SystemError &) { }
     };
 
     applyConfigFile(settings.nixConfDir + "/nix.conf");
@@ -409,9 +407,6 @@ void initLibStore() {
 
     initLibUtil();
 
-    if (sodium_init() == -1)
-        throw Error("could not initialise libsodium");
-
     loadConfFile();
 
     preloadNSS();
@@ -420,7 +415,7 @@ void initLibStore() {
        sshd). This breaks build users because they don't have access
        to the TMPDIR, in particular in ‘nix-store --serve’. */
 #if __APPLE__
-    if (hasPrefix(getEnv("TMPDIR").value_or("/tmp"), "/var/folders/"))
+    if (hasPrefix(defaultTempDir(), "/var/folders/"))
         unsetenv("TMPDIR");
 #endif
 

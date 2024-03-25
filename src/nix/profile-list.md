@@ -38,6 +38,10 @@ information:
   package in invocations of `nix profile remove` and `nix profile
   upgrade`.
 
+* `Index`: An integer that can be used to unambiguously identify the
+  package in invocations of `nix profile remove` and `nix profile upgrade`.
+  (*Deprecated, will be removed in a future version in favor of `Name`.*)
+
 * `Flake attribute`: The flake output attribute path that provides the
   package (e.g. `packages.x86_64-linux.hello`).
 

@@ -21,6 +21,7 @@
 #include "url.hh"
 #include "registry.hh"
 #include "build-result.hh"
+#include "fs-input-accessor.hh"
 
 #include <regex>
 #include <queue>
@@ -150,7 +151,7 @@ MixFlakeOptions::MixFlakeOptions()
         .category = category,
         .labels = {"flake-lock-path"},
         .handler = {[&](std::string lockFilePath) {
-            lockFlags.referenceLockFilePath = lockFilePath;
+            lockFlags.referenceLockFilePath = getUnfilteredRootPath(CanonPath(absPath(lockFilePath)));
         }},
         .completer = completePath
     });
@@ -325,9 +326,10 @@ void SourceExprCommand::completeInstallable(AddCompletions & completions, std::s
 
             evalSettings.pureEval = false;
             auto state = getEvalState();
-            Expr *e = state->parseExprFromFile(
-                resolveExprPath(state->checkSourcePath(lookupFileArg(*state, *file)))
-                );
+            auto e =
+                state->parseExprFromFile(
+                    resolveExprPath(
+                        lookupFileArg(*state, *file)));
 
             Value root;
             state->eval(e, root);
@@ -518,10 +520,10 @@ ref<eval_cache::EvalCache> openEvalCache(
     EvalState & state,
     std::shared_ptr<flake::LockedFlake> lockedFlake)
 {
-    auto fingerprint = lockedFlake->getFingerprint();
+    auto fingerprint = lockedFlake->getFingerprint(state.store);
     return make_ref<nix::eval_cache::EvalCache>(
         evalSettings.useEvalCache && evalSettings.pureEval
-            ? std::optional { std::cref(fingerprint) }
+            ? fingerprint
             : std::nullopt,
         state,
         [&state, lockedFlake]()
@@ -597,12 +599,15 @@ Installables SourceExprCommand::parseInstallables(
             state->eval(e, *vFile);
         }
         else if (file)
-            state->evalFile(lookupFileArg(*state, *file, CanonPath::fromCwd(getCommandBaseDir())), *vFile);
+            auto dir = absPath(getCommandBaseDir());
+            state->evalFile(lookupFileArg(*state, *file, &dir), *vFile);
         else if (callPackageFile) {
-            auto e = state->parseExprFromString(fmt("(import <nixpkgs> {}).callPackage %s {}", CanonPath::fromCwd(*callPackageFile)), state->rootPath(CanonPath::fromCwd()));
+            auto dir = absPath(getCommandBaseDir());
+            auto fileLoc = absPath(*callPackageFile);
+            auto e = state->parseExprFromString(fmt("(import <nixpkgs> {}).callPackage %s {}", &fileLoc), state->rootPath(&dir));
             state->eval(e, *vFile);
         } else {
-            CanonPath dir(CanonPath::fromCwd(getCommandBaseDir()));
+            Path dir = absPath(getCommandBaseDir());
             auto e = state->parseExprFromString(*expr, state->rootPath(dir));
             state->eval(e, *vFile);
         }
@@ -859,7 +864,7 @@ BuiltPaths Installable::toBuiltPaths(
     }
 }
 
-StorePathSet Installable::toStorePaths(
+StorePathSet Installable::toStorePathSet(
     ref<Store> evalStore,
     ref<Store> store,
     Realise mode, OperateOn operateOn,
@@ -873,13 +878,27 @@ StorePathSet Installable::toStorePaths(
     return outPaths;
 }
 
+StorePaths Installable::toStorePaths(
+    ref<Store> evalStore,
+    ref<Store> store,
+    Realise mode, OperateOn operateOn,
+    const Installables & installables)
+{
+    StorePaths outPaths;
+    for (auto & path : toBuiltPaths(evalStore, store, mode, operateOn, installables)) {
+        auto thisOutPaths = path.outPaths();
+        outPaths.insert(outPaths.end(), thisOutPaths.begin(), thisOutPaths.end());
+    }
+    return outPaths;
+}
+
 StorePath Installable::toStorePath(
     ref<Store> evalStore,
     ref<Store> store,
     Realise mode, OperateOn operateOn,
     ref<Installable> installable)
 {
-    auto paths = toStorePaths(evalStore, store, mode, operateOn, {installable});
+    auto paths = toStorePathSet(evalStore, store, mode, operateOn, {installable});
 
     if (paths.size() != 1)
         throw Error("argument '%s' should evaluate to one store path", installable->what());

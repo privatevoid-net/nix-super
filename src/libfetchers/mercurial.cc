@@ -6,7 +6,8 @@
 #include "tarfile.hh"
 #include "store-api.hh"
 #include "url-parts.hh"
-
+#include "fs-input-accessor.hh"
+#include "posix-source-accessor.hh"
 #include "fetch-settings.hh"
 
 #include <sys/time.h>
@@ -140,7 +141,7 @@ struct MercurialInputScheme : InputScheme
         if (!isLocal)
             throw Error("cannot commit '%s' to Mercurial repository '%s' because it's not a working tree", path, input.to_string());
 
-        auto absPath = CanonPath(repoPath) + path;
+        auto absPath = CanonPath(repoPath) / path;
 
         writeFile(absPath.abs(), contents);
 
@@ -160,9 +161,9 @@ struct MercurialInputScheme : InputScheme
         return {isLocal, isLocal ? url.path : url.base};
     }
 
-    std::pair<StorePath, Input> fetch(ref<Store> store, const Input & _input) override
+    StorePath fetchToStore(ref<Store> store, Input & input) const
     {
-        Input input(_input);
+        auto origRev = input.getRev();
 
         auto name = input.getName();
 
@@ -210,24 +211,29 @@ struct MercurialInputScheme : InputScheme
                     return files.count(file);
                 };
 
-                auto storePath = store->addToStore(input.getName(), actualPath, FileIngestionMethod::Recursive, htSHA256, filter);
+                PosixSourceAccessor accessor;
+                auto storePath = store->addToStore(
+                    input.getName(),
+                    accessor, CanonPath { actualPath },
+                    FileIngestionMethod::Recursive, HashAlgorithm::SHA256, {},
+                    filter);
 
-                return {std::move(storePath), input};
+                return storePath;
             }
         }
 
         if (!input.getRef()) input.attrs.insert_or_assign("ref", "default");
 
-        auto checkHashType = [&](const std::optional<Hash> & hash)
+        auto checkHashAlgorithm = [&](const std::optional<Hash> & hash)
         {
-            if (hash.has_value() && hash->type != htSHA1)
+            if (hash.has_value() && hash->algo != HashAlgorithm::SHA1)
                 throw Error("Hash '%s' is not supported by Mercurial. Only sha1 is supported.", hash->to_string(HashFormat::Base16, true));
         };
 
 
         auto getLockedAttrs = [&]()
         {
-            checkHashType(input.getRev());
+            checkHashAlgorithm(input.getRev());
 
             return Attrs({
                 {"type", "hg"},
@@ -236,17 +242,16 @@ struct MercurialInputScheme : InputScheme
             });
         };
 
-        auto makeResult = [&](const Attrs & infoAttrs, StorePath && storePath)
-            -> std::pair<StorePath, Input>
+        auto makeResult = [&](const Attrs & infoAttrs, const StorePath & storePath) -> StorePath
         {
             assert(input.getRev());
-            assert(!_input.getRev() || _input.getRev() == input.getRev());
+            assert(!origRev || origRev == input.getRev());
             input.attrs.insert_or_assign("revCount", getIntAttr(infoAttrs, "revCount"));
-            return {std::move(storePath), input};
+            return storePath;
         };
 
         if (input.getRev()) {
-            if (auto res = getCache()->lookup(store, getLockedAttrs()))
+            if (auto res = getCache()->lookup(*store, getLockedAttrs()))
                 return makeResult(res->first, std::move(res->second));
         }
 
@@ -259,15 +264,15 @@ struct MercurialInputScheme : InputScheme
             {"ref", *input.getRef()},
         });
 
-        if (auto res = getCache()->lookup(store, unlockedAttrs)) {
-            auto rev2 = Hash::parseAny(getStrAttr(res->first, "rev"), htSHA1);
+        if (auto res = getCache()->lookup(*store, unlockedAttrs)) {
+            auto rev2 = Hash::parseAny(getStrAttr(res->first, "rev"), HashAlgorithm::SHA1);
             if (!input.getRev() || input.getRev() == rev2) {
                 input.attrs.insert_or_assign("rev", rev2.gitRev());
                 return makeResult(res->first, std::move(res->second));
             }
         }
 
-        Path cacheDir = fmt("%s/nix/hg/%s", getCacheDir(), hashString(htSHA256, actualUrl).to_string(HashFormat::Base32, false));
+        Path cacheDir = fmt("%s/nix/hg/%s", getCacheDir(), hashString(HashAlgorithm::SHA256, actualUrl).to_string(HashFormat::Nix32, false));
 
         /* If this is a commit hash that we already have, we don't
            have to pull again. */
@@ -301,11 +306,11 @@ struct MercurialInputScheme : InputScheme
             runHg({ "log", "-R", cacheDir, "-r", revOrRef, "--template", "{node} {rev} {branch}" }));
         assert(tokens.size() == 3);
 
-        input.attrs.insert_or_assign("rev", Hash::parseAny(tokens[0], htSHA1).gitRev());
+        input.attrs.insert_or_assign("rev", Hash::parseAny(tokens[0], HashAlgorithm::SHA1).gitRev());
         auto revCount = std::stoull(tokens[1]);
         input.attrs.insert_or_assign("ref", tokens[2]);
 
-        if (auto res = getCache()->lookup(store, getLockedAttrs()))
+        if (auto res = getCache()->lookup(*store, getLockedAttrs()))
             return makeResult(res->first, std::move(res->second));
 
         Path tmpDir = createTempDir();
@@ -315,29 +320,44 @@ struct MercurialInputScheme : InputScheme
 
         deletePath(tmpDir + "/.hg_archival.txt");
 
-        auto storePath = store->addToStore(name, tmpDir);
+        PosixSourceAccessor accessor;
+        auto storePath = store->addToStore(name, accessor, CanonPath { tmpDir });
 
         Attrs infoAttrs({
             {"rev", input.getRev()->gitRev()},
             {"revCount", (uint64_t) revCount},
         });
 
-        if (!_input.getRev())
+        if (!origRev)
             getCache()->add(
-                store,
+                *store,
                 unlockedAttrs,
                 infoAttrs,
                 storePath,
                 false);
 
         getCache()->add(
-            store,
+            *store,
             getLockedAttrs(),
             infoAttrs,
             storePath,
             true);
 
         return makeResult(infoAttrs, std::move(storePath));
+    }
+
+    std::pair<ref<InputAccessor>, Input> getAccessor(ref<Store> store, const Input & _input) const override
+    {
+        Input input(_input);
+
+        auto storePath = fetchToStore(store, input);
+
+        return {makeStorePathAccessor(store, storePath), input};
+    }
+
+    bool isLocked(const Input & input) const override
+    {
+        return (bool) input.getRev();
     }
 
     std::optional<std::string> getFingerprint(ref<Store> store, const Input & input) const override

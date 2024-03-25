@@ -58,7 +58,7 @@ let
       mkdir -p $out/{commits,tarball}
 
       # Setup https://docs.github.com/en/rest/commits/commits#get-a-commit
-      echo '{"sha": "${private-flake-rev}"}' > $out/commits/HEAD
+      echo '{"sha": "${private-flake-rev}", "commit": {"tree": {"sha": "ffffffffffffffffffffffffffffffffffffffff"}}}' > $out/commits/HEAD
 
       # Setup tarball download via API
       dir=private-flake
@@ -72,7 +72,7 @@ let
       mkdir -p $out/commits
 
       # Setup https://docs.github.com/en/rest/commits/commits#get-a-commit
-      echo '{"sha": "${nixpkgs.rev}"}' > $out/commits/HEAD
+      echo '{"sha": "${nixpkgs.rev}", "commit": {"tree": {"sha": "ffffffffffffffffffffffffffffffffffffffff"}}}' > $out/commits/HEAD
     '';
 
   archive = pkgs.runCommand "nixpkgs-flake" {}
@@ -144,7 +144,7 @@ in
           virtualisation.memorySize = 4096;
           nix.settings.substituters = lib.mkForce [ ];
           nix.extraOptions = "experimental-features = nix-command flakes";
-          networking.hosts.${(builtins.head nodes.github.config.networking.interfaces.eth1.ipv4.addresses).address} =
+          networking.hosts.${(builtins.head nodes.github.networking.interfaces.eth1.ipv4.addresses).address} =
             [ "channels.nixos.org" "api.github.com" "github.com" ];
           security.pki.certificateFiles = [ "${cert}/ca.crt" ];
         };

@@ -41,7 +41,7 @@ struct Source;
  * specified directory, or the current directory otherwise.  The path
  * is also canonicalised.
  */
-Path absPath(Path path,
+Path absPath(PathView path,
     std::optional<PathView> dir = {},
     bool resolveSymlinks = false);
 
@@ -186,6 +186,13 @@ void renameFile(const Path & src, const Path & dst);
  */
 void moveFile(const Path & src, const Path & dst);
 
+/**
+ * Recursively copy the content of `oldPath` to `newPath`. If `andDelete` is
+ * `true`, then also remove `oldPath` (making this equivalent to `moveFile`, but
+ * with the guaranty that the destination will be “fresh”, with no stale inode
+ * or file descriptor pointing to it).
+ */
+void copyFile(const Path & oldPath, const Path & newPath, bool andDelete);
 
 /**
  * Automatic cleanup of resources.
@@ -227,6 +234,10 @@ Path createTempDir(const Path & tmpRoot = "", const Path & prefix = "nix",
  */
 std::pair<AutoCloseFD, Path> createTempFile(const Path & prefix = "nix");
 
+/**
+ * Return `TMPDIR`, or the default temporary directory if unset or empty.
+ */
+Path defaultTempDir();
 
 /**
  * Used in various places.

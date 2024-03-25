@@ -66,7 +66,8 @@ TEST_F(GitTest, blob_read) {
         StringSource in { encoded };
         StringSink out;
         RegularFileSink out2 { out };
-        parse(out2, "", in, [](auto &, auto) {}, mockXpSettings);
+        ASSERT_EQ(parseObjectType(in, mockXpSettings), ObjectType::Blob);
+        parseBlob(out2, "", in, BlobMode::Regular, mockXpSettings);
 
         auto expected = readFile(goldenMaster("hello-world.bin"));
 
@@ -95,7 +96,7 @@ const static Tree tree = {
         {
             .mode = Mode::Regular,
             // hello world with special chars from above
-            .hash = Hash::parseAny("63ddb340119baf8492d2da53af47e8c7cfcd5eb2", htSHA1),
+            .hash = Hash::parseAny("63ddb340119baf8492d2da53af47e8c7cfcd5eb2", HashAlgorithm::SHA1),
         },
     },
     {
@@ -103,7 +104,7 @@ const static Tree tree = {
         {
             .mode = Mode::Executable,
             // ditto
-            .hash = Hash::parseAny("63ddb340119baf8492d2da53af47e8c7cfcd5eb2", htSHA1),
+            .hash = Hash::parseAny("63ddb340119baf8492d2da53af47e8c7cfcd5eb2", HashAlgorithm::SHA1),
         },
     },
     {
@@ -111,7 +112,16 @@ const static Tree tree = {
         {
             .mode = Mode::Directory,
             // Empty directory hash
-            .hash = Hash::parseAny("4b825dc642cb6eb9a060e54bf8d69288fbee4904", htSHA1),
+            .hash = Hash::parseAny("4b825dc642cb6eb9a060e54bf8d69288fbee4904", HashAlgorithm::SHA1),
+        },
+    },
+    {
+        "quuX",
+        {
+            .mode = Mode::Symlink,
+            // hello world with special chars from above (symlink target
+            // can be anything)
+            .hash = Hash::parseAny("63ddb340119baf8492d2da53af47e8c7cfcd5eb2", HashAlgorithm::SHA1),
         },
     },
 };
@@ -119,9 +129,10 @@ const static Tree tree = {
 TEST_F(GitTest, tree_read) {
     readTest("tree.bin", [&](const auto & encoded) {
         StringSource in { encoded };
-        NullParseSink out;
+        NullFileSystemObjectSink out;
         Tree got;
-        parse(out, "", in, [&](auto & name, auto entry) {
+        ASSERT_EQ(parseObjectType(in, mockXpSettings), ObjectType::Tree);
+        parseTree(out, "", in, [&](auto & name, auto entry) {
             auto name2 = name;
             if (entry.mode == Mode::Directory)
                 name2 += '/';
@@ -163,6 +174,12 @@ TEST_F(GitTest, both_roundrip) {
                                 .contents = "good day,\n\0\n\tworld!",
                             },
                         },
+                        {
+                            "quux",
+                            File::Symlink {
+                                .target = "/over/there",
+                            },
+                        },
                     },
                 },
             },
@@ -174,7 +191,7 @@ TEST_F(GitTest, both_roundrip) {
     std::function<DumpHook> dumpHook;
     dumpHook = [&](const CanonPath & path) {
         StringSink s;
-        HashSink hashSink { htSHA1 };
+        HashSink hashSink { HashAlgorithm::SHA1 };
         TeeSink s2 { s, hashSink };
         auto mode = dump(
             files, path, s2, dumpHook,
@@ -193,15 +210,24 @@ TEST_F(GitTest, both_roundrip) {
 
     MemorySink sinkFiles2 { files2 };
 
-    std::function<void(const Path, const Hash &)> mkSinkHook;
-    mkSinkHook = [&](const Path prefix, const Hash & hash) {
+    std::function<void(const Path, const Hash &, BlobMode)> mkSinkHook;
+    mkSinkHook = [&](auto prefix, auto & hash, auto blobMode) {
         StringSource in { cas[hash] };
-        parse(sinkFiles2, prefix, in, [&](const Path & name, const auto & entry) {
-            mkSinkHook(prefix + "/" + name, entry.hash);
-        }, mockXpSettings);
+        parse(
+            sinkFiles2, prefix, in, blobMode,
+            [&](const Path & name, const auto & entry) {
+                mkSinkHook(
+                    prefix + "/" + name,
+                    entry.hash,
+                    // N.B. this cast would not be acceptable in real
+                    // code, because it would make an assert reachable,
+                    // but it should harmless in this test.
+                    static_cast<BlobMode>(entry.mode));
+            },
+            mockXpSettings);
     };
 
-    mkSinkHook("", root.hash);
+    mkSinkHook("", root.hash, BlobMode::Regular);
 
     ASSERT_EQ(files, files2);
 }

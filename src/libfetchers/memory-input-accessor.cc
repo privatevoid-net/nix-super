@@ -1,5 +1,6 @@
 #include "memory-input-accessor.hh"
 #include "memory-source-accessor.hh"
+#include "source-path.hh"
 
 namespace nix {
 
@@ -17,6 +18,12 @@ struct MemoryInputAccessorImpl : MemoryInputAccessor, MemorySourceAccessor
 ref<MemoryInputAccessor> makeMemoryInputAccessor()
 {
     return make_ref<MemoryInputAccessorImpl>();
+}
+
+ref<InputAccessor> makeEmptyInputAccessor()
+{
+    static auto empty = makeMemoryInputAccessor().cast<InputAccessor>();
+    return empty;
 }
 
 }

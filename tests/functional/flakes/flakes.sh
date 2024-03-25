@@ -193,6 +193,14 @@ nix build -o "$TEST_ROOT/result" flake1#
 nix build -o "$TEST_ROOT/result" "$flake1Dir"
 nix build -o "$TEST_ROOT/result" "git+file://$flake1Dir"
 
+# Test explicit packages.default.
+nix build -o "$TEST_ROOT/result" "$flake1Dir#default"
+nix build -o "$TEST_ROOT/result" "git+file://$flake1Dir#default"
+
+# Test explicit packages.default with query.
+nix build -o "$TEST_ROOT/result" "$flake1Dir?ref=HEAD#default"
+nix build -o "$TEST_ROOT/result" "git+file://$flake1Dir?ref=HEAD#default"
+
 # Check that store symlinks inside a flake are not interpreted as flakes.
 nix build -o "$flake1Dir/result" "git+file://$flake1Dir"
 nix path-info "$flake1Dir/result"
@@ -554,6 +562,16 @@ nix flake lock "$flake3Dir"
 [[ $(jq -r .nodes.flake1_2.locked.rev "$flake3Dir/flake.lock") = $hash1 ]]
 
 nix flake update flake2/flake1 --flake "$flake3Dir"
+[[ $(jq -r .nodes.flake1_2.locked.rev "$flake3Dir/flake.lock") =~ $hash2 ]]
+
+# Test updating multiple inputs.
+nix flake lock "$flake3Dir" --override-input flake1 flake1/master/$hash1
+nix flake lock "$flake3Dir" --override-input flake2/flake1 flake1/master/$hash1
+[[ $(jq -r .nodes.flake1.locked.rev "$flake3Dir/flake.lock") =~ $hash1 ]]
+[[ $(jq -r .nodes.flake1_2.locked.rev "$flake3Dir/flake.lock") =~ $hash1 ]]
+
+nix flake update flake1 flake2/flake1 --flake "$flake3Dir"
+[[ $(jq -r .nodes.flake1.locked.rev "$flake3Dir/flake.lock") =~ $hash2 ]]
 [[ $(jq -r .nodes.flake1_2.locked.rev "$flake3Dir/flake.lock") =~ $hash2 ]]
 
 # Test 'nix flake metadata --json'.

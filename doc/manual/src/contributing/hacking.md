@@ -31,7 +31,7 @@ This shell also adds `./outputs/bin/nix` to your `$PATH` so you can run `nix` im
 To get a shell with one of the other [supported compilation environments](#compilation-environments):
 
 ```console
-$ nix develop .#native-clang11StdenvPackages
+$ nix develop .#native-clangStdenvPackages
 ```
 
 > **Note**
@@ -44,17 +44,20 @@ To build Nix itself in this shell:
 ```console
 [nix-shell]$ autoreconfPhase
 [nix-shell]$ configurePhase
-[nix-shell]$ make -j $NIX_BUILD_CORES
+[nix-shell]$ make -j $NIX_BUILD_CORES OPTIMIZE=0
 ```
 
 To install it in `$(pwd)/outputs` and test it:
 
 ```console
-[nix-shell]$ make install
-[nix-shell]$ make installcheck -j $NIX_BUILD_CORES
+[nix-shell]$ make install OPTIMIZE=0
+[nix-shell]$ make installcheck check -j $NIX_BUILD_CORES
 [nix-shell]$ nix --version
 nix (Nix) 2.12
 ```
+
+For more information on running and filtering tests, see
+[`testing.md`](./testing.md).
 
 To build a release version of Nix for the current operating system and CPU architecture:
 
@@ -75,7 +78,7 @@ $ nix-shell
 To get a shell with one of the other [supported compilation environments](#compilation-environments):
 
 ```console
-$ nix-shell --attr devShells.x86_64-linux.native-clang11StdenvPackages
+$ nix-shell --attr devShells.x86_64-linux.native-clangStdenvPackages
 ```
 
 > **Note**
@@ -108,6 +111,26 @@ $ nix-build
 
 You can also build Nix for one of the [supported platforms](#platforms).
 
+## Makefile variables
+
+You may need `profiledir=$out/etc/profile.d` and `sysconfdir=$out/etc` to run `make install`.
+
+Run `make` with [`-e` / `--environment-overrides`](https://www.gnu.org/software/make/manual/make.html#index-_002de) to allow environment variables to override `Makefile` variables:
+
+- `ENABLE_BUILD=yes` to enable building the C++ code.
+- `ENABLE_DOC_GEN=yes` to enable building the documentation (manual, man pages, etc.).
+
+  The docs can take a while to build, so you may want to disable this for local development.
+- `ENABLE_FUNCTIONAL_TESTS=yes` to enable building the functional tests.
+- `ENABLE_UNIT_TESTS=yes` to enable building the unit tests.
+- `OPTIMIZE=1` to enable optimizations.
+- `libraries=libutil programs=` to only build a specific library.
+
+  This will fail in the linking phase if the other libraries haven't been built, but is useful for checking types.
+- `libraries= programs=nix` to only build a specific program.
+
+  This will not work in general, because the programs need the libraries.
+
 ## Platforms
 
 Nix can be built for various platforms, as specified in [`flake.nix`]:
@@ -124,10 +147,10 @@ Nix can be built for various platforms, as specified in [`flake.nix`]:
 
 In order to build Nix for a different platform than the one you're currently
 on, you need a way for your current Nix installation to build code for that
-platform. Common solutions include [remote builders] and [binary format emulation]
+platform. Common solutions include [remote build machines] and [binary format emulation]
 (only supported on NixOS).
 
-[remote builders]: ../advanced-topics/distributed-builds.md
+[remote builders]: @docroot@/language/derivations.md#attr-builder
 [binary format emulation]: https://nixos.org/manual/nixos/stable/options.html#opt-boot.binfmt.emulatedSystems
 
 Given such a setup, executing the build only requires selecting the respective attribute.
@@ -235,10 +258,10 @@ See [supported compilation environments](#compilation-environments) and instruct
 To use the LSP with your editor, you first need to [set up `clangd`](https://clangd.llvm.org/installation#project-setup) by running:
 
 ```console
-make clean && bear -- make -j$NIX_BUILD_CORES default check install
+make compile_commands.json
 ```
 
-Configure your editor to use the `clangd` from the shell, either by running it inside the development shell, or by using [nix-direnv](https://github.com/nix-community/nix-direnv) and [the appropriate editor plugin](https://github.com/direnv/direnv/wiki#editor-integration).
+Configure your editor to use the `clangd` from the `.#native-clangStdenvPackages` shell. You can do that either by running it inside the development shell, or by using [nix-direnv](https://github.com/nix-community/nix-direnv) and [the appropriate editor plugin](https://github.com/direnv/direnv/wiki#editor-integration).
 
 > **Note**
 >
@@ -257,17 +280,16 @@ User-visible changes should come with a release note.
 Here's what a complete entry looks like. The file name is not incorporated in the document.
 
 ```
+---
 synopsis: Basically a title
-issues: #1234
-prs: #1238
-description: {
+issues: 1234
+prs: 1238
+---
 
 Here's one or more paragraphs that describe the change.
 
 - It's markdown
 - Add references to the manual using @docroot@
-
-}
 ```
 
 Significant changes should add the following header, which moves them to the top.
@@ -282,4 +304,45 @@ See also the [format documentation](https://github.com/haskell/cabal/blob/master
 ### Build process
 
 Releases have a precomputed `rl-MAJOR.MINOR.md`, and no `rl-next.md`.
-Set `buildUnreleasedNotes = true;` in `flake.nix` to build the release notes on the fly.
+
+## Branches
+
+- [`master`](https://github.com/NixOS/nix/commits/master)
+
+  The main development branch. All changes are approved and merged here.
+  When developing a change, create a branch based on the latest `master`.
+
+  Maintainers try to [keep it in a release-worthy state](#reverting).
+
+- [`maintenance-*.*`](https://github.com/NixOS/nix/branches/all?query=maintenance)
+
+  These branches are the subject of backports only, and are
+  also [kept](#reverting) in a release-worthy state.
+
+  See [`maintainers/backporting.md`](https://github.com/NixOS/nix/blob/master/maintainers/backporting.md)
+
+- [`latest-release`](https://github.com/NixOS/nix/tree/latest-release)
+
+  The latest patch release of the latest minor version.
+
+  See [`maintainers/release-process.md`](https://github.com/NixOS/nix/blob/master/maintainers/release-process.md)
+
+- [`backport-*-to-*`](https://github.com/NixOS/nix/branches/all?query=backport)
+
+  Generally branches created by the backport action.
+
+  See [`maintainers/backporting.md`](https://github.com/NixOS/nix/blob/master/maintainers/backporting.md)
+
+- [_other_](https://github.com/NixOS/nix/branches/all)
+
+  Branches that do not conform to the above patterns should be feature branches.
+
+## Reverting
+
+If a change turns out to be merged by mistake, or contain a regression, it may be reverted.
+A revert is not a rejection of the contribution, but merely part of an effective development process.
+It makes sure that development keeps running smoothly, with minimal uncertainty, and less overhead.
+If maintainers have to worry too much about avoiding reverts, they would not be able to merge as much.
+By embracing reverts as a good part of the development process, everyone wins.
+
+However, taking a step back may be frustrating, so maintainers will be extra supportive on the next try.

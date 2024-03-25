@@ -1,5 +1,6 @@
 #include "environment-variables.hh"
 #include "file-system.hh"
+#include "file-path-impl.hh"
 #include "signals.hh"
 #include "finally.hh"
 #include "serialise.hh"
@@ -21,9 +22,27 @@ namespace fs = std::filesystem;
 
 namespace nix {
 
-Path absPath(Path path, std::optional<PathView> dir, bool resolveSymlinks)
+/**
+ * Treat the string as possibly an absolute path, by inspecting the
+ * start of it. Return whether it was probably intended to be
+ * absolute.
+ */
+static bool isAbsolute(PathView path)
 {
-    if (path[0] != '/') {
+    return fs::path { path }.is_absolute();
+}
+
+
+Path absPath(PathView path, std::optional<PathView> dir, bool resolveSymlinks)
+{
+    std::string scratch;
+
+    if (!isAbsolute(path)) {
+        // In this case we need to call `canonPath` on a newly-created
+        // string. We set `scratch` to that string first, and then set
+        // `path` to `scratch`. This ensures the newly-created string
+        // lives long enough for the call to `canonPath`, and allows us
+        // to just accept a `std::string_view`.
         if (!dir) {
 #ifdef __GNU__
             /* GNU (aka. GNU/Hurd) doesn't have any limitation on path
@@ -35,12 +54,13 @@ Path absPath(Path path, std::optional<PathView> dir, bool resolveSymlinks)
             if (!getcwd(buf, sizeof(buf)))
 #endif
                 throw SysError("cannot get cwd");
-            path = concatStrings(buf, "/", path);
+            scratch = concatStrings(buf, "/", path);
 #ifdef __GNU__
             free(buf);
 #endif
         } else
-            path = concatStrings(*dir, "/", path);
+            scratch = concatStrings(*dir, "/", path);
+        path = scratch;
     }
     return canonPath(path, resolveSymlinks);
 }
@@ -50,72 +70,53 @@ Path canonPath(PathView path, bool resolveSymlinks)
 {
     assert(path != "");
 
-    std::string s;
-    s.reserve(256);
-
-    if (path[0] != '/')
+    if (!isAbsolute(path))
         throw Error("not an absolute path: '%1%'", path);
 
+    // For Windows
+    auto rootName = fs::path { path }.root_name();
+
+    /* This just exists because we cannot set the target of `remaining`
+       (the callback parameter) directly to a newly-constructed string,
+       since it is `std::string_view`. */
     std::string temp;
 
     /* Count the number of times we follow a symlink and stop at some
        arbitrary (but high) limit to prevent infinite loops. */
     unsigned int followCount = 0, maxFollow = 1024;
 
-    while (1) {
-
-        /* Skip slashes. */
-        while (!path.empty() && path[0] == '/') path.remove_prefix(1);
-        if (path.empty()) break;
-
-        /* Ignore `.'. */
-        if (path == "." || path.substr(0, 2) == "./")
-            path.remove_prefix(1);
-
-        /* If `..', delete the last component. */
-        else if (path == ".." || path.substr(0, 3) == "../")
-        {
-            if (!s.empty()) s.erase(s.rfind('/'));
-            path.remove_prefix(2);
-        }
-
-        /* Normal component; copy it. */
-        else {
-            s += '/';
-            if (const auto slash = path.find('/'); slash == std::string::npos) {
-                s += path;
-                path = {};
-            } else {
-                s += path.substr(0, slash);
-                path = path.substr(slash);
-            }
-
-            /* If s points to a symlink, resolve it and continue from there */
-            if (resolveSymlinks && isLink(s)) {
+    auto ret = canonPathInner<NativePathTrait>(
+        path,
+        [&followCount, &temp, maxFollow, resolveSymlinks]
+        (std::string & result, std::string_view & remaining) {
+            if (resolveSymlinks && isLink(result)) {
                 if (++followCount >= maxFollow)
-                    throw Error("infinite symlink recursion in path '%1%'", path);
-                temp = concatStrings(readLink(s), path);
-                path = temp;
-                if (!temp.empty() && temp[0] == '/') {
-                    s.clear();  /* restart for symlinks pointing to absolute path */
+                    throw Error("infinite symlink recursion in path '%0%'", remaining);
+                remaining = (temp = concatStrings(readLink(result), remaining));
+                if (isAbsolute(remaining)) {
+                    /* restart for symlinks pointing to absolute path */
+                    result.clear();
                 } else {
-                    s = dirOf(s);
-                    if (s == "/") {  // we don’t want trailing slashes here, which dirOf only produces if s = /
-                        s.clear();
+                    result = dirOf(result);
+                    if (result == "/") {
+                        /* we don’t want trailing slashes here, which `dirOf`
+                           only produces if `result = /` */
+                        result.clear();
                     }
                 }
             }
-        }
-    }
+        });
 
-    return s.empty() ? "/" : std::move(s);
+    if (!rootName.empty())
+        ret = rootName.string() + std::move(ret);
+    return ret;
 }
 
 
 Path dirOf(const PathView path)
 {
     Path::size_type pos = path.rfind('/');
-    if (pos == std::string::npos)
+    if (pos == path.npos)
         return ".";
     return pos == 0 ? "/" : Path(path, 0, pos);
 }
@@ -131,7 +132,7 @@ std::string_view baseNameOf(std::string_view path)
         last -= 1;
 
     auto pos = path.rfind('/', last);
-    if (pos == std::string::npos)
+    if (pos == path.npos)
         pos = 0;
     else
         pos += 1;
@@ -307,7 +308,7 @@ void writeFile(const Path & path, Source & source, mode_t mode, bool sync)
     if (!fd)
         throw SysError("opening file '%1%'", path);
 
-    std::vector<char> buf(64 * 1024);
+    std::array<char, 64 * 1024> buf;
 
     try {
         while (true) {
@@ -493,10 +494,14 @@ void AutoDelete::reset(const Path & p, bool recursive) {
 
 //////////////////////////////////////////////////////////////////////
 
+std::string defaultTempDir() {
+    return getEnvNonEmpty("TMPDIR").value_or("/tmp");
+}
+
 static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
     std::atomic<unsigned int> & counter)
 {
-    tmpRoot = canonPath(tmpRoot.empty() ? getEnv("TMPDIR").value_or("/tmp") : tmpRoot, true);
+    tmpRoot = canonPath(tmpRoot.empty() ? defaultTempDir() : tmpRoot, true);
     if (includePid)
         return fmt("%1%/%2%-%3%-%4%", tmpRoot, prefix, getpid(), counter++);
     else
@@ -536,7 +541,7 @@ Path createTempDir(const Path & tmpRoot, const Path & prefix,
 
 std::pair<AutoCloseFD, Path> createTempFile(const Path & prefix)
 {
-    Path tmpl(getEnv("TMPDIR").value_or("/tmp") + "/" + prefix + ".XXXXXX");
+    Path tmpl(defaultTempDir() + "/" + prefix + ".XXXXXX");
     // Strictly speaking, this is UB, but who cares...
     // FIXME: use O_TMPFILE.
     AutoCloseFD fd(mkstemp((char *) tmpl.c_str()));
@@ -614,6 +619,11 @@ void copy(const fs::directory_entry & from, const fs::path & to, bool andDelete)
             fs::permissions(from.path(), fs::perms::owner_write, fs::perm_options::add | fs::perm_options::nofollow);
         fs::remove(from.path());
     }
+}
+
+void copyFile(const Path & oldPath, const Path & newPath, bool andDelete)
+{
+    return copy(fs::directory_entry(fs::path(oldPath)), fs::path(newPath), andDelete);
 }
 
 void renameFile(const Path & oldName, const Path & newName)

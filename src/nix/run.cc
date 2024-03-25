@@ -114,10 +114,8 @@ struct CmdShell : InstallablesCommand, MixEnvironment
 
         setEnviron();
 
-        std::map<std::string,std::string> pathVarMapping {
-            // default - always added
-            // { "PATH",                 "/bin" }
-            // additional
+        // extra PATH-like environment variables
+        std::map<std::string,std::string> extraPathVarMapping {
               { "CUPS_DATADIR",         "/share/cups" }
             , { "DICPATH",              "/share/hunspell" }
             , { "GIO_EXTRA_MODULES",    "/lib/gio/modules" }
@@ -135,12 +133,12 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             , { "XDG_DATA_DIRS",        "/share" }
         };
 
-        auto unixPath = tokenizeString<Strings>(getEnv("PATH").value_or(""), ":");
+        std::vector<std::string> pathAdditions;
 
-        std::map<std::string,Strings> pathVars;
+        std::map<std::string,Strings> extraPathVars;
 
-        for (auto const& pathV : pathVarMapping) {
-            pathVars[pathV.first] = tokenizeString<Strings>(getEnv(pathV.first).value_or(""), ":");
+        for (auto const& pathV : extraPathVarMapping) {
+            extraPathVars[pathV.first] = tokenizeString<Strings>(getEnv(pathV.first).value_or(""), ":");
         }
 
 
@@ -150,25 +148,29 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             if (!done.insert(path).second) continue;
 
             if (true)
-                unixPath.push_front(store->printStorePath(path) + "/bin");
+                pathAdditions.push_back(store->printStorePath(path) + "/bin");
 
             auto pathString = store->printStorePath(path);
 
-            for (auto const& pathV : pathVarMapping) {
+            for (auto const& pathV : extraPathVarMapping) {
                 if (auto st = accessor->maybeLstat(CanonPath(pathString + pathV.second)); st)
-                    pathVars[pathV.first].push_front(pathString + pathV.second);
+                    extraPathVars[pathV.first].push_front(pathString + pathV.second);
             }
 
-            auto propPath = CanonPath(store->printStorePath(path)) + "nix-support" + "propagated-user-env-packages";
+            auto propPath = CanonPath(store->printStorePath(path)) / "nix-support" / "propagated-user-env-packages";
             if (auto st = accessor->maybeLstat(propPath); st && st->type == SourceAccessor::tRegular) {
                 for (auto & p : tokenizeString<Paths>(accessor->readFile(propPath)))
                     todo.push(store->parseStorePath(p));
             }
         }
 
-        setenv("PATH", concatStringsSep(":", unixPath).c_str(), 1);
-        for (auto const& pathV : pathVarMapping) {
-            setenv(pathV.first.c_str(), concatStringsSep(":", pathVars[pathV.first]).c_str(), 1);
+        auto unixPath = tokenizeString<Strings>(getEnv("PATH").value_or(""), ":");
+        unixPath.insert(unixPath.begin(), pathAdditions.begin(), pathAdditions.end());
+        auto unixPathString = concatStringsSep(":", unixPath);
+        setenv("PATH", unixPathString.c_str(), 1);
+
+        for (auto const& pathV : extraPathVarMapping) {
+            setenv(pathV.first.c_str(), concatStringsSep(":", extraPathVars[pathV.first]).c_str(), 1);
         }
 
         setenv("IN_NIX3_SHELL", "1", 1);

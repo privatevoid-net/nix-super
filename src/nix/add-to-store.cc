@@ -2,25 +2,18 @@
 #include "common-args.hh"
 #include "store-api.hh"
 #include "archive.hh"
+#include "git.hh"
+#include "posix-source-accessor.hh"
+#include "misc-store-flags.hh"
 
 using namespace nix;
-
-static FileIngestionMethod parseIngestionMethod(std::string_view input)
-{
-    if (input == "flat") {
-        return FileIngestionMethod::Flat;
-    } else if (input == "nar") {
-        return FileIngestionMethod::Recursive;
-    } else {
-        throw UsageError("Unknown hash mode '%s', expect `flat` or `nar`");
-    }
-}
 
 struct CmdAddToStore : MixDryRun, StoreCommand
 {
     Path path;
     std::optional<std::string> namePart;
-    FileIngestionMethod ingestionMethod = FileIngestionMethod::Recursive;
+    ContentAddressMethod caMethod = FileIngestionMethod::Recursive;
+    HashAlgorithm hashAlgo = HashAlgorithm::SHA256;
 
     CmdAddToStore()
     {
@@ -35,64 +28,29 @@ struct CmdAddToStore : MixDryRun, StoreCommand
             .handler = {&namePart},
         });
 
-        addFlag({
-            .longName  = "mode",
-            .shortName = 'n',
-            .description = R"(
-    How to compute the hash of the input.
-    One of:
+        addFlag(flag::contentAddressMethod(&caMethod));
 
-    - `nar` (the default): Serialises the input as an archive (following the [_Nix Archive Format_](https://edolstra.github.io/pubs/phd-thesis.pdf#page=101)) and passes that to the hash function.
-
-    - `flat`: Assumes that the input is a single file and directly passes it to the hash function;
-            )",
-            .labels = {"hash-mode"},
-            .handler = {[this](std::string s) {
-                this->ingestionMethod = parseIngestionMethod(s);
-            }},
-        });
+        addFlag(flag::hashAlgo(&hashAlgo));
     }
 
     void run(ref<Store> store) override
     {
         if (!namePart) namePart = baseNameOf(path);
 
-        StringSink sink;
-        dumpPath(path, sink);
+        auto [accessor, path2] = PosixSourceAccessor::createAtRoot(path);
 
-        auto narHash = hashString(htSHA256, sink.s);
+        auto storePath = dryRun
+            ? store->computeStorePath(
+                *namePart, accessor, path2, caMethod, hashAlgo, {}).first
+            : store->addToStoreSlow(
+                *namePart, accessor, path2, caMethod, hashAlgo, {}).path;
 
-        Hash hash = narHash;
-        if (ingestionMethod == FileIngestionMethod::Flat) {
-            HashSink hsink(htSHA256);
-            readFile(path, hsink);
-            hash = hsink.finish().first;
-        }
-
-        ValidPathInfo info {
-            *store,
-            std::move(*namePart),
-            FixedOutputInfo {
-                .method = std::move(ingestionMethod),
-                .hash = std::move(hash),
-                .references = {},
-            },
-            narHash,
-        };
-        info.narSize = sink.s.size();
-
-        if (!dryRun) {
-            auto source = StringSource(sink.s);
-            store->addToStore(info, source);
-        }
-
-        logger->cout("%s", store->printStorePath(info.path));
+        logger->cout("%s", store->printStorePath(storePath));
     }
 };
 
 struct CmdAdd : CmdAddToStore
 {
-
     std::string description() override
     {
         return "Add a file or directory to the Nix store";
@@ -110,7 +68,7 @@ struct CmdAddFile : CmdAddToStore
 {
     CmdAddFile()
     {
-        ingestionMethod = FileIngestionMethod::Flat;
+        caMethod = FileIngestionMethod::Flat;
     }
 
     std::string description() override
