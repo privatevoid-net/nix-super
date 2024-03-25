@@ -93,7 +93,7 @@ struct CmdHomeApply : HomeActivationCommand
 struct CmdHome : NixMultiCommand
 {
     CmdHome()
-        : MultiCommand({
+        : NixMultiCommand("home", {
                 {"build", []() { return make_ref<CmdHomeBuild>(); }},
                 {"apply", []() { return make_ref<CmdHomeApply>(); }},
             })

@@ -170,7 +170,7 @@ struct CmdSystemBoot : SystemActivationCommand
 struct CmdSystem : NixMultiCommand
 {
     CmdSystem()
-        : MultiCommand({
+        : NixMultiCommand("system", {
                 {"build", []() { return make_ref<CmdSystemBuild>(); }},
                 {"activate", []() { return make_ref<CmdSystemActivate>(); }},
                 {"apply", []() { return make_ref<CmdSystemApply>(); }},

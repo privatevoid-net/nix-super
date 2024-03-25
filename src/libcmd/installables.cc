@@ -552,7 +552,7 @@ Bindings * SourceExprCommand::getOverrideArgs(EvalState & state, ref<Store> stor
         Value * v = state.allocValue();
         if (i.second[0] == 'E') {
             // is a raw expression, parse
-            state.mkThunk_(*v, state.parseExprFromString(std::string(i.second, 1), state.rootPath(CanonPath::fromCwd())));
+            state.mkThunk_(*v, state.parseExprFromString(std::string(i.second, 1), state.rootPath(".")));
         } else if (i.second[0] == 'F') {
             // is a flakeref
             auto iV = InstallableValue::require(parseInstallable(store, std::string(i.second, 1), false, false));
@@ -598,13 +598,12 @@ Installables SourceExprCommand::parseInstallables(
             auto e = state->parseStdin();
             state->eval(e, *vFile);
         }
-        else if (file)
+        else if (file) {
             auto dir = absPath(getCommandBaseDir());
             state->evalFile(lookupFileArg(*state, *file, &dir), *vFile);
-        else if (callPackageFile) {
-            auto dir = absPath(getCommandBaseDir());
+        } else if (callPackageFile) {
             auto fileLoc = absPath(*callPackageFile);
-            auto e = state->parseExprFromString(fmt("(import <nixpkgs> {}).callPackage %s {}", &fileLoc), state->rootPath(&dir));
+            auto e = state->parseExprFromString(fmt("(import <nixpkgs> {}).callPackage %s {}", fileLoc), state->rootPath("."));
             state->eval(e, *vFile);
         } else {
             Path dir = absPath(getCommandBaseDir());

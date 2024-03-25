@@ -41,7 +41,7 @@ ref<Installable> SourceExprCommand::modifyInstallable (
     auto overrideSet = getOverrideArgs(*state, store);
 
     if (applyToInstallable) {
-        state->eval(state->parseExprFromString(*applyToInstallable, state->rootPath(CanonPath::fromCwd())), *vApply);
+        state->eval(state->parseExprFromString(*applyToInstallable, state->rootPath(".")), *vApply);
         state->callFunction(*vApply, *v, *vRes, noPos);
     } else if (overrideSet->size() > 0) {
         Value * overrideValues = state->allocValue();
@@ -56,7 +56,7 @@ ref<Installable> SourceExprCommand::modifyInstallable (
         auto vOverrideFunctor = vOverrideFunctorAttr->value;
         state->callFunction(*vOverrideFunctor, *overrideValues, *vRes, noPos);
     } else if (installableOverrideAttrs) {
-        state->eval(state->parseExprFromString(fmt("old: with old; %s",*installableOverrideAttrs), state->rootPath(CanonPath::fromCwd())), *vApply);
+        state->eval(state->parseExprFromString(fmt("old: with old; %s",*installableOverrideAttrs), state->rootPath(".")), *vApply);
         auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("overrideAttrs"));
         if (!vOverrideFunctorAttr) {
             throw Error("%s is not overrideAttrs-capable", installableName);
@@ -64,7 +64,7 @@ ref<Installable> SourceExprCommand::modifyInstallable (
         auto vOverrideFunctor = vOverrideFunctorAttr->value;
         state->callFunction(*vOverrideFunctor, *vApply, *vRes, noPos);
     } else if (installableWithPackages) {
-        state->eval(state->parseExprFromString(fmt("ps: with ps; %s",*installableWithPackages), state->rootPath(CanonPath::fromCwd())), *vApply);
+        state->eval(state->parseExprFromString(fmt("ps: with ps; %s",*installableWithPackages), state->rootPath(".")), *vApply);
         auto vOverrideFunctorAttr = v->attrs->get(state->symbols.create("withPackages"));
         if (!vOverrideFunctorAttr) {
             throw Error("%s cannot be extended with additional packages", installableName);
