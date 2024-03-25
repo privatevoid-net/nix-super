@@ -17,15 +17,11 @@ clearCache
 # Multiple arguments will not exist
 (( $(nix search -f search.nix hello broken | wc -l) == 0 ))
 
-# No regex should return an error
-(( $(nix search -f search.nix '' | wc -l) == 0 ))
-
 ## Search expressions
 
-# Check that empty search string matches all
-nix search -f search.nix '' ^ | grepQuiet foo
-nix search -f search.nix '' ^ | grepQuiet bar
-nix search -f search.nix '' ^ | grepQuiet hello
+nix search -f search.nix ^ | grepQuiet foo
+nix search -f search.nix ^ | grepQuiet bar
+nix search -f search.nix ^ | grepQuiet hello
 
 ## Tests for multiple regex/match highlighting
 
