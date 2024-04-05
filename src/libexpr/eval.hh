@@ -17,6 +17,7 @@
 #include <optional>
 #include <unordered_map>
 #include <mutex>
+#include <functional>
 
 namespace nix {
 
@@ -70,9 +71,16 @@ struct PrimOp
     const char * doc = nullptr;
 
     /**
+     * Add a trace item, `while calling the '<name>' builtin`
+     *
+     * This is used to remove the redundant item for `builtins.addErrorContext`.
+     */
+    bool addTrace = true;
+
+    /**
      * Implementation of the primop.
      */
-    PrimOpFun fun;
+    std::function<std::remove_pointer<PrimOpFun>::type> fun;
 
     /**
      * Optional experimental for this to be gated on.
