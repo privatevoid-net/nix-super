@@ -24,7 +24,6 @@ $ nix shell jq gron kubectl
 The following experimental features are enabled by default:
 - `flakes` (`Xp::Flakes`)
 - `nix-command` (`Xp::NixCommand`)
-- `repl-flake` (`Xp::ReplFlake`)
 - `fetch-tree` (`Xp::FetchTree`)
 
 ### Additional settings
