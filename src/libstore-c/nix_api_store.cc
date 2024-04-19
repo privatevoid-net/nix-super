@@ -56,7 +56,7 @@ void nix_store_free(Store * store)
     delete store;
 }
 
-nix_err nix_store_get_uri(nix_c_context * context, Store * store, void * callback, void * user_data)
+nix_err nix_store_get_uri(nix_c_context * context, Store * store, nix_get_string_callback callback, void * user_data)
 {
     if (context)
         context->last_err_code = NIX_OK;
@@ -67,7 +67,8 @@ nix_err nix_store_get_uri(nix_c_context * context, Store * store, void * callbac
     NIXC_CATCH_ERRS
 }
 
-nix_err nix_store_get_version(nix_c_context * context, Store * store, void * callback, void * user_data)
+nix_err
+nix_store_get_version(nix_c_context * context, Store * store, nix_get_string_callback callback, void * user_data)
 {
     if (context)
         context->last_err_code = NIX_OK;
@@ -128,7 +129,18 @@ nix_err nix_store_realise(
     NIXC_CATCH_ERRS
 }
 
+void nix_store_path_name(const StorePath * store_path, nix_get_string_callback callback, void * user_data)
+{
+    std::string_view name = store_path->path.name();
+    callback(name.data(), name.size(), user_data);
+}
+
 void nix_store_path_free(StorePath * sp)
 {
     delete sp;
+}
+
+StorePath * nix_store_path_clone(const StorePath * p)
+{
+    return new StorePath{p->path};
 }

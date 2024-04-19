@@ -2,6 +2,7 @@
 #include "config.hh"
 #include "eval.hh"
 #include "globals.hh"
+#include "path.hh"
 #include "primops.hh"
 #include "value.hh"
 
@@ -9,12 +10,14 @@
 #include "nix_api_expr_internal.h"
 #include "nix_api_util.h"
 #include "nix_api_util_internal.h"
+#include "nix_api_store_internal.h"
 #include "nix_api_value.h"
+#include "value/context.hh"
 
 #ifdef HAVE_BOEHMGC
-# include "gc/gc.h"
-# define GC_INCLUDE_NEW 1
-# include "gc_cpp.h"
+#  include "gc/gc.h"
+#  define GC_INCLUDE_NEW 1
+#  include "gc_cpp.h"
 #endif
 
 // Helper function to throw an exception if value is null
@@ -158,21 +161,21 @@ bool nix_get_bool(nix_c_context * context, const Value * value)
     try {
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nBool);
-        return v.boolean;
+        return v.boolean();
     }
     NIXC_CATCH_ERRS_RES(false);
 }
 
-const char * nix_get_string(nix_c_context * context, const Value * value)
+nix_err nix_get_string(nix_c_context * context, const Value * value, nix_get_string_callback callback, void * user_data)
 {
     if (context)
         context->last_err_code = NIX_OK;
     try {
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nString);
-        return v.c_str();
+        call_nix_get_string_callback(v.c_str(), callback, user_data);
     }
-    NIXC_CATCH_ERRS_NULL
+    NIXC_CATCH_ERRS
 }
 
 const char * nix_get_path_string(nix_c_context * context, const Value * value)
@@ -189,7 +192,7 @@ const char * nix_get_path_string(nix_c_context * context, const Value * value)
         // We could use v.path().to_string().c_str(), but I'm concerned this
         // crashes. Looks like .path() allocates a CanonPath with a copy of the
         // string, then it gets the underlying data from that.
-        return v._path.path;
+        return v.payload.path.path;
     }
     NIXC_CATCH_ERRS_NULL
 }
@@ -213,7 +216,7 @@ unsigned int nix_get_attrs_size(nix_c_context * context, const Value * value)
     try {
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nAttrs);
-        return v.attrs->size();
+        return v.attrs()->size();
     }
     NIXC_CATCH_ERRS_RES(0);
 }
@@ -225,7 +228,7 @@ double nix_get_float(nix_c_context * context, const Value * value)
     try {
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nFloat);
-        return v.fpoint;
+        return v.fpoint();
     }
     NIXC_CATCH_ERRS_RES(0.0);
 }
@@ -237,7 +240,7 @@ int64_t nix_get_int(nix_c_context * context, const Value * value)
     try {
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nInt);
-        return v.integer;
+        return v.integer();
     }
     NIXC_CATCH_ERRS_RES(0);
 }
@@ -249,7 +252,7 @@ ExternalValue * nix_get_external(nix_c_context * context, Value * value)
     try {
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nExternal);
-        return (ExternalValue *) v.external;
+        return (ExternalValue *) v.external();
     }
     NIXC_CATCH_ERRS_NULL;
 }
@@ -278,7 +281,7 @@ Value * nix_get_attr_byname(nix_c_context * context, const Value * value, EvalSt
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nAttrs);
         nix::Symbol s = state->state.symbols.create(name);
-        auto attr = v.attrs->get(s);
+        auto attr = v.attrs()->get(s);
         if (attr) {
             nix_gc_incref(nullptr, attr->value);
             state->state.forceValue(*attr->value, nix::noPos);
@@ -298,7 +301,7 @@ bool nix_has_attr_byname(nix_c_context * context, const Value * value, EvalState
         auto & v = check_value_not_null(value);
         assert(v.type() == nix::nAttrs);
         nix::Symbol s = state->state.symbols.create(name);
-        auto attr = v.attrs->get(s);
+        auto attr = v.attrs()->get(s);
         if (attr)
             return true;
         return false;
@@ -313,7 +316,7 @@ nix_get_attr_byidx(nix_c_context * context, const Value * value, EvalState * sta
         context->last_err_code = NIX_OK;
     try {
         auto & v = check_value_not_null(value);
-        const nix::Attr & a = (*v.attrs)[i];
+        const nix::Attr & a = (*v.attrs())[i];
         *name = ((const std::string &) (state->state.symbols[a.name])).c_str();
         nix_gc_incref(nullptr, a.value);
         state->state.forceValue(*a.value, nix::noPos);
@@ -328,7 +331,7 @@ const char * nix_get_attr_name_byidx(nix_c_context * context, const Value * valu
         context->last_err_code = NIX_OK;
     try {
         auto & v = check_value_not_null(value);
-        const nix::Attr & a = (*v.attrs)[i];
+        const nix::Attr & a = (*v.attrs())[i];
         return ((const std::string &) (state->state.symbols[a.name])).c_str();
     }
     NIXC_CATCH_ERRS_NULL
@@ -397,6 +400,19 @@ nix_err nix_init_null(nix_c_context * context, Value * value)
     try {
         auto & v = check_value_not_null(value);
         v.mkNull();
+    }
+    NIXC_CATCH_ERRS
+}
+
+nix_err nix_init_apply(nix_c_context * context, Value * value, Value * fn, Value * arg)
+{
+    if (context)
+        context->last_err_code = NIX_OK;
+    try {
+        auto & v = check_value_not_null(value);
+        auto & f = check_value_not_null(fn);
+        auto & a = check_value_not_null(arg);
+        v.mkApp(&f, &a);
     }
     NIXC_CATCH_ERRS
 }
@@ -527,4 +543,53 @@ void nix_bindings_builder_free(BindingsBuilder * bb)
 #else
     delete (nix::BindingsBuilder *) bb;
 #endif
+}
+
+nix_realised_string * nix_string_realise(nix_c_context * context, EvalState * state, Value * value, bool isIFD)
+{
+    if (context)
+        context->last_err_code = NIX_OK;
+    try {
+        auto & v = check_value_not_null(value);
+        nix::NixStringContext stringContext;
+        auto rawStr = state->state.coerceToString(nix::noPos, v, stringContext, "while realising a string").toOwned();
+        nix::StorePathSet storePaths;
+        auto rewrites = state->state.realiseContext(stringContext, &storePaths);
+
+        auto s = nix::rewriteStrings(rawStr, rewrites);
+
+        // Convert to the C API StorePath type and convert to vector for index-based access
+        std::vector<StorePath> vec;
+        for (auto & sp : storePaths) {
+            vec.push_back(StorePath{sp});
+        }
+
+        return new nix_realised_string{.str = s, .storePaths = vec};
+    }
+    NIXC_CATCH_ERRS_NULL
+}
+
+void nix_realised_string_free(nix_realised_string * s)
+{
+    delete s;
+}
+
+size_t nix_realised_string_get_buffer_size(nix_realised_string * s)
+{
+    return s->str.size();
+}
+
+const char * nix_realised_string_get_buffer_start(nix_realised_string * s)
+{
+    return s->str.data();
+}
+
+size_t nix_realised_string_get_store_path_count(nix_realised_string * s)
+{
+    return s->storePaths.size();
+}
+
+const StorePath * nix_realised_string_get_store_path(nix_realised_string * s, size_t i)
+{
+    return &s->storePaths[i];
 }
