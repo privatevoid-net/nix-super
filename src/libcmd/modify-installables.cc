@@ -45,10 +45,11 @@ ref<Installable> SourceExprCommand::modifyInstallable (
         state->callFunction(*vApply, *v, *vRes, noPos);
     } else if (overrideSet->size() > 0) {
         Value * overrideValues = state->allocValue();
-        overrideValues->mkAttrs(state->buildBindings(overrideSet->size()).finish());
+        auto overrideBinds = state->buildBindings(overrideSet->size());
         for (auto& v : *overrideSet) {
-            overrideValues->attrs()->push_back(v);
+            overrideBinds.insert(v);
         }
+        overrideValues->mkAttrs(overrideBinds.finish());
         auto vOverrideFunctorAttr = v->attrs()->get(state->symbols.create("override"));
         if (!vOverrideFunctorAttr) {
             throw Error("%s is not overridable", installableName);
