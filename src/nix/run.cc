@@ -1,3 +1,4 @@
+#include "canon-path.hh"
 #include "current-process.hh"
 #include "run.hh"
 #include "command-installable-value.hh"
@@ -155,7 +156,8 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             auto pathString = store->printStorePath(path);
 
             for (auto const& pathV : extraPathVarMapping) {
-                if (auto st = accessor->maybeLstat(CanonPath(pathString + pathV.second)); st)
+                auto realPath = accessor->resolveSymlinks(CanonPath(pathString + pathV.second));
+                if (auto st = accessor->maybeLstat(realPath); st)
                     extraPathVars[pathV.first].push_front(pathString + pathV.second);
             }
 
