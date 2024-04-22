@@ -1,4 +1,5 @@
 { lib
+, fetchurl
 , stdenv
 , releaseTools
 , autoconf-archive
@@ -167,6 +168,8 @@ in {
           ./m4
           # TODO: do we really need README.md? It doesn't seem used in the build.
           ./README.md
+          # This could be put behind a conditional
+          ./maintainers/local.mk
           # For make, regardless of what we are building
           ./local.mk
           ./Makefile
@@ -246,7 +249,13 @@ in {
   ] ++ lib.optionals buildUnitTests [
     gtest
     rapidcheck
-  ] ++ lib.optional stdenv.isLinux libseccomp
+  ] ++ lib.optional stdenv.isLinux (libseccomp.overrideAttrs (_: rec {
+    version = "2.5.5";
+    src = fetchurl {
+      url = "https://github.com/seccomp/libseccomp/releases/download/v${version}/libseccomp-${version}.tar.gz";
+      hash = "sha256-JIosik2bmFiqa69ScSw0r+/PnJ6Ut23OAsHJqiX7M3U=";
+    };
+  }))
     ++ lib.optional stdenv.hostPlatform.isx86_64 libcpuid
     # There have been issues building these dependencies
     ++ lib.optional (stdenv.hostPlatform == stdenv.buildPlatform && (stdenv.isLinux || stdenv.isDarwin))
