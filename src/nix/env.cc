@@ -139,7 +139,7 @@ struct CmdShell : InstallablesCommand, MixEnvironment
         Strings args;
         for (auto & arg : command) args.push_back(arg);
 
-        runProgramInStore(store, UseLookupPath::Use, *command.begin(), args);
+        execProgramInStore(store, UseLookupPath::Use, *command.begin(), args);
     }
 };
 
