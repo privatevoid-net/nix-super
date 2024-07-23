@@ -76,7 +76,9 @@ struct CmdBundle : InstallableValueCommand
 
         auto val = installable->toValue(*evalState).first;
 
-        auto [bundlerFlakeRef, bundlerName, extendedOutputsSpec] = parseFlakeRefWithFragmentAndExtendedOutputsSpec(bundler, absPath("."));
+        auto [bundlerFlakeRef, bundlerName, extendedOutputsSpec] =
+            parseFlakeRefWithFragmentAndExtendedOutputsSpec(
+                fetchSettings, bundler, absPath("."));
         const flake::LockFlags lockFlags{ .writeLockFile = false };
         InstallableFlake bundler{this,
             evalState, std::move(bundlerFlakeRef), bundlerName, std::move(extendedOutputsSpec),
@@ -99,6 +101,8 @@ struct CmdBundle : InstallableValueCommand
 
         NixStringContext context2;
         auto drvPath = evalState->coerceToStorePath(attr1->pos, *attr1->value, context2, "");
+
+        drvPath.requireDerivation();
 
         auto attr2 = vRes->attrs()->get(evalState->sOutPath);
         if (!attr2)

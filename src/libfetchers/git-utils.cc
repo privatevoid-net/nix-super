@@ -1,8 +1,4 @@
 #include "git-utils.hh"
-#include "fs-input-accessor.hh"
-#include "input-accessor.hh"
-#include "filtering-input-accessor.hh"
-#include "memory-input-accessor.hh"
 #include "cache.hh"
 #include "finally.hh"
 #include "processes.hh"
@@ -57,7 +53,7 @@ bool operator == (const git_oid & oid1, const git_oid & oid2)
 
 namespace nix {
 
-struct GitInputAccessor;
+struct GitSourceAccessor;
 
 // Some wrapper types that ensure that the git_*_free functions get called.
 template<auto del>
@@ -119,10 +115,10 @@ git_oid hashToOID(const Hash & hash)
     return oid;
 }
 
-Object lookupObject(git_repository * repo, const git_oid & oid)
+Object lookupObject(git_repository * repo, const git_oid & oid, git_object_t type = GIT_OBJECT_ANY)
 {
     Object obj;
-    if (git_object_lookup(Setter(obj), repo, &oid, GIT_OBJECT_ANY)) {
+    if (git_object_lookup(Setter(obj), repo, &oid, type)) {
         auto err = git_error_last();
         throw Error("getting Git object '%s': %s", oid, err->message);
     }
@@ -334,13 +330,13 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
     }
 
     /**
-     * A 'GitInputAccessor' with no regard for export-ignore or any other transformations.
+     * A 'GitSourceAccessor' with no regard for export-ignore or any other transformations.
      */
-    ref<GitInputAccessor> getRawAccessor(const Hash & rev);
+    ref<GitSourceAccessor> getRawAccessor(const Hash & rev);
 
-    ref<InputAccessor> getAccessor(const Hash & rev, bool exportIgnore) override;
+    ref<SourceAccessor> getAccessor(const Hash & rev, bool exportIgnore) override;
 
-    ref<InputAccessor> getAccessor(const WorkdirInfo & wd, bool exportIgnore, MakeNotAllowedError e) override;
+    ref<SourceAccessor> getAccessor(const WorkdirInfo & wd, bool exportIgnore, MakeNotAllowedError e) override;
 
     ref<GitFileSystemObjectSink> getFileSystemObjectSink() override;
 
@@ -456,7 +452,7 @@ struct GitRepoImpl : GitRepo, std::enable_shared_from_this<GitRepoImpl>
     {
         auto accessor = getAccessor(treeHash, false);
 
-        fetchers::Attrs cacheKey({{"_what", "treeHashToNarHash"}, {"treeHash", treeHash.gitRev()}});
+        fetchers::Cache::Key cacheKey{"treeHashToNarHash", {{"treeHash", treeHash.gitRev()}}};
 
         if (auto res = fetchers::getCache()->lookup(cacheKey))
             return Hash::parseAny(fetchers::getStrAttr(*res, "narHash"), HashAlgorithm::SHA256);
@@ -477,12 +473,12 @@ ref<GitRepo> GitRepo::openRepo(const std::filesystem::path & path, bool create, 
 /**
  * Raw git tree input accessor.
  */
-struct GitInputAccessor : InputAccessor
+struct GitSourceAccessor : SourceAccessor
 {
     ref<GitRepoImpl> repo;
     Tree root;
 
-    GitInputAccessor(ref<GitRepoImpl> repo_, const Hash & rev)
+    GitSourceAccessor(ref<GitRepoImpl> repo_, const Hash & rev)
         : repo(repo_)
         , root(peelObject<Tree>(*repo, lookupObject(*repo, hashToOID(rev)).get(), GIT_OBJECT_TREE))
     {
@@ -706,12 +702,12 @@ struct GitInputAccessor : InputAccessor
     }
 };
 
-struct GitExportIgnoreInputAccessor : CachingFilteringInputAccessor {
+struct GitExportIgnoreSourceAccessor : CachingFilteringSourceAccessor {
     ref<GitRepoImpl> repo;
     std::optional<Hash> rev;
 
-    GitExportIgnoreInputAccessor(ref<GitRepoImpl> repo, ref<InputAccessor> next, std::optional<Hash> rev)
-        : CachingFilteringInputAccessor(next, [&](const CanonPath & path) {
+    GitExportIgnoreSourceAccessor(ref<GitRepoImpl> repo, ref<SourceAccessor> next, std::optional<Hash> rev)
+        : CachingFilteringSourceAccessor(next, [&](const CanonPath & path) {
             return RestrictedPathError(fmt("'%s' does not exist because it was fetched with exportIgnore enabled", path));
         })
         , repo(repo)
@@ -855,10 +851,10 @@ struct GitFileSystemObjectSinkImpl : GitFileSystemObjectSink
     }
 
     void createRegularFile(
-        const Path & path,
+        const CanonPath & path,
         std::function<void(CreateRegularFileSink &)> func) override
     {
-        auto pathComponents = tokenizeString<std::vector<std::string>>(path, "/");
+        auto pathComponents = tokenizeString<std::vector<std::string>>(path.rel(), "/");
         if (!prepareDirs(pathComponents, false)) return;
 
         git_writestream * stream = nullptr;
@@ -866,11 +862,11 @@ struct GitFileSystemObjectSinkImpl : GitFileSystemObjectSink
             throw Error("creating a blob stream object: %s", git_error_last()->message);
 
         struct CRF : CreateRegularFileSink {
-            const Path & path;
+            const CanonPath & path;
             GitFileSystemObjectSinkImpl & back;
             git_writestream * stream;
             bool executable = false;
-            CRF(const Path & path, GitFileSystemObjectSinkImpl & back, git_writestream * stream)
+            CRF(const CanonPath & path, GitFileSystemObjectSinkImpl & back, git_writestream * stream)
                 : path(path), back(back), stream(stream)
             {}
             void operator () (std::string_view data) override
@@ -895,15 +891,15 @@ struct GitFileSystemObjectSinkImpl : GitFileSystemObjectSink
             : GIT_FILEMODE_BLOB);
     }
 
-    void createDirectory(const Path & path) override
+    void createDirectory(const CanonPath & path) override
     {
-        auto pathComponents = tokenizeString<std::vector<std::string>>(path, "/");
+        auto pathComponents = tokenizeString<std::vector<std::string>>(path.rel(), "/");
         (void) prepareDirs(pathComponents, true);
     }
 
-    void createSymlink(const Path & path, const std::string & target) override
+    void createSymlink(const CanonPath & path, const std::string & target) override
     {
-        auto pathComponents = tokenizeString<std::vector<std::string>>(path, "/");
+        auto pathComponents = tokenizeString<std::vector<std::string>>(path.rel(), "/");
         if (!prepareDirs(pathComponents, false)) return;
 
         git_oid oid;
@@ -911,6 +907,61 @@ struct GitFileSystemObjectSinkImpl : GitFileSystemObjectSink
             throw Error("creating a blob object for tarball symlink member '%s': %s", path, git_error_last()->message);
 
         addToTree(*pathComponents.rbegin(), oid, GIT_FILEMODE_LINK);
+    }
+
+    void createHardlink(const CanonPath & path, const CanonPath & target) override
+    {
+        std::vector<std::string> pathComponents;
+        for (auto & c : path)
+            pathComponents.emplace_back(c);
+
+        if (!prepareDirs(pathComponents, false)) return;
+
+        // We can't just look up the path from the start of the root, since
+        // some parent directories may not have finished yet, so we compute
+        // a relative path that helps us find the right git_tree_builder or object.
+        auto relTarget = CanonPath(path).parent()->makeRelative(target);
+
+        auto dir = pendingDirs.rbegin();
+
+        // For each ../ component at the start, go up one directory.
+        // CanonPath::makeRelative() always puts all .. elements at the start,
+        // so they're all handled by this loop:
+        std::string_view relTargetLeft(relTarget);
+        while (hasPrefix(relTargetLeft, "../")) {
+            if (dir == pendingDirs.rend())
+                throw Error("invalid hard link target '%s' for path '%s'", target, path);
+            ++dir;
+            relTargetLeft = relTargetLeft.substr(3);
+        }
+        if (dir == pendingDirs.rend())
+            throw Error("invalid hard link target '%s' for path '%s'", target, path);
+
+        // Look up the remainder of the target, starting at the
+        // top-most `git_treebuilder`.
+        std::variant<git_treebuilder *, git_oid> curDir{dir->builder.get()};
+        Object tree; // needed to keep `entry` alive
+        const git_tree_entry * entry = nullptr;
+
+        for (auto & c : CanonPath(relTargetLeft)) {
+            if (auto builder = std::get_if<git_treebuilder *>(&curDir)) {
+                assert(*builder);
+                if (!(entry = git_treebuilder_get(*builder, std::string(c).c_str())))
+                    throw Error("cannot find hard link target '%s' for path '%s'", target, path);
+                curDir = *git_tree_entry_id(entry);
+            } else if (auto oid = std::get_if<git_oid>(&curDir)) {
+                tree = lookupObject(*repo, *oid, GIT_OBJECT_TREE);
+                if (!(entry = git_tree_entry_byname((const git_tree *) &*tree, std::string(c).c_str())))
+                    throw Error("cannot find hard link target '%s' for path '%s'", target, path);
+                curDir = *git_tree_entry_id(entry);
+            }
+        }
+
+        assert(entry);
+
+        addToTree(*pathComponents.rbegin(),
+            *git_tree_entry_id(entry),
+            git_tree_entry_filemode(entry));
     }
 
     Hash sync() override {
@@ -922,40 +973,40 @@ struct GitFileSystemObjectSinkImpl : GitFileSystemObjectSink
     }
 };
 
-ref<GitInputAccessor> GitRepoImpl::getRawAccessor(const Hash & rev)
+ref<GitSourceAccessor> GitRepoImpl::getRawAccessor(const Hash & rev)
 {
     auto self = ref<GitRepoImpl>(shared_from_this());
-    return make_ref<GitInputAccessor>(self, rev);
+    return make_ref<GitSourceAccessor>(self, rev);
 }
 
-ref<InputAccessor> GitRepoImpl::getAccessor(const Hash & rev, bool exportIgnore)
+ref<SourceAccessor> GitRepoImpl::getAccessor(const Hash & rev, bool exportIgnore)
 {
     auto self = ref<GitRepoImpl>(shared_from_this());
-    ref<GitInputAccessor> rawGitAccessor = getRawAccessor(rev);
+    ref<GitSourceAccessor> rawGitAccessor = getRawAccessor(rev);
     if (exportIgnore) {
-        return make_ref<GitExportIgnoreInputAccessor>(self, rawGitAccessor, rev);
+        return make_ref<GitExportIgnoreSourceAccessor>(self, rawGitAccessor, rev);
     }
     else {
         return rawGitAccessor;
     }
 }
 
-ref<InputAccessor> GitRepoImpl::getAccessor(const WorkdirInfo & wd, bool exportIgnore, MakeNotAllowedError makeNotAllowedError)
+ref<SourceAccessor> GitRepoImpl::getAccessor(const WorkdirInfo & wd, bool exportIgnore, MakeNotAllowedError makeNotAllowedError)
 {
     auto self = ref<GitRepoImpl>(shared_from_this());
     /* In case of an empty workdir, return an empty in-memory tree. We
-       cannot use AllowListInputAccessor because it would return an
+       cannot use AllowListSourceAccessor because it would return an
        error for the root (and we can't add the root to the allow-list
        since that would allow access to all its children). */
-    ref<InputAccessor> fileAccessor =
+    ref<SourceAccessor> fileAccessor =
         wd.files.empty()
-        ? makeEmptyInputAccessor()
-        : AllowListInputAccessor::create(
-            makeFSInputAccessor(path),
+        ? makeEmptySourceAccessor()
+        : AllowListSourceAccessor::create(
+            makeFSSourceAccessor(path),
             std::set<CanonPath> { wd.files },
-            std::move(makeNotAllowedError)).cast<InputAccessor>();
+            std::move(makeNotAllowedError)).cast<SourceAccessor>();
     if (exportIgnore)
-        return make_ref<GitExportIgnoreInputAccessor>(self, fileAccessor, std::nullopt);
+        return make_ref<GitExportIgnoreSourceAccessor>(self, fileAccessor, std::nullopt);
     else
         return fileAccessor;
 }

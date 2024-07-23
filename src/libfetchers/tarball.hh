@@ -1,14 +1,15 @@
 #pragma once
 
-#include "types.hh"
-#include "path.hh"
-#include "hash.hh"
-
 #include <optional>
+
+#include "hash.hh"
+#include "path.hh"
+#include "ref.hh"
+#include "types.hh"
 
 namespace nix {
 class Store;
-struct InputAccessor;
+struct SourceAccessor;
 }
 
 namespace nix::fetchers {
@@ -32,7 +33,7 @@ struct DownloadTarballResult
     Hash treeHash;
     time_t lastModified;
     std::optional<std::string> immutableUrl;
-    ref<InputAccessor> accessor;
+    ref<SourceAccessor> accessor;
 };
 
 /**

@@ -159,13 +159,7 @@ struct FdSource : BufferedSource
     FdSource(Descriptor fd) : fd(fd) { }
     FdSource(FdSource &&) = default;
 
-    FdSource & operator=(FdSource && s)
-    {
-        fd = s.fd;
-        s.fd = INVALID_DESCRIPTOR;
-        read = s.read;
-        return *this;
-    }
+    FdSource & operator=(FdSource && s) = default;
 
     bool good() override;
 protected:
@@ -280,6 +274,26 @@ struct LengthSink : Sink
     void operator () (std::string_view data) override
     {
         length += data.size();
+    }
+};
+
+/**
+ * A wrapper source that counts the number of bytes read from it.
+ */
+struct LengthSource : Source
+{
+    Source & next;
+
+    LengthSource(Source & next) : next(next)
+    { }
+
+    uint64_t total = 0;
+
+    size_t read(char * data, size_t len) override
+    {
+        auto n = next.read(data, len);
+        total += n;
+        return n;
     }
 };
 
