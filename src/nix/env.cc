@@ -131,7 +131,9 @@ struct CmdShell : InstallablesCommand, MixEnvironment
         setEnv("PATH", unixPathString.c_str());
 
         for (auto const& pathV : extraPathVarMapping) {
-            setenv(pathV.first.c_str(), concatStringsSep(":", extraPathVars[pathV.first]).c_str(), 1);
+            if (!extraPathVars[pathV.first].empty()) {
+                setenv(pathV.first.c_str(), concatStringsSep(":", extraPathVars[pathV.first]).c_str(), 1);
+            }
         }
 
         setenv("IN_NIX3_SHELL", "1", 1);
