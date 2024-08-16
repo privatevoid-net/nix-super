@@ -1,5 +1,7 @@
 #include "error.hh"
 #include "environment-variables.hh"
+#include "eval-settings.hh"
+#include "config-global.hh"
 #include "serialise.hh"
 #include "eval-gc.hh"
 
@@ -84,14 +86,17 @@ void fixupBoehmStackPointer(void ** sp_ptr, void * _pthread_id)
 {
     void *& sp = *sp_ptr;
     auto pthread_id = reinterpret_cast<pthread_t>(_pthread_id);
+#  ifndef __APPLE__
     pthread_attr_t pattr;
+#  endif
     size_t osStackSize;
-    void * osStackLow;
+    // The low address of the stack, which grows down.
+    void * osStackLimit;
     void * osStackBase;
 
 #  ifdef __APPLE__
     osStackSize = pthread_get_stacksize_np(pthread_id);
-    osStackLow = pthread_get_stackaddr_np(pthread_id);
+    osStackLimit = pthread_get_stackaddr_np(pthread_id);
 #  else
     if (pthread_attr_init(&pattr)) {
         throw Error("fixupBoehmStackPointer: pthread_attr_init failed");
@@ -110,18 +115,18 @@ void fixupBoehmStackPointer(void ** sp_ptr, void * _pthread_id)
 #    else
 #      error "Need one of `pthread_attr_get_np` or `pthread_getattr_np`"
 #    endif
-    if (pthread_attr_getstack(&pattr, &osStackLow, &osStackSize)) {
+    if (pthread_attr_getstack(&pattr, &osStackLimit, &osStackSize)) {
         throw Error("fixupBoehmStackPointer: pthread_attr_getstack failed");
     }
     if (pthread_attr_destroy(&pattr)) {
         throw Error("fixupBoehmStackPointer: pthread_attr_destroy failed");
     }
 #  endif
-    osStackBase = (char *) osStackLow + osStackSize;
+    osStackBase = (char *) osStackLimit + osStackSize;
     // NOTE: We assume the stack grows down, as it does on all architectures we support.
     //       Architectures that grow the stack up are rare.
-    if (sp >= osStackBase || sp < osStackLow) { // lo is outside the os stack
-        sp = osStackLow;
+    if (sp >= osStackBase || sp < osStackLimit) { // sp is outside the os stack
+        sp = osStackLimit;
     }
 }
 
@@ -206,10 +211,17 @@ static inline void initGCReal()
     }
 }
 
+static size_t gcCyclesAfterInit = 0;
+
+size_t getGCCycles()
+{
+    assertGCInitialized();
+    return static_cast<size_t>(GC_get_gc_no()) - gcCyclesAfterInit;
+}
+
 #endif
 
 static bool gcInitialised = false;
-static GC_word gcCyclesAfterInit = 0;
 
 void initGC()
 {
@@ -218,21 +230,22 @@ void initGC()
 
 #if HAVE_BOEHMGC
     initGCReal();
+
+    gcCyclesAfterInit = GC_get_gc_no();
 #endif
 
+    // NIX_PATH must override the regular setting
+    // See the comment in applyConfig
+    if (auto nixPathEnv = getEnv("NIX_PATH")) {
+        globalConfig.set("nix-path", concatStringsSep(" ", EvalSettings::parseNixPath(nixPathEnv.value())));
+    }
+
     gcInitialised = true;
-    gcCyclesAfterInit = GC_get_gc_no();
 }
 
 void assertGCInitialized()
 {
     assert(gcInitialised);
-}
-
-size_t getGCCycles()
-{
-    assertGCInitialized();
-    return GC_get_gc_no() - gcCyclesAfterInit;
 }
 
 } // namespace nix
