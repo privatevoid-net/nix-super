@@ -85,6 +85,7 @@ sources = files(
   'installable-flake.cc',
   'installable-value.cc',
   'installables.cc',
+  'modify-installables.cc',
   'legacy.cc',
   'markdown.cc',
   'misc-store-flags.cc',
