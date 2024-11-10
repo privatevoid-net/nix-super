@@ -28,6 +28,7 @@ subdir('build-utils-meson/subprojects')
 # HAVE_LUTIMES 1`. The `#define` is unconditional, 0 for not found and 1
 # for found. One therefore uses it with `#if` not `#ifdef`.
 check_funcs = [
+  'close_range',
   # Optionally used for changing the mtime of symlinks.
   'lutimes',
   # Optionally used for creating pipes on Unix
@@ -41,6 +42,8 @@ check_funcs = [
   # Optionally used to try to close more file descriptors (e.g. before
   # forking) on Unix.
   'sysconf',
+  # Optionally used for changing the mtime of files and symlinks.
+  'utimensat',
 ]
 foreach funcspec : check_funcs
   define_name = 'HAVE_' + funcspec.underscorify().to_upper()
@@ -48,6 +51,9 @@ foreach funcspec : check_funcs
   configdata.set(define_name, define_value)
 endforeach
 
+configdata.set('HAVE_DECL_AT_SYMLINK_NOFOLLOW', cxx.has_header_symbol('fcntl.h', 'AT_SYMLINK_NOFOLLOW').to_int())
+
+subdir('build-utils-meson/libatomic')
 subdir('build-utils-meson/threads')
 
 if host_machine.system() == 'windows'
@@ -185,6 +191,7 @@ headers = [config_h] + files(
   'english.hh',
   'environment-variables.hh',
   'error.hh',
+  'exec.hh',
   'executable-path.hh',
   'exit.hh',
   'experimental-features.hh',
@@ -251,6 +258,7 @@ else
 endif
 
 subdir('build-utils-meson/export-all-symbols')
+subdir('build-utils-meson/windows-version')
 
 this_library = library(
   'nixutil',

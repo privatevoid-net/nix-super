@@ -38,6 +38,18 @@ makefiles += \
 endif
 endif
 
+ifeq ($(ENABLE_UNIT_TESTS), yes)
+makefiles += \
+  src/libutil-tests/local.mk \
+  src/libutil-test-support/local.mk \
+  src/libstore-tests/local.mk \
+  src/libstore-test-support/local.mk \
+  src/libfetchers-tests/local.mk \
+  src/libexpr-tests/local.mk \
+  src/libexpr-test-support/local.mk \
+  src/libflake-tests/local.mk
+endif
+
 ifeq ($(ENABLE_FUNCTIONAL_TESTS), yes)
 ifdef HOST_UNIX
 makefiles += \
@@ -79,6 +91,7 @@ ifdef HOST_WINDOWS
   #
   # TODO do not do this, and instead do fine-grained export annotations.
   GLOBAL_LDFLAGS += -Wl,--export-all-symbols
+  GLOBAL_CXXFLAGS += -D_WIN32_WINNT=0x0602
 endif
 
 GLOBAL_CXXFLAGS += -g -Wall -Wdeprecated-copy -Wignored-qualifiers -Wimplicit-fallthrough -Werror=unused-result -Werror=suggest-override -include $(buildprefix)config.h -std=c++2a -I src
@@ -91,6 +104,13 @@ include mk/lib.mk
 #
 # These must be defined after `mk/lib.mk`. Otherwise the first rule
 # incorrectly becomes the default target.
+
+ifneq ($(ENABLE_UNIT_TESTS), yes)
+.PHONY: check
+check:
+	@echo "Unit tests are disabled. Configure without '--disable-unit-tests', or avoid calling 'make check'."
+	@exit 1
+endif
 
 ifneq ($(ENABLE_FUNCTIONAL_TESTS), yes)
 .PHONY: installcheck

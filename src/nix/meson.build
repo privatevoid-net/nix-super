@@ -7,6 +7,7 @@ project('nix', 'cpp',
     'debug=true',
     'optimization=2',
     'errorlogs=true', # Please print logs for tests that fail
+    'localstatedir=/nix/var',
   ],
   meson_version : '>= 1.1',
   license : 'LGPL-2.1-or-later',
@@ -16,9 +17,11 @@ cxx = meson.get_compiler('cpp')
 
 subdir('build-utils-meson/deps-lists')
 
+nix_store = dependency('nix-store')
+
 deps_private_maybe_subproject = [
   dependency('nix-util'),
-  dependency('nix-store'),
+  nix_store,
   dependency('nix-expr'),
   dependency('nix-flake'),
   dependency('nix-fetchers'),
@@ -32,6 +35,7 @@ subdir('build-utils-meson/subprojects')
 subdir('build-utils-meson/threads')
 
 subdir('build-utils-meson/export-all-symbols')
+subdir('build-utils-meson/windows-version')
 
 configdata = configuration_data()
 
@@ -209,18 +213,25 @@ nix_symlinks = [
   'nix-store',
 ]
 
+executable_suffix = ''
+if host_machine.system() == 'windows'
+  executable_suffix = '.exe'
+endif
+
 foreach linkname : nix_symlinks
   install_symlink(
-    linkname,
+    linkname + executable_suffix,
     # TODO(Qyriad): should these continue to be relative symlinks?
-    pointing_to : 'nix',
+    pointing_to : fs.name(this_exe),
     install_dir : get_option('bindir'),
     # The 'runtime' tag is what executables default to, which we want to emulate here.
     install_tag : 'runtime'
   )
   t = custom_target(
     command: ['ln', '-sf', fs.name(this_exe), '@OUTPUT@'],
-    output: linkname,
+    output: linkname + executable_suffix,
+    # native doesn't allow dangling symlinks, but the target executable often doesn't exist at this time
+    env : { 'MSYS' : 'winsymlinks:lnk' },
     # TODO(Ericson2314): Don't do this once we have the `meson.override_find_program` working)
     build_by_default: true
   )
@@ -230,17 +241,28 @@ endforeach
 
 install_symlink(
   'build-remote',
-  pointing_to : '..' / '..'/ get_option('bindir') / 'nix',
-  install_dir : get_option('libexecdir') / 'nix',
+  pointing_to : '..' / '..'/ get_option('bindir') / fs.name(this_exe),
+  install_dir : get_option('libexecdir') / fs.name(this_exe),
   # The 'runtime' tag is what executables default to, which we want to emulate here.
   install_tag : 'runtime'
 )
 
 custom_target(
   command: ['ln', '-sf', fs.name(this_exe), '@OUTPUT@'],
-  output: 'build-remote',
+  output: 'build-remote' + executable_suffix,
+  # native doesn't allow dangling symlinks, but the target executable often doesn't exist at this time
+  env : { 'MSYS' : 'winsymlinks:lnk' },
   # TODO(Ericson2314): Don't do this once we have the `meson.override_find_program` working)
   build_by_default: true
 )
 # TODO(Ericson3214): Dosen't yet work
 #meson.override_find_program(linkname, t)
+
+localstatedir = nix_store.get_variable(
+  'localstatedir',
+  default_value : get_option('localstatedir'),
+)
+assert(localstatedir == get_option('localstatedir'))
+store_dir = nix_store.get_variable('storedir')
+subdir('scripts')
+subdir('misc')

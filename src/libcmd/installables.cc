@@ -31,6 +31,8 @@
 
 namespace nix {
 
+namespace fs { using namespace std::filesystem; }
+
 const static std::regex attrPathRegex(
     R"((?:[a-zA-Z0-9_"-][a-zA-Z0-9_".,^\*-]*))",
     std::regex::ECMAScript);
@@ -90,7 +92,7 @@ MixFlakeOptions::MixFlakeOptions()
 
     > **DEPRECATED**
     >
-    > Use [`--no-use-registries`](#opt-no-use-registries) instead.
+    > Use [`--no-use-registries`](@docroot@/command-ref/conf-file.md#conf-use-registries) instead.
         )",
         .category = category,
         .handler = {[&]() {
@@ -415,7 +417,7 @@ void completeFlakeRefWithFragment(
                 : std::string(prefix.substr(0, hash));
 
             // TODO: ideally this would use the command base directory instead of assuming ".".
-            auto flakeRef = parseFlakeRef(fetchSettings, expandTilde(flakeRefS), absPath("."));
+            auto flakeRef = parseFlakeRef(fetchSettings, expandTilde(flakeRefS), fs::current_path().string());
 
             auto evalCache = openEvalCache(*evalState,
                 std::make_shared<flake::LockedFlake>(lockFlake(
@@ -1001,6 +1003,7 @@ std::vector<FlakeRef> RawInstallablesCommand::getFlakeRefsForCompletion()
 {
     applyDefaultInstallables(rawInstallables);
     std::vector<FlakeRef> res;
+    res.reserve(rawInstallables.size());
     for (auto i : rawInstallables)
         res.push_back(parseFlakeRefWithFragment(
             fetchSettings,

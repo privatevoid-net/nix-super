@@ -419,7 +419,7 @@ RunPager::~RunPager()
         }
 #endif
     } catch (...) {
-        ignoreException();
+        ignoreExceptionInDestructor();
     }
 }
 

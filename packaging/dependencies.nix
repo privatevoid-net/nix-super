@@ -38,6 +38,10 @@ let
   # Indirection for Nixpkgs to override when package.nix files are vendored
   filesetToSource = lib.fileset.toSource;
 
+  /** Given a set of layers, create a mkDerivation-like function */
+  mkPackageBuilder = exts: userFn:
+    stdenv.mkDerivation (lib.extends (lib.composeManyExtensions exts) userFn);
+
   localSourceLayer = finalAttrs: prevAttrs:
     let
       workDirPath =
@@ -58,6 +62,28 @@ let
       # Clear what `derivation` can't/shouldn't serialize; see prevAttrs.workDir.
       fileset = null;
       workDir = null;
+    };
+
+  mesonLayer = finalAttrs: prevAttrs:
+    {
+      nativeBuildInputs = [
+        pkgs.buildPackages.meson
+        pkgs.buildPackages.ninja
+      ] ++ prevAttrs.nativeBuildInputs or [];
+    };
+
+  mesonBuildLayer = finalAttrs: prevAttrs:
+    {
+      nativeBuildInputs = prevAttrs.nativeBuildInputs or [] ++ [
+        pkgs.buildPackages.pkg-config
+      ];
+      separateDebugInfo = !stdenv.hostPlatform.isStatic;
+      hardeningDisable = lib.optional stdenv.hostPlatform.isStatic "pie";
+    };
+
+  mesonLibraryLayer = finalAttrs: prevAttrs:
+    {
+      outputs = prevAttrs.outputs or [ "out" ] ++ [ "dev" ];
     };
 
   # Work around weird `--as-needed` linker behavior with BSD, see
@@ -115,6 +141,29 @@ scope: {
     version = inputs.libgit2.lastModifiedDate;
     cmakeFlags = attrs.cmakeFlags or []
       ++ [ "-DUSE_SSH=exec" ];
+    nativeBuildInputs = attrs.nativeBuildInputs or []
+      # gitMinimal does not build on Windows. See packbuilder patch.
+      ++ lib.optionals (!stdenv.hostPlatform.isWindows) [
+        # Needed for `git apply`; see `prePatch`
+        pkgs.buildPackages.gitMinimal
+      ];
+    # Only `git apply` can handle git binary patches
+    prePatch = attrs.prePatch or ""
+      + lib.optionalString (!stdenv.hostPlatform.isWindows) ''
+        patch() {
+          git apply
+        }
+      '';
+    patches = attrs.patches or []
+      ++ [
+        ./patches/libgit2-mempack-thin-packfile.patch
+      ]
+      # gitMinimal does not build on Windows, but fortunately this patch only
+      # impacts interruptibility
+      ++ lib.optionals (!stdenv.hostPlatform.isWindows) [
+        # binary patch; see `prePatch`
+        ./patches/libgit2-packbuilder-callback-interruptible.patch
+      ];
   });
 
   busybox-sandbox-shell = pkgs.busybox-sandbox-shell or (pkgs.busybox.override {
@@ -149,14 +198,27 @@ scope: {
 
   inherit resolvePath filesetToSource;
 
-  mkMesonDerivation = f: let
-    exts = [
+  mkMesonDerivation =
+    mkPackageBuilder [
+      miscGoodPractice
+      localSourceLayer
+      mesonLayer
+    ];
+  mkMesonExecutable =
+    mkPackageBuilder [
       miscGoodPractice
       bsdNoLinkAsNeeded
       localSourceLayer
+      mesonLayer
+      mesonBuildLayer
     ];
-  in stdenv.mkDerivation
-   (lib.extends
-     (lib.foldr lib.composeExtensions (_: _: {}) exts)
-     f);
+  mkMesonLibrary =
+    mkPackageBuilder [
+      miscGoodPractice
+      bsdNoLinkAsNeeded
+      localSourceLayer
+      mesonLayer
+      mesonBuildLayer
+      mesonLibraryLayer
+    ];
 }
