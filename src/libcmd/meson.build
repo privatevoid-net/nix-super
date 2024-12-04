@@ -75,6 +75,7 @@ add_project_arguments(
 subdir('build-utils-meson/diagnostics')
 
 sources = files(
+  'activatables.cc',
   'built-path.cc',
   'command-installable-value.cc',
   'command.cc',
@@ -97,6 +98,7 @@ sources = files(
 include_dirs = [include_directories('.')]
 
 headers = [config_h] + files(
+  'activatables.hh',
   'built-path.hh',
   'command-installable-value.hh',
   'command.hh',
