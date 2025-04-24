@@ -15,6 +15,13 @@ option(
 )
 
 option(
+  'functional-tests',
+  type : 'boolean',
+  value : true,
+  description : 'Build functional (E2E) tests',
+)
+
+option(
   'benchmarks',
   type : 'boolean',
   value : false,
