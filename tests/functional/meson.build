@@ -4,8 +4,6 @@ project('nix-functional-tests',
     'cpp_std=c++2a',
     # TODO(Qyriad): increase the warning level
     'warning_level=1',
-    'debug=true',
-    'optimization=2',
     'errorlogs=true', # Please print logs for tests that fail
   ],
   meson_version : '>= 1.3',
@@ -17,12 +15,10 @@ fs = import('fs')
 nix = find_program('nix')
 bash = find_program('bash', native : true)
 busybox = find_program('busybox', native : true, required : false)
-if host_machine.system() == 'windows'
-  # Because of the state of symlinks on Windows, coreutils.exe doesn't usually exist, but things like ls.exe will
-  coreutils = find_program('ls', native : true)
-else
-  coreutils = find_program('coreutils', native : true)
-endif
+# Look up `coreutils` package by searching for `ls` binary.
+# Previously we looked up `coreutils` on `linux`, but that is not
+# guaranteed to exist either.
+coreutils = find_program('ls', native : true)
 dot = find_program('dot', native : true, required : false)
 
 nix_bin_dir = fs.parent(nix.full_path())
@@ -41,7 +37,7 @@ test_confdata = {
 # Done as a subdir() so Meson places it under `common` in the build directory as well.
 subdir('common')
 
-config_nix_in = configure_file(
+configure_file(
   input : 'config.nix.in',
   output : 'config.nix',
   configuration : test_confdata,
@@ -77,6 +73,7 @@ suites = [
       'gc-runtime.sh',
       'tarball.sh',
       'fetchGit.sh',
+      'fetchGitShallow.sh',
       'fetchurl.sh',
       'fetchPath.sh',
       'fetchTree-file.sh',
@@ -136,7 +133,8 @@ suites = [
       'nix-copy-ssh-ng.sh',
       'post-hook.sh',
       'function-trace.sh',
-      'fmt.sh',
+      'formatter.sh',
+      'flamegraph-profiler.sh',
       'eval-store.sh',
       'why-depends.sh',
       'derivation-json.sh',
@@ -161,6 +159,7 @@ suites = [
       'impure-derivations.sh',
       'path-from-hash-part.sh',
       'path-info.sh',
+      'json.sh',
       'toString-path.sh',
       'read-only-store.sh',
       'nested-sandboxing.sh',
@@ -168,6 +167,7 @@ suites = [
       'debugger.sh',
       'extra-sandbox-profile.sh',
       'help.sh',
+      'symlinks.sh',
     ],
     'workdir': meson.current_source_dir(),
   },
@@ -246,8 +246,6 @@ foreach suite : suites
       # Used for target dependency/ordering tracking, not adding compiler flags or anything.
       depends : suite['deps'],
       workdir : workdir,
-      # Won't pass until man pages are generated
-      should_fail : suite['name'] == 'main' and script == 'help.sh'
     )
   endforeach
 endforeach

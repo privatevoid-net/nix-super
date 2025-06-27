@@ -1,20 +1,21 @@
-{ lib
-, buildPackages
-, stdenv
-, mkMesonExecutable
+{
+  lib,
+  buildPackages,
+  stdenv,
+  mkMesonExecutable,
 
-, nix-expr
-, nix-expr-c
-, nix-expr-test-support
+  nix-expr,
+  nix-expr-c,
+  nix-expr-test-support,
 
-, rapidcheck
-, gtest
-, runCommand
+  rapidcheck,
+  gtest,
+  runCommand,
 
-# Configuration Options
+  # Configuration Options
 
-, version
-, resolvePath
+  version,
+  resolvePath,
 }:
 
 let
@@ -27,8 +28,8 @@ mkMesonExecutable (finalAttrs: {
 
   workDir = ./.;
   fileset = fileset.unions [
-    ../../build-utils-meson
-    ./build-utils-meson
+    ../../nix-meson-build-support
+    ./nix-meson-build-support
     ../../.version
     ./.version
     ./meson.build
@@ -45,33 +46,27 @@ mkMesonExecutable (finalAttrs: {
     gtest
   ];
 
-  preConfigure =
-    # "Inline" .version so it's not a symlink, and includes the suffix.
-    # Do the meson utils, without modification.
-    ''
-      chmod u+w ./.version
-      echo ${version} > ../../.version
-    '';
-
   mesonFlags = [
   ];
 
-  env = lib.optionalAttrs (stdenv.isLinux && !(stdenv.hostPlatform.isStatic && stdenv.system == "aarch64-linux")) {
-    LDFLAGS = "-fuse-ld=gold";
-  };
-
   passthru = {
     tests = {
-      run = runCommand "${finalAttrs.pname}-run" {
-        meta.broken = !stdenv.hostPlatform.emulatorAvailable buildPackages;
-      } (lib.optionalString stdenv.hostPlatform.isWindows ''
-        export HOME="$PWD/home-dir"
-        mkdir -p "$HOME"
-      '' + ''
-        export _NIX_TEST_UNIT_DATA=${resolvePath ./data}
-        ${stdenv.hostPlatform.emulator buildPackages} ${lib.getExe finalAttrs.finalPackage}
-        touch $out
-      '');
+      run =
+        runCommand "${finalAttrs.pname}-run"
+          {
+            meta.broken = !stdenv.hostPlatform.emulatorAvailable buildPackages;
+          }
+          (
+            lib.optionalString stdenv.hostPlatform.isWindows ''
+              export HOME="$PWD/home-dir"
+              mkdir -p "$HOME"
+            ''
+            + ''
+              export _NIX_TEST_UNIT_DATA=${resolvePath ./data}
+              ${stdenv.hostPlatform.emulator buildPackages} ${lib.getExe finalAttrs.finalPackage}
+              touch $out
+            ''
+          );
     };
   };
 

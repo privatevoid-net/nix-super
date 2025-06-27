@@ -1,5 +1,5 @@
-#include "command.hh"
-#include "common-args.hh"
+#include "nix/cmd/command.hh"
+#include "nix/main/common-args.hh"
 
 #include <nlohmann/json.hpp>
 
@@ -36,7 +36,7 @@ struct CmdRealisationInfo : BuiltPathsCommand, MixJSON
 
     Category category() override { return catSecondary; }
 
-    void run(ref<Store> store, BuiltPaths && paths) override
+    void run(ref<Store> store, BuiltPaths && paths, BuiltPaths && rootPaths) override
     {
         experimentalFeatureSettings.require(Xp::CaDerivations);
         RealisedPath::Set realisations;
@@ -57,7 +57,7 @@ struct CmdRealisationInfo : BuiltPathsCommand, MixJSON
 
                 res.push_back(currentPath);
             }
-            logger->cout("%s", res);
+            printJSON(res);
         }
         else {
             for (auto & path : realisations) {

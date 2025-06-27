@@ -4,8 +4,6 @@ project('nix-expr-tests', 'cpp',
     'cpp_std=c++2a',
     # TODO(Qyriad): increase the warning level
     'warning_level=1',
-    'debug=true',
-    'optimization=2',
     'errorlogs=true', # Please print logs for tests that fail
   ],
   meson_version : '>= 1.1',
@@ -14,7 +12,7 @@ project('nix-expr-tests', 'cpp',
 
 cxx = meson.get_compiler('cpp')
 
-subdir('build-utils-meson/deps-lists')
+subdir('nix-meson-build-support/deps-lists')
 
 deps_private_maybe_subproject = [
   dependency('nix-expr'),
@@ -23,12 +21,10 @@ deps_private_maybe_subproject = [
 ]
 deps_public_maybe_subproject = [
 ]
-subdir('build-utils-meson/subprojects')
+subdir('nix-meson-build-support/subprojects')
 
-subdir('build-utils-meson/threads')
-
-subdir('build-utils-meson/export-all-symbols')
-subdir('build-utils-meson/windows-version')
+subdir('nix-meson-build-support/export-all-symbols')
+subdir('nix-meson-build-support/windows-version')
 
 rapidcheck = dependency('rapidcheck')
 deps_private += rapidcheck
@@ -36,22 +32,18 @@ deps_private += rapidcheck
 gtest = dependency('gtest')
 deps_private += gtest
 
-gtest = dependency('gmock')
-deps_private += gtest
+gmock = dependency('gmock')
+deps_private += gmock
 
-add_project_arguments(
-  # TODO(Qyriad): Yes this is how the autoconf+Make system did it.
-  # It would be nice for our headers to be idempotent instead.
-  '-include', 'config-util.hh',
-  '-include', 'config-store.hh',
-  '-include', 'config-expr.hh',
-  '-include', 'config-util.h',
-  '-include', 'config-store.h',
-  '-include', 'config-expr.h',
-  language : 'cpp',
+configdata = configuration_data()
+configdata.set_quoted('PACKAGE_VERSION', meson.project_version())
+
+config_priv_h = configure_file(
+  configuration : configdata,
+  output : 'expr-tests-config.hh',
 )
 
-subdir('build-utils-meson/diagnostics')
+subdir('nix-meson-build-support/common')
 
 sources = files(
   'derived-path.cc',
@@ -76,6 +68,7 @@ include_dirs = [include_directories('.')]
 this_exe = executable(
   meson.project_name(),
   sources,
+  config_priv_h,
   dependencies : deps_private_subproject + deps_private + deps_other,
   include_directories : include_dirs,
   # TODO: -lrapidcheck, see ../libutil-support/build.meson

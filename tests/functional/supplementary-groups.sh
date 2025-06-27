@@ -9,12 +9,11 @@ needLocalStore "The test uses --store always so we would just be bypassing the d
 
 TODO_NixOS
 
-unshare --mount --map-root-user -- bash -e -x <<EOF
+execUnshare <<EOF
   source common.sh
 
   # Avoid store dir being inside sandbox build-dir
   unset NIX_STORE_DIR
-  unset NIX_STATE_DIR
 
   setLocalStore () {
     export NIX_REMOTE=\$TEST_ROOT/\$1

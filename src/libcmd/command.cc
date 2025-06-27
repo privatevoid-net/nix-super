@@ -1,25 +1,23 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 
-#include "command.hh"
-#include "markdown.hh"
-#include "store-api.hh"
-#include "local-fs-store.hh"
-#include "derivations.hh"
-#include "nixexpr.hh"
-#include "profiles.hh"
-#include "repl.hh"
-#include "strings.hh"
-#include "environment-variables.hh"
+#include "nix/cmd/command.hh"
+#include "nix/cmd/markdown.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/local-fs-store.hh"
+#include "nix/store/derivations.hh"
+#include "nix/expr/nixexpr.hh"
+#include "nix/store/profiles.hh"
+#include "nix/cmd/repl.hh"
+#include "nix/util/strings.hh"
+#include "nix/util/environment-variables.hh"
 
 namespace nix {
-
-RegisterCommand::Commands * RegisterCommand::commands = nullptr;
 
 nix::Commands RegisterCommand::getCommandsFor(const std::vector<std::string> & prefix)
 {
     nix::Commands res;
-    for (auto & [name, command] : *RegisterCommand::commands)
+    for (auto & [name, command] : RegisterCommand::commands())
         if (name.size() == prefix.size() + 1) {
             bool equal = true;
             for (size_t i = 0; i < prefix.size(); ++i)
@@ -40,7 +38,7 @@ nlohmann::json NixMultiCommand::toJSON()
 void NixMultiCommand::run()
 {
     if (!command) {
-        std::set<std::string> subCommandTextLines;
+        StringSet subCommandTextLines;
         for (auto & [name, _] : commands)
             subCommandTextLines.insert(fmt("- `%s`", name));
         std::string markdownError =
@@ -179,30 +177,34 @@ BuiltPathsCommand::BuiltPathsCommand(bool recursive)
 
 void BuiltPathsCommand::run(ref<Store> store, Installables && installables)
 {
-    BuiltPaths paths;
+    BuiltPaths rootPaths, allPaths;
+
     if (all) {
         if (installables.size())
             throw UsageError("'--all' does not expect arguments");
         // XXX: Only uses opaque paths, ignores all the realisations
         for (auto & p : store->queryAllValidPaths())
-            paths.emplace_back(BuiltPath::Opaque{p});
+            rootPaths.emplace_back(BuiltPath::Opaque{p});
+        allPaths = rootPaths;
     } else {
-        paths = Installable::toBuiltPaths(getEvalStore(), store, realiseMode, operateOn, installables);
+        rootPaths = Installable::toBuiltPaths(getEvalStore(), store, realiseMode, operateOn, installables);
+        allPaths = rootPaths;
+
         if (recursive) {
             // XXX: This only computes the store path closure, ignoring
             // intermediate realisations
             StorePathSet pathsRoots, pathsClosure;
-            for (auto & root : paths) {
+            for (auto & root : rootPaths) {
                 auto rootFromThis = root.outPaths();
                 pathsRoots.insert(rootFromThis.begin(), rootFromThis.end());
             }
             store->computeFSClosure(pathsRoots, pathsClosure);
             for (auto & path : pathsClosure)
-                paths.emplace_back(BuiltPath::Opaque{path});
+                allPaths.emplace_back(BuiltPath::Opaque{path});
         }
     }
 
-    run(store, std::move(paths));
+    run(store, std::move(allPaths), std::move(rootPaths));
 }
 
 StorePathsCommand::StorePathsCommand(bool recursive)
@@ -210,10 +212,10 @@ StorePathsCommand::StorePathsCommand(bool recursive)
 {
 }
 
-void StorePathsCommand::run(ref<Store> store, BuiltPaths && paths)
+void StorePathsCommand::run(ref<Store> store, BuiltPaths && allPaths, BuiltPaths && rootPaths)
 {
     StorePathSet storePaths;
-    for (auto & builtPath : paths)
+    for (auto & builtPath : allPaths)
         for (auto & p : builtPath.outPaths())
             storePaths.insert(p);
 
@@ -233,19 +235,20 @@ void StorePathCommand::run(ref<Store> store, StorePaths && storePaths)
 
 MixProfile::MixProfile()
 {
-    addFlag(
-        {.longName = "profile",
-         .description = "The profile to operate on.",
-         .labels = {"path"},
-         .handler = {&profile},
-         .completer = completePath});
+    addFlag({
+        .longName = "profile",
+        .description = "The profile to operate on.",
+        .labels = {"path"},
+        .handler = {&profile},
+        .completer = completePath,
+    });
 }
 
 void MixProfile::updateProfile(const StorePath & storePath)
 {
     if (!profile)
         return;
-    auto store = getStore().dynamic_pointer_cast<LocalFSStore>();
+    auto store = getDstStore().dynamic_pointer_cast<LocalFSStore>();
     if (!store)
         throw Error("'--profile' is not supported for this Nix store");
     auto profile2 = absPath(*profile);
@@ -363,6 +366,40 @@ void MixEnvironment::setEnviron()
     replaceEnv(env);
 
     return;
+}
+
+void createOutLinks(const std::filesystem::path & outLink, const BuiltPaths & buildables, LocalFSStore & store)
+{
+    for (const auto & [_i, buildable] : enumerate(buildables)) {
+        auto i = _i;
+        std::visit(
+            overloaded{
+                [&](const BuiltPath::Opaque & bo) {
+                    auto symlink = outLink;
+                    if (i)
+                        symlink += fmt("-%d", i);
+                    store.addPermRoot(bo.path, absPath(symlink.string()));
+                },
+                [&](const BuiltPath::Built & bfd) {
+                    for (auto & output : bfd.outputs) {
+                        auto symlink = outLink;
+                        if (i)
+                            symlink += fmt("-%d", i);
+                        if (output.first != "out")
+                            symlink += fmt("-%s", output.first);
+                        store.addPermRoot(output.second, absPath(symlink.string()));
+                    }
+                },
+            },
+            buildable.raw());
+    }
+}
+
+void MixOutLinkBase::createOutLinksMaybe(const std::vector<BuiltPathWithResult> & buildables, ref<Store> & store)
+{
+    if (outLink != "")
+        if (auto store2 = store.dynamic_pointer_cast<LocalFSStore>())
+            createOutLinks(outLink, toBuiltPaths(buildables), *store2);
 }
 
 }

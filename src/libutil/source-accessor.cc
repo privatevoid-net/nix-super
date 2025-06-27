@@ -1,9 +1,29 @@
-#include "source-accessor.hh"
-#include "archive.hh"
+#include <atomic>
+#include "nix/util/source-accessor.hh"
 
 namespace nix {
 
 static std::atomic<size_t> nextNumber{0};
+
+bool SourceAccessor::Stat::isNotNARSerialisable()
+{
+    return this->type != tRegular && this->type != tSymlink && this->type != tDirectory;
+}
+
+std::string SourceAccessor::Stat::typeString() {
+    switch (this->type) {
+        case tRegular: return "regular";
+        case tSymlink: return "symlink";
+        case tDirectory: return "directory";
+        case tChar: return "character device";
+        case tBlock: return "block device";
+        case tSocket: return "socket";
+        case tFifo: return "fifo";
+        case tUnknown:
+        default: return "unknown";
+    }
+    return "unknown";
+}
 
 SourceAccessor::SourceAccessor()
     : number(++nextNumber)
@@ -84,18 +104,21 @@ CanonPath SourceAccessor::resolveSymlinks(
         todo.pop_front();
         if (c == "" || c == ".")
             ;
-        else if (c == "..")
-            res.pop();
-        else {
+        else if (c == "..") {
+            if (!res.isRoot())
+                res.pop();
+        } else {
             res.push(c);
             if (mode == SymlinkResolution::Full || !todo.empty()) {
                 if (auto st = maybeLstat(res); st && st->type == SourceAccessor::tSymlink) {
                     if (!linksAllowed--)
                         throw Error("infinite symlink recursion in path '%s'", showPath(path));
                     auto target = readLink(res);
-                    res.pop();
-                    if (hasPrefix(target, "/"))
+                    if (isAbsolute(target)) {
                         res = CanonPath::root;
+                    } else {
+                        res.pop();
+                    }
                     todo.splice(todo.begin(), tokenizeString<std::list<std::string>>(target, "/"));
                 }
             }

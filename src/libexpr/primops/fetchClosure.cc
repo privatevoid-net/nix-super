@@ -1,8 +1,8 @@
-#include "primops.hh"
-#include "store-api.hh"
-#include "realisation.hh"
-#include "make-content-addressed.hh"
-#include "url.hh"
+#include "nix/expr/primops.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/realisation.hh"
+#include "nix/store/make-content-addressed.hh"
+#include "nix/util/url.hh"
 
 namespace nix {
 
@@ -40,7 +40,7 @@ static void runFetchClosureWithRewrite(EvalState & state, const PosIdx pos, Stor
             });
     }
 
-    auto toPath = *toPathMaybe;
+    const auto & toPath = *toPathMaybe;
 
     // check and return
 
@@ -214,7 +214,7 @@ static RegisterPrimOp primop_fetchClosure({
     .doc = R"(
       Fetch a store path [closure](@docroot@/glossary.md#gloss-closure) from a binary cache, and return the store path as a string with context.
 
-      This function can be invoked in three ways, that we will discuss in order of preference.
+      This function can be invoked in three ways that we will discuss in order of preference.
 
       **Fetch a content-addressed store path**
 

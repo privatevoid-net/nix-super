@@ -1,10 +1,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "eval-settings.hh"
-#include "memory-source-accessor.hh"
+#include "nix/expr/eval-settings.hh"
+#include "nix/util/memory-source-accessor.hh"
 
-#include "tests/libexpr.hh"
+#include "nix/expr/tests/libexpr.hh"
 
 namespace nix {
     class CaptureLogger : public Logger
@@ -28,20 +28,15 @@ namespace nix {
     };
 
     class CaptureLogging {
-        Logger * oldLogger;
-        std::unique_ptr<CaptureLogger> tempLogger;
+        std::unique_ptr<Logger> oldLogger;
         public:
-            CaptureLogging() : tempLogger(std::make_unique<CaptureLogger>()) {
-                oldLogger = logger;
-                logger = tempLogger.get();
+            CaptureLogging() {
+                oldLogger = std::move(logger);
+                logger = std::make_unique<CaptureLogger>();
             }
 
             ~CaptureLogging() {
-                logger = oldLogger;
-            }
-
-            std::string get() const {
-                return tempLogger->get();
+                logger = std::move(oldLogger);
             }
     };
 
@@ -61,11 +56,31 @@ namespace nix {
     TEST_F(PrimOpTest, ceil) {
         auto v = eval("builtins.ceil 1.9");
         ASSERT_THAT(v, IsIntEq(2));
+        auto intMin = eval("builtins.ceil (-4611686018427387904 - 4611686018427387904)");
+        ASSERT_THAT(intMin, IsIntEq(std::numeric_limits<NixInt::Inner>::min()));
+        ASSERT_THROW(eval("builtins.ceil 1.0e200"), EvalError);
+        ASSERT_THROW(eval("builtins.ceil -1.0e200"), EvalError);
+        ASSERT_THROW(eval("builtins.ceil (1.0e200 * 1.0e200)"), EvalError); // inf
+        ASSERT_THROW(eval("builtins.ceil (-1.0e200 * 1.0e200)"), EvalError); // -inf
+        ASSERT_THROW(eval("builtins.ceil (1.0e200 * 1.0e200 - 1.0e200 * 1.0e200)"), EvalError); // nan
+        // bugs in previous Nix versions
+        ASSERT_THROW(eval("builtins.ceil (4611686018427387904 + 4611686018427387903)"), EvalError);
+        ASSERT_THROW(eval("builtins.ceil (-4611686018427387904 - 4611686018427387903)"), EvalError);
     }
 
     TEST_F(PrimOpTest, floor) {
         auto v = eval("builtins.floor 1.9");
         ASSERT_THAT(v, IsIntEq(1));
+        auto intMin = eval("builtins.ceil (-4611686018427387904 - 4611686018427387904)");
+        ASSERT_THAT(intMin, IsIntEq(std::numeric_limits<NixInt::Inner>::min()));
+        ASSERT_THROW(eval("builtins.ceil 1.0e200"), EvalError);
+        ASSERT_THROW(eval("builtins.ceil -1.0e200"), EvalError);
+        ASSERT_THROW(eval("builtins.ceil (1.0e200 * 1.0e200)"), EvalError); // inf
+        ASSERT_THROW(eval("builtins.ceil (-1.0e200 * 1.0e200)"), EvalError); // -inf
+        ASSERT_THROW(eval("builtins.ceil (1.0e200 * 1.0e200 - 1.0e200 * 1.0e200)"), EvalError); // nan
+        // bugs in previous Nix versions
+        ASSERT_THROW(eval("builtins.ceil (4611686018427387904 + 4611686018427387903)"), EvalError);
+        ASSERT_THROW(eval("builtins.ceil (-4611686018427387904 - 4611686018427387903)"), EvalError);
     }
 
     TEST_F(PrimOpTest, tryEvalFailure) {
@@ -113,7 +128,7 @@ namespace nix {
         CaptureLogging l;
         auto v = eval("builtins.trace \"test string 123\" 123");
         ASSERT_THAT(v, IsIntEq(123));
-        auto text = l.get();
+        auto text = (dynamic_cast<CaptureLogger *>(logger.get()))->get();
         ASSERT_NE(text.find("test string 123"), std::string::npos);
     }
 
@@ -209,7 +224,7 @@ namespace nix {
         auto v = eval("builtins.listToAttrs []");
         ASSERT_THAT(v, IsAttrsOfSize(0));
         ASSERT_EQ(v.type(), nAttrs);
-        ASSERT_EQ(v.attrs()->size(), 0);
+        ASSERT_EQ(v.attrs()->size(), 0u);
     }
 
     TEST_F(PrimOpTest, listToAttrsNotFieldName) {
@@ -286,6 +301,7 @@ namespace nix {
 
     TEST_F(PrimOpTest, elemtAtOutOfBounds) {
         ASSERT_THROW(eval("builtins.elemAt [0 1 2 3] 5"), Error);
+        ASSERT_THROW(eval("builtins.elemAt [0] 4294967296"), Error);
     }
 
     TEST_F(PrimOpTest, head) {
@@ -388,7 +404,7 @@ namespace nix {
     TEST_F(PrimOpTest, genList) {
         auto v = eval("builtins.genList (x: x + 1) 3");
         ASSERT_EQ(v.type(), nList);
-        ASSERT_EQ(v.listSize(), 3);
+        ASSERT_EQ(v.listSize(), 3u);
         for (const auto [i, elem] : enumerate(v.listItems())) {
             ASSERT_THAT(*elem, IsThunk());
             state.forceValue(*elem, noPos);
@@ -399,7 +415,7 @@ namespace nix {
     TEST_F(PrimOpTest, sortLessThan) {
         auto v = eval("builtins.sort builtins.lessThan [ 483 249 526 147 42 77 ]");
         ASSERT_EQ(v.type(), nList);
-        ASSERT_EQ(v.listSize(), 6);
+        ASSERT_EQ(v.listSize(), 6u);
 
         const std::vector<int> numbers = { 42, 77, 147, 249, 483, 526 };
         for (const auto [n, elem] : enumerate(v.listItems()))
@@ -419,7 +435,7 @@ namespace nix {
         auto wrong = v.attrs()->get(createSymbol("wrong"));
         ASSERT_NE(wrong, nullptr);
         ASSERT_EQ(wrong->value->type(), nList);
-        ASSERT_EQ(wrong->value->listSize(), 3);
+        ASSERT_EQ(wrong->value->listSize(), 3u);
         ASSERT_THAT(*wrong->value, IsListOfSize(3));
         ASSERT_THAT(*wrong->value->listElems()[0], IsIntEq(1));
         ASSERT_THAT(*wrong->value->listElems()[1], IsIntEq(9));
@@ -429,7 +445,7 @@ namespace nix {
     TEST_F(PrimOpTest, concatMap) {
         auto v = eval("builtins.concatMap (x: x ++ [0]) [ [1 2] [3 4] ]");
         ASSERT_EQ(v.type(), nList);
-        ASSERT_EQ(v.listSize(), 6);
+        ASSERT_EQ(v.listSize(), 6u);
 
         const std::vector<int> numbers = { 1, 2, 0, 3, 4, 0 };
         for (const auto [n, elem] : enumerate(v.listItems()))
@@ -577,6 +593,16 @@ namespace nix {
         ASSERT_THAT(v, IsStringEq("n"));
     }
 
+    TEST_F(PrimOpTest, substringHugeStart){
+        auto v = eval("builtins.substring 4294967296 5 \"nixos\"");
+        ASSERT_THAT(v, IsStringEq(""));
+    }
+
+    TEST_F(PrimOpTest, substringHugeLength){
+        auto v = eval("builtins.substring 0 4294967296 \"nixos\"");
+        ASSERT_THAT(v, IsStringEq("nixos"));
+    }
+
     TEST_F(PrimOpTest, substringEmptyString){
         auto v = eval("builtins.substring 1 3 \"\"");
         ASSERT_THAT(v, IsStringEq(""));
@@ -641,8 +667,8 @@ namespace nix {
         auto v = eval("derivation");
         ASSERT_EQ(v.type(), nFunction);
         ASSERT_TRUE(v.isLambda());
-        ASSERT_NE(v.payload.lambda.fun, nullptr);
-        ASSERT_TRUE(v.payload.lambda.fun->hasFormals());
+        ASSERT_NE(v.lambda().fun, nullptr);
+        ASSERT_TRUE(v.lambda().fun->hasFormals());
     }
 
     TEST_F(PrimOpTest, currentTime) {

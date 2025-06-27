@@ -1,11 +1,22 @@
 #ifndef NIX_API_EXPR_INTERNAL_H
 #define NIX_API_EXPR_INTERNAL_H
 
-#include "fetch-settings.hh"
-#include "eval.hh"
-#include "eval-settings.hh"
-#include "attr-set.hh"
+#include "nix/fetchers/fetch-settings.hh"
+#include "nix/expr/eval.hh"
+#include "nix/expr/eval-settings.hh"
+#include "nix/expr/attr-set.hh"
 #include "nix_api_value.h"
+#include "nix/expr/search-path.hh"
+
+struct nix_eval_state_builder
+{
+    nix::ref<nix::Store> store;
+    nix::EvalSettings settings;
+    nix::fetchers::Settings fetchSettings;
+    nix::LookupPath lookupPath;
+    // TODO: make an EvalSettings setting own this instead?
+    bool readOnlyMode;
+};
 
 struct EvalState
 {

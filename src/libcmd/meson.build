@@ -4,8 +4,6 @@ project('nix-cmd', 'cpp',
     'cpp_std=c++2a',
     # TODO(Qyriad): increase the warning level
     'warning_level=1',
-    'debug=true',
-    'optimization=2',
     'errorlogs=true', # Please print logs for tests that fail
   ],
   meson_version : '>= 1.1',
@@ -14,7 +12,7 @@ project('nix-cmd', 'cpp',
 
 cxx = meson.get_compiler('cpp')
 
-subdir('build-utils-meson/deps-lists')
+subdir('nix-meson-build-support/deps-lists')
 
 configdata = configuration_data()
 
@@ -28,9 +26,7 @@ deps_public_maybe_subproject = [
   dependency('nix-flake'),
   dependency('nix-main'),
 ]
-subdir('build-utils-meson/subprojects')
-
-subdir('build-utils-meson/threads')
+subdir('nix-meson-build-support/subprojects')
 
 nlohmann_json = dependency('nlohmann_json', version : '>= 3.9')
 deps_public += nlohmann_json
@@ -38,6 +34,8 @@ deps_public += nlohmann_json
 lowdown = dependency('lowdown', version : '>= 0.9.0', required : get_option('markdown'))
 deps_private += lowdown
 configdata.set('HAVE_LOWDOWN', lowdown.found().to_int())
+# The API changed slightly around terminal initialization.
+configdata.set('HAVE_LOWDOWN_1_4', lowdown.version().version_compare('>= 1.4.0').to_int())
 
 readline_flavor = get_option('readline-flavor')
 if readline_flavor == 'editline'
@@ -46,33 +44,21 @@ if readline_flavor == 'editline'
 elif readline_flavor == 'readline'
   readline = dependency('readline')
   deps_private += readline
-  configdata.set(
-    'USE_READLINE',
-    1,
-    description: 'Use readline instead of editline',
-  )
 else
   error('illegal editline flavor', readline_flavor)
 endif
+configdata.set(
+  'USE_READLINE',
+  (readline_flavor == 'readline').to_int(),
+  description: 'Use readline instead of editline',
+)
 
-config_h = configure_file(
+config_priv_h = configure_file(
   configuration : configdata,
-  output : 'config-cmd.hh',
+  output : 'cmd-config-private.hh',
 )
 
-add_project_arguments(
-  # TODO(Qyriad): Yes this is how the autoconf+Make system did it.
-  # It would be nice for our headers to be idempotent instead.
-  '-include', 'config-util.hh',
-  '-include', 'config-store.hh',
-  # '-include', 'config-fetchers.h',
-  '-include', 'config-expr.hh',
-  '-include', 'config-main.hh',
-  '-include', 'config-cmd.hh',
-  language : 'cpp',
-)
-
-subdir('build-utils-meson/diagnostics')
+subdir('nix-meson-build-support/common')
 
 sources = files(
   'activatables.cc',
@@ -87,7 +73,6 @@ sources = files(
   'installable-value.cc',
   'installables.cc',
   'modify-installables.cc',
-  'legacy.cc',
   'markdown.cc',
   'misc-store-flags.cc',
   'network-proxy.cc',
@@ -95,39 +80,24 @@ sources = files(
   'repl.cc',
 )
 
-include_dirs = [include_directories('.')]
+subdir('include/nix/cmd')
 
-headers = [config_h] + files(
-  'activatables.hh',
-  'built-path.hh',
-  'command-installable-value.hh',
-  'command.hh',
-  'common-eval-args.hh',
-  'compatibility-settings.hh',
-  'editor-for.hh',
-  'installable-attr-path.hh',
-  'installable-derived-path.hh',
-  'installable-flake.hh',
-  'installable-value.hh',
-  'installables.hh',
-  'legacy.hh',
-  'markdown.hh',
-  'misc-store-flags.hh',
-  'network-proxy.hh',
-  'repl-interacter.hh',
-  'repl.hh',
-)
+subdir('nix-meson-build-support/export-all-symbols')
+subdir('nix-meson-build-support/windows-version')
 
 this_library = library(
   'nixcmd',
   sources,
+  config_priv_h,
   dependencies : deps_public + deps_private + deps_other,
+  include_directories : include_dirs,
+  link_args: linker_export_flags,
   prelink : true, # For C++ static initializers
   install : true,
 )
 
-install_headers(headers, subdir : 'nix', preserve_path : true)
+install_headers(headers, subdir : 'nix/cmd', preserve_path : true)
 
 libraries_private = []
 
-subdir('build-utils-meson/export')
+subdir('nix-meson-build-support/export')

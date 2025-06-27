@@ -67,7 +67,7 @@ startDaemon() {
       die "startDaemon: not supported when testing on NixOS. Is it really needed? If so add conditionals; e.g. if ! isTestOnNixOS; then ..."
     fi
 
-    # Don’t start the daemon twice, as this would just make it loop indefinitely
+    # Don't start the daemon twice, as this would just make it loop indefinitely.
     if [[ "${_NIX_TEST_DAEMON_PID-}" != '' ]]; then
         return
     fi
@@ -76,15 +76,19 @@ startDaemon() {
     PATH=$DAEMON_PATH nix --extra-experimental-features 'nix-command' daemon &
     _NIX_TEST_DAEMON_PID=$!
     export _NIX_TEST_DAEMON_PID
-    for ((i = 0; i < 300; i++)); do
+    for ((i = 0; i < 60; i++)); do
         if [[ -S $NIX_DAEMON_SOCKET_PATH ]]; then
           DAEMON_STARTED=1
           break;
         fi
+        if ! kill -0 "$_NIX_TEST_DAEMON_PID"; then
+          echo "daemon died unexpectedly" >&2
+          exit 1
+        fi
         sleep 0.1
     done
     if [[ -z ${DAEMON_STARTED+x} ]]; then
-      fail "Didn’t manage to start the daemon"
+      fail "Didn't manage to start the daemon"
     fi
     trap "killDaemon" EXIT
     # Save for if daemon is killed
@@ -97,7 +101,7 @@ killDaemon() {
       die "killDaemon: not supported when testing on NixOS. Is it really needed? If so add conditionals; e.g. if ! isTestOnNixOS; then ..."
     fi
 
-    # Don’t fail trying to stop a non-existant daemon twice
+    # Don't fail trying to stop a non-existant daemon twice.
     if [[ "${_NIX_TEST_DAEMON_PID-}" == '' ]]; then
         return
     fi
@@ -219,7 +223,7 @@ assertStderr() {
 
 needLocalStore() {
   if [[ "$NIX_REMOTE" == "daemon" ]]; then
-    skipTest "Can’t run through the daemon ($1)"
+    skipTest "Can't run through the daemon ($1)"
   fi
 }
 
@@ -343,15 +347,17 @@ count() {
   echo $#
 }
 
-# Sometimes, e.g. due to pure eval, restricted eval, or sandboxing, we
-# cannot look up `config.nix` in the build dir, and have to instead get
-# it from the current directory. (In this case, the current directly
-# will be somewhere in `$TEST_ROOT`.)
-removeBuildDirRef() {
-  # shellcheck disable=SC2016 # The ${} in this is Nix, not shell
-  sed -i -e 's,"${builtins.getEnv "_NIX_TEST_BUILD_DIR"}/[^ ]*config.nix",./config.nix,' "$@"
+trap onError ERR
+
+requiresUnprivilegedUserNamespaces() {
+  if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] && [[ $(< /proc/sys/kernel/apparmor_restrict_unprivileged_userns) -eq 1 ]]; then
+    skipTest "Unprivileged user namespaces are disabled. Run 'sudo sysctl -w /proc/sys/kernel/apparmor_restrict_unprivileged_userns=0' to allow, and run these tests."
+  fi
 }
 
-trap onError ERR
+execUnshare () {
+  requiresUnprivilegedUserNamespaces
+  exec unshare --mount --map-root-user "$SHELL" "$@"
+}
 
 fi # COMMON_FUNCTIONS_SH_SOURCED

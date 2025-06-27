@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
     struct sockaddr_un data;
     data.sun_family = AF_UNIX;
     data.sun_path[0] = 0;
-    strcpy(data.sun_path + 1, argv[1]);
+    strncpy(data.sun_path + 1, argv[1], sizeof(data.sun_path) - 2);
 
     // Now try to connect, To ensure we work no matter what order we are
     // executed in, just busyloop here.
@@ -49,8 +49,8 @@ int main(int argc, char **argv) {
     msg.msg_controllen = CMSG_SPACE(sizeof(int));
 
     // Write a single null byte too.
-    msg.msg_iov = malloc(sizeof(struct iovec));
-    msg.msg_iov[0].iov_base = "";
+    msg.msg_iov = (struct iovec*) malloc(sizeof(struct iovec));
+    msg.msg_iov[0].iov_base = (void*) "";
     msg.msg_iov[0].iov_len = 1;
     msg.msg_iovlen = 1;
 

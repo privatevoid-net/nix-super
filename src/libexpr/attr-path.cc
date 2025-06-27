@@ -1,5 +1,5 @@
-#include "attr-path.hh"
-#include "eval-inline.hh"
+#include "nix/expr/attr-path.hh"
+#include "nix/expr/eval-inline.hh"
 
 
 namespace nix {
@@ -74,7 +74,7 @@ std::pair<Value *, PosIdx> findAlongAttrPath(EvalState & state, const std::strin
 
             auto a = v->attrs()->get(state.symbols.create(attr));
             if (!a) {
-                std::set<std::string> attrNames;
+                StringSet attrNames;
                 for (auto & attr : *v->attrs())
                     attrNames.insert(std::string(state.symbols[attr.name]));
 
@@ -129,7 +129,6 @@ std::pair<SourcePath, uint32_t> findPackageFilename(EvalState & state, Value & v
     try {
         auto colon = fn.rfind(':');
         if (colon == std::string::npos) fail();
-        std::string filename(fn, 0, colon);
         auto lineno = std::stoi(std::string(fn, colon + 1, std::string::npos));
         return {SourcePath{path.accessor, CanonPath(fn.substr(0, colon))}, lineno};
     } catch (std::invalid_argument & e) {

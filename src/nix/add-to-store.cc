@@ -1,10 +1,10 @@
-#include "command.hh"
-#include "common-args.hh"
-#include "store-api.hh"
-#include "archive.hh"
-#include "git.hh"
-#include "posix-source-accessor.hh"
-#include "misc-store-flags.hh"
+#include "nix/cmd/command.hh"
+#include "nix/main/common-args.hh"
+#include "nix/store/store-api.hh"
+#include "nix/util/archive.hh"
+#include "nix/util/git.hh"
+#include "nix/util/posix-source-accessor.hh"
+#include "nix/cmd/misc-store-flags.hh"
 
 using namespace nix;
 
@@ -37,13 +37,13 @@ struct CmdAddToStore : MixDryRun, StoreCommand
     {
         if (!namePart) namePart = baseNameOf(path);
 
-        auto [accessor, path2] = PosixSourceAccessor::createAtRoot(path);
+        auto sourcePath = PosixSourceAccessor::createAtRoot(makeParentCanonical(path));
 
         auto storePath = dryRun
             ? store->computeStorePath(
-                *namePart, {accessor, path2}, caMethod, hashAlgo, {}).first
+                *namePart, sourcePath, caMethod, hashAlgo, {}).first
             : store->addToStoreSlow(
-                *namePart, {accessor, path2}, caMethod, hashAlgo, {}).path;
+                *namePart, sourcePath, caMethod, hashAlgo, {}).path;
 
         logger->cout("%s", store->printStorePath(storePath));
     }

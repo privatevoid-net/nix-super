@@ -1,8 +1,9 @@
-#include "json-utils.hh"
-#include "error.hh"
-#include "types.hh"
+#include "nix/util/json-utils.hh"
+#include "nix/util/error.hh"
+#include "nix/util/types.hh"
 #include <nlohmann/json_fwd.hpp>
 #include <iostream>
+#include <optional>
 
 namespace nix {
 
@@ -38,6 +39,15 @@ std::optional<nlohmann::json> optionalValueAt(const nlohmann::json::object_t & m
     return std::optional { map.at(key) };
 }
 
+std::optional<nlohmann::json> nullableValueAt(const nlohmann::json::object_t & map, const std::string & key)
+{
+    auto value = valueAt(map, key);
+
+    if (value.is_null())
+        return std::nullopt;
+
+    return std::optional { std::move(value) };
+}
 
 const nlohmann::json * getNullable(const nlohmann::json & value)
 {
@@ -82,9 +92,18 @@ const nlohmann::json::string_t & getString(const nlohmann::json & value)
     return ensureType(value, nlohmann::json::value_t::string).get_ref<const nlohmann::json::string_t &>();
 }
 
-const nlohmann::json::number_integer_t & getInteger(const nlohmann::json & value)
+const nlohmann::json::number_unsigned_t & getUnsigned(const nlohmann::json & value)
 {
-    return ensureType(value, nlohmann::json::value_t::number_integer).get_ref<const nlohmann::json::number_integer_t &>();
+    if (auto ptr = value.get<const nlohmann::json::number_unsigned_t *>()) {
+        return *ptr;
+    }
+    const char * typeName = value.type_name();
+    if (typeName == nlohmann::json(0).type_name()) {
+        typeName = value.is_number_float() ? "floating point number" : "signed integral number";
+    }
+    throw Error(
+        "Expected JSON value to be an unsigned integral number but it is of type '%s': %s",
+        typeName, value.dump());
 }
 
 const nlohmann::json::boolean_t & getBoolean(const nlohmann::json & value)

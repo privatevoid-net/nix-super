@@ -5,13 +5,52 @@
 #include "nix_api_expr.h"
 #include "nix_api_value.h"
 
-#include "tests/nix_api_expr.hh"
-#include "tests/string_callback.hh"
+#include "nix/expr/tests/nix_api_expr.hh"
+#include "nix/util/tests/string_callback.hh"
+#include "nix/util/file-system.hh"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "expr-tests-config.hh"
+
 namespace nixC {
+
+TEST_F(nix_api_store_test, nix_eval_state_lookup_path)
+{
+    auto tmpDir = nix::createTempDir();
+    auto delTmpDir = std::make_unique<nix::AutoDelete>(tmpDir, true);
+    auto nixpkgs = tmpDir + "/pkgs";
+    auto nixos = tmpDir + "/cfg";
+    std::filesystem::create_directories(nixpkgs);
+    std::filesystem::create_directories(nixos);
+
+    std::string nixpkgsEntry = "nixpkgs=" + nixpkgs;
+    std::string nixosEntry = "nixos-config=" + nixos;
+    const char * lookupPath[] = {nixpkgsEntry.c_str(), nixosEntry.c_str(), nullptr};
+
+    auto builder = nix_eval_state_builder_new(ctx, store);
+    assert_ctx_ok();
+
+    ASSERT_EQ(NIX_OK, nix_eval_state_builder_set_lookup_path(ctx, builder, lookupPath));
+    assert_ctx_ok();
+
+    auto state = nix_eval_state_build(ctx, builder);
+    assert_ctx_ok();
+
+    nix_eval_state_builder_free(builder);
+
+    Value * value = nix_alloc_value(ctx, state);
+    nix_expr_eval_from_string(ctx, state, "builtins.seq <nixos-config> <nixpkgs>", ".", value);
+    assert_ctx_ok();
+
+    ASSERT_EQ(nix_get_type(ctx, value), NIX_TYPE_PATH);
+    assert_ctx_ok();
+
+    auto pathStr = nix_get_path_string(ctx, value);
+    assert_ctx_ok();
+    ASSERT_EQ(0, strcmp(pathStr, nixpkgs.c_str()));
+}
 
 TEST_F(nix_api_expr_test, nix_expr_eval_from_string)
 {
@@ -135,7 +174,7 @@ TEST_F(nix_api_expr_test, nix_expr_realise_context_bad_build)
 
 TEST_F(nix_api_expr_test, nix_expr_realise_context)
 {
-    // TODO (ca-derivations): add a content-addressed derivation output, which produces a placeholder
+    // TODO (ca-derivations): add a content-addressing derivation output, which produces a placeholder
     auto expr = R"(
         ''
             a derivation output: ${
@@ -183,7 +222,7 @@ TEST_F(nix_api_expr_test, nix_expr_realise_context)
         names.push_back(name);
     }
     std::sort(names.begin(), names.end());
-    ASSERT_EQ(3, names.size());
+    ASSERT_EQ(3u, names.size());
     EXPECT_THAT(names[0], testing::StrEq("just-a-file"));
     EXPECT_THAT(names[1], testing::StrEq("letsbuild"));
     EXPECT_THAT(names[2], testing::StrEq("not-actually-built-yet.drv"));

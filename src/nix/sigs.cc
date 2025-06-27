@@ -1,9 +1,8 @@
-#include "signals.hh"
-#include "command.hh"
-#include "shared.hh"
-#include "store-api.hh"
-#include "thread-pool.hh"
-#include "progress-bar.hh"
+#include "nix/util/signals.hh"
+#include "nix/cmd/command.hh"
+#include "nix/main/shared.hh"
+#include "nix/store/store-open.hh"
+#include "nix/util/thread-pool.hh"
 
 #include <atomic>
 
@@ -41,7 +40,6 @@ struct CmdCopySigs : StorePathsCommand
 
         ThreadPool pool;
 
-        std::string doneLabel = "done";
         std::atomic<size_t> added{0};
 
         //logger->setExpected(doneLabel, storePaths.size());
@@ -106,7 +104,7 @@ struct CmdSign : StorePathsCommand
             .description = "File containing the secret signing key.",
             .labels = {"file"},
             .handler = {&secretKeyFile},
-            .completer = completePath
+            .completer = completePath,
         });
     }
 
@@ -176,7 +174,7 @@ struct CmdKeyGenerateSecret : Command
         if (!keyName)
             throw UsageError("required argument '--key-name' is missing");
 
-        stopProgressBar();
+        logger->stop();
         writeFull(getStandardOutput(), SecretKey::generate(*keyName).to_string());
     }
 };
@@ -198,7 +196,7 @@ struct CmdKeyConvertSecretToPublic : Command
     void run() override
     {
         SecretKey secretKey(drainFD(STDIN_FILENO));
-        stopProgressBar();
+        logger->stop();
         writeFull(getStandardOutput(), secretKey.toPublicKey().to_string());
     }
 };

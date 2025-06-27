@@ -1,6 +1,6 @@
-#include "serialise.hh"
-#include "signals.hh"
-#include "util.hh"
+#include "nix/util/serialise.hh"
+#include "nix/util/signals.hh"
+#include "nix/util/util.hh"
 
 #include <cstring>
 #include <cerrno>
@@ -11,7 +11,7 @@
 #ifdef _WIN32
 # include <fileapi.h>
 # include <winsock2.h>
-# include "windows-error.hh"
+# include "nix/util/windows-error.hh"
 #else
 # include <poll.h>
 #endif
@@ -90,7 +90,6 @@ void Source::operator () (std::string_view data)
 
 void Source::drainInto(Sink & sink)
 {
-    std::string s;
     std::array<char, 8192> buf;
     while (true) {
         size_t n;
@@ -228,8 +227,7 @@ std::unique_ptr<FinishSink> sourceToSink(std::function<void(Source &)> fun)
                                 throw EndOfFile("coroutine has finished");
                         }
 
-                        size_t n = std::min(cur.size(), out_len);
-                        memcpy(out, cur.data(), n);
+                        size_t n = cur.copy(out, out_len);
                         cur.remove_prefix(n);
                         return n;
                     });
@@ -261,7 +259,7 @@ std::unique_ptr<Source> sinkToSource(
 {
     struct SinkToSource : Source
     {
-        typedef boost::coroutines2::coroutine<std::string> coro_t;
+        typedef boost::coroutines2::coroutine<std::string_view> coro_t;
 
         std::function<void(Sink &)> fun;
         std::function<void()> eof;
@@ -272,33 +270,37 @@ std::unique_ptr<Source> sinkToSource(
         {
         }
 
-        std::string cur;
-        size_t pos = 0;
+        std::string_view cur;
 
         size_t read(char * data, size_t len) override
         {
-            if (!coro) {
+            bool hasCoro = coro.has_value();
+            if (!hasCoro) {
                 coro = coro_t::pull_type([&](coro_t::push_type & yield) {
                     LambdaSink sink([&](std::string_view data) {
-                        if (!data.empty()) yield(std::string(data));
+                        if (!data.empty()) {
+                            yield(data);
+                        }
                     });
                     fun(sink);
                 });
             }
 
-            if (!*coro) { eof(); unreachable(); }
-
-            if (pos == cur.size()) {
-                if (!cur.empty()) {
+            if (cur.empty()) {
+                if (hasCoro) {
                     (*coro)();
                 }
-                cur = coro->get();
-                pos = 0;
+                if (*coro) {
+                    cur = coro->get();
+                } else {
+                    coro.reset();
+                    eof();
+                    unreachable();
+                }
             }
 
-            auto n = std::min(cur.size() - pos, len);
-            memcpy(data, cur.data() + pos, n);
-            pos += n;
+            size_t n = cur.copy(data, len);
+            cur.remove_prefix(n);
 
             return n;
         }
@@ -427,7 +429,7 @@ Error readError(Source & source)
     auto type = readString(source);
     assert(type == "Error");
     auto level = (Verbosity) readInt(source);
-    auto name = readString(source); // removed
+    [[maybe_unused]] auto name = readString(source); // removed
     auto msg = readString(source);
     ErrorInfo info {
         .level = level,

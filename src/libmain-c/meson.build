@@ -4,8 +4,6 @@ project('nix-main-c', 'cpp',
     'cpp_std=c++2a',
     # TODO(Qyriad): increase the warning level
     'warning_level=1',
-    'debug=true',
-    'optimization=2',
     'errorlogs=true', # Please print logs for tests that fail
   ],
   meson_version : '>= 1.1',
@@ -14,9 +12,7 @@ project('nix-main-c', 'cpp',
 
 cxx = meson.get_compiler('cpp')
 
-subdir('build-utils-meson/deps-lists')
-
-configdata = configuration_data()
+subdir('nix-meson-build-support/deps-lists')
 
 deps_private_maybe_subproject = [
   dependency('nix-util'),
@@ -27,35 +23,9 @@ deps_public_maybe_subproject = [
   dependency('nix-util-c'),
   dependency('nix-store-c'),
 ]
-subdir('build-utils-meson/subprojects')
+subdir('nix-meson-build-support/subprojects')
 
-subdir('build-utils-meson/threads')
-
-# TODO rename, because it will conflict with downstream projects
-configdata.set_quoted('PACKAGE_VERSION', meson.project_version())
-
-config_h = configure_file(
-  configuration : configdata,
-  output : 'config-main.h',
-)
-
-add_project_arguments(
-  # TODO(Qyriad): Yes this is how the autoconf+Make system did it.
-  # It would be nice for our headers to be idempotent instead.
-
-  # From C++ libraries, only for internals
-  '-include', 'config-util.hh',
-  '-include', 'config-store.hh',
-  '-include', 'config-main.hh',
-
-  # From C libraries, for our public, installed headers too
-  '-include', 'config-util.h',
-  '-include', 'config-store.h',
-  '-include', 'config-main.h',
-  language : 'cpp',
-)
-
-subdir('build-utils-meson/diagnostics')
+subdir('nix-meson-build-support/common')
 
 sources = files(
   'nix_api_main.cc',
@@ -63,12 +33,12 @@ sources = files(
 
 include_dirs = [include_directories('.')]
 
-headers = [config_h] + files(
+headers = files(
   'nix_api_main.h',
 )
 
-subdir('build-utils-meson/export-all-symbols')
-subdir('build-utils-meson/windows-version')
+subdir('nix-meson-build-support/export-all-symbols')
+subdir('nix-meson-build-support/windows-version')
 
 this_library = library(
   'nixmainc',
@@ -80,8 +50,8 @@ this_library = library(
   install : true,
 )
 
-install_headers(headers, subdir : 'nix', preserve_path : true)
+install_headers(headers, preserve_path : true)
 
 libraries_private = []
 
-subdir('build-utils-meson/export')
+subdir('nix-meson-build-support/export')

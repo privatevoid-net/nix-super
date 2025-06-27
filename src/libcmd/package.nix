@@ -1,32 +1,33 @@
-{ lib
-, stdenv
-, mkMesonLibrary
+{
+  lib,
+  stdenv,
+  mkMesonLibrary,
 
-, nix-util
-, nix-store
-, nix-fetchers
-, nix-expr
-, nix-flake
-, nix-main
-, editline
-, readline
-, lowdown
-, nlohmann_json
+  nix-util,
+  nix-store,
+  nix-fetchers,
+  nix-expr,
+  nix-flake,
+  nix-main,
+  editline,
+  readline,
+  lowdown,
+  nlohmann_json,
 
-# Configuration Options
+  # Configuration Options
 
-, version
+  version,
 
-# Whether to enable Markdown rendering in the Nix binary.
-, enableMarkdown ? !stdenv.hostPlatform.isWindows
+  # Whether to enable Markdown rendering in the Nix binary.
+  enableMarkdown ? !stdenv.hostPlatform.isWindows,
 
-# Which interactive line editor library to use for Nix's repl.
-#
-# Currently supported choices are:
-#
-# - editline (default)
-# - readline
-, readlineFlavor ? if stdenv.hostPlatform.isWindows then "readline" else "editline"
+  # Which interactive line editor library to use for Nix's repl.
+  #
+  # Currently supported choices are:
+  #
+  # - editline (default)
+  # - readline
+  readlineFlavor ? if stdenv.hostPlatform.isWindows then "readline" else "editline",
 }:
 
 let
@@ -39,12 +40,13 @@ mkMesonLibrary (finalAttrs: {
 
   workDir = ./.;
   fileset = fileset.unions [
-    ../../build-utils-meson
-    ./build-utils-meson
+    ../../nix-meson-build-support
+    ./nix-meson-build-support
     ../../.version
     ./.version
     ./meson.build
     ./meson.options
+    ./include/nix/cmd/meson.build
     (fileset.fileFilter (file: file.hasExt "cc") ./.)
     (fileset.fileFilter (file: file.hasExt "hh") ./.)
   ];
@@ -63,22 +65,10 @@ mkMesonLibrary (finalAttrs: {
     nlohmann_json
   ];
 
-  preConfigure =
-    # "Inline" .version so it's not a symlink, and includes the suffix.
-    # Do the meson utils, without modification.
-    ''
-      chmod u+w ./.version
-      echo ${version} > ../../.version
-    '';
-
   mesonFlags = [
     (lib.mesonEnable "markdown" enableMarkdown)
     (lib.mesonOption "readline-flavor" readlineFlavor)
   ];
-
-  env = lib.optionalAttrs (stdenv.isLinux && !(stdenv.hostPlatform.isStatic && stdenv.system == "aarch64-linux")) {
-    LDFLAGS = "-fuse-ld=gold";
-  };
 
   meta = {
     platforms = lib.platforms.unix ++ lib.platforms.windows;

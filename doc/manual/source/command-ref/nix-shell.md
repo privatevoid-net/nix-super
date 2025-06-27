@@ -88,7 +88,9 @@ All options not listed here are passed to `nix-store
   cleared before the interactive shell is started, so you get an
   environment that more closely corresponds to the “real” Nix build. A
   few variables, in particular `HOME`, `USER` and `DISPLAY`, are
-  retained.
+  retained.  Note that the shell used to run commands is obtained from
+  [`NIX_BUILD_SHELL`](#env-NIX_BUILD_SHELL) / `<nixpkgs>` from
+  `NIX_PATH`, and therefore not affected by `--pure`.
 
 - `--packages` / `-p` *packages*…
 
@@ -112,11 +114,30 @@ All options not listed here are passed to `nix-store
 
 # Environment variables
 
-- `NIX_BUILD_SHELL`
+- <span id="env-NIX_BUILD_SHELL">[`NIX_BUILD_SHELL`](#env-NIX_BUILD_SHELL)</span>
 
-  Shell used to start the interactive environment. Defaults to the
-  `bash` found in `<nixpkgs>`, falling back to the `bash` found in
-  `PATH` if not found.
+  Shell used to start the interactive environment.
+  Defaults to the `bash` from `bashInteractive` found in `<nixpkgs>`, falling back to the `bash` found in `PATH` if not found.
+
+  > **Note**
+  >
+  > The shell obtained using this method may not necessarily be the same as any shells requested in *path*.
+
+  <!-- -->
+
+  > **Example
+  >
+  >  Despite `--pure`, this invocation will not result in a fully reproducible shell environment:
+  >
+  > ```nix
+  > #!/usr/bin/env -S nix-shell --pure
+  > let
+  >   pkgs = import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/854fdc68881791812eddd33b2fed94b954979a8e.tar.gz") {};
+  > in
+  > pkgs.mkShell {
+  >   buildInputs = pkgs.bashInteractive;
+  > }
+  > ```
 
 {{#include ./env-common.md}}
 
@@ -221,16 +242,21 @@ print(t)
 ```
 
 Similarly, the following is a Perl script that specifies that it
-requires Perl and the `HTML::TokeParser::Simple` and `LWP` packages:
+requires Perl and the `HTML::TokeParser::Simple`, `LWP` and
+`LWP::Protocol::Https` packages:
 
 ```perl
 #! /usr/bin/env nix-shell
-#! nix-shell -i perl --packages perl perlPackages.HTMLTokeParserSimple perlPackages.LWP
+#! nix-shell -i perl 
+#! nix-shell --packages perl 
+#! nix-shell --packages perlPackages.HTMLTokeParserSimple 
+#! nix-shell --packages perlPackages.LWP
+#! nix-shell --packages perlPackages.LWPProtocolHttps
 
 use HTML::TokeParser::Simple;
 
 # Fetch nixos.org and print all hrefs.
-my $p = HTML::TokeParser::Simple->new(url => 'http://nixos.org/');
+my $p = HTML::TokeParser::Simple->new(url => 'https://nixos.org/');
 
 while (my $token = $p->get_tag("a")) {
     my $href = $token->get_attr("href");
@@ -295,7 +321,7 @@ contains:
 ```nix
 with import <nixpkgs> {};
 
-runCommand "dummy" { buildInputs = [ python pythonPackages.prettytable ]; } ""
+runCommand "dummy" { buildInputs = [ python3 python3Packages.prettytable ]; } ""
 ```
 
 The script's file name is passed as the first argument to the interpreter specified by the `-i` flag.

@@ -1,12 +1,11 @@
-#include "command.hh"
-#include "activatables.hh"
-#include "progress-bar.hh"
-#include "current-process.hh"
+#include "nix/cmd/command.hh"
+#include "nix/cmd/activatables.hh"
+#include "nix/util/current-process.hh"
 
 using namespace nix;
 
 void executePrivileged(std::string program, Strings args) {
-    stopProgressBar();
+    logger->stop();
     restoreProcessContext();
     args.push_front(program);
     auto exe = program;

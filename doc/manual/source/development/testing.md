@@ -30,7 +30,7 @@ The unit tests are defined using the [googletest] and [rapidcheck] frameworks.
 > src
 > ├── libexpr
 > │   ├── meson.build
-> │   ├── value/context.hh
+> │   ├── include/nix/expr/value/context.hh
 > │   ├── value/context.cc
 > │   …
 > │
@@ -46,8 +46,12 @@ The unit tests are defined using the [googletest] and [rapidcheck] frameworks.
 > │   │
 > │   ├── libexpr-test-support
 > │   │   ├── meson.build
+> │   │   ├── include/nix/expr
+> │   │   │   ├── meson.build
+> │   │   │   └── tests
+> │   │   │       ├── value/context.hh
+> │   │   │       …
 > │   │   └── tests
-> │   │       ├── value/context.hh
 > │   │       ├── value/context.cc
 > │   │       …
 > │   │
@@ -59,7 +63,7 @@ The unit tests are defined using the [googletest] and [rapidcheck] frameworks.
 > ```
 
 The tests for each Nix library (`libnixexpr`, `libnixstore`, etc..) live inside a directory `src/${library_name_without-nix}-test`.
-Given an interface (header) and implementation pair in the original library, say, `src/libexpr/value/context.{hh,cc}`, we write tests for it in `src/libexpr-tests/value/context.cc`, and (possibly) declare/define additional interfaces for testing purposes in `src/libexpr-test-support/tests/value/context.{hh,cc}`.
+Given an interface (header) and implementation pair in the original library, say, `src/libexpr/include/nix/expr/value/context.hh` and `src/libexpr/value/context.cc`, we write tests for it in `src/libexpr-tests/value/context.cc`, and (possibly) declare/define additional interfaces for testing purposes in `src/libexpr-test-support/include/nix/expr/tests/value/context.hh` and `src/libexpr-test-support/tests/value/context.cc`.
 
 Data for unit tests is stored in a `data` subdir of the directory for each unit test executable.
 For example, `libnixstore` code is in `src/libstore`, and its test data is in `src/libstore-tests/data`.
@@ -67,7 +71,7 @@ The path to the `src/${library_name_without-nix}-test/data` directory is passed 
 Note that each executable only gets the data for its tests.
 
 The unit test libraries are in `src/${library_name_without-nix}-test-support`.
-All headers are in a `tests` subdirectory so they are included with `#include "tests/"`.
+All headers are in a `tests` subdirectory so they are included with `#include "nix/tests/"`.
 
 The use of all these separate directories for the unit tests might seem inconvenient, as for example the tests are not "right next to" the part of the code they are testing.
 But organizing the tests this way has one big benefit:
@@ -87,13 +91,33 @@ A environment variables that Google Test accepts are also worth knowing:
 
    This is used to avoid logging passing tests.
 
-Putting the two together, one might run
+3. [`GTEST_BREAK_ON_FAILURE`](https://google.github.io/googletest/advanced.html#turning-assertion-failures-into-break-points)
+
+   This is used to create a debugger breakpoint when an assertion failure occurs.
+
+Putting the first two together, one might run
 
 ```bash
 GTEST_BRIEF=1 GTEST_FILTER='ErrorTraceTest.*' meson test nix-expr-tests -v
 ```
 
 for short but comprensive output.
+
+### Debugging tests
+
+For debugging, it is useful to combine the third option above with Meson's [`--gdb`](https://mesonbuild.com/Unit-tests.html#other-test-options) flag:
+
+```bash
+GTEST_BRIEF=1 GTEST_FILTER='Group.my-failing-test' meson test nix-expr-tests --gdb
+```
+
+This will:
+
+1. Run the unit test with GDB
+
+2. Run just `Group.my-failing-test`
+
+3. Stop the program when the test fails, allowing the user to then issue arbitrary commands to GDB.
 
 ### Characterisation testing { #characaterisation-testing-unit }
 
@@ -137,14 +161,14 @@ Functional tests are run during `installCheck` in the `nix` package build, as we
 The whole test suite (functional and unit tests) can be run with:
 
 ```shell-session
-$ mesonCheckPhase
+$ checkPhase
 ```
 
 ### Grouping tests
 
 Sometimes it is useful to group related tests so they can be easily run together without running the entire test suite.
 Each test group is in a subdirectory of `tests`.
-For example, `tests/functional/ca/meson.build` defines a `ca` test group for content-addressed derivation outputs.
+For example, `tests/functional/ca/meson.build` defines a `ca` test group for content-addressing derivation outputs.
 
 That test group can be run like this:
 
@@ -213,10 +237,10 @@ edit it like so:
  bar
 ```
 
-Then, running the test with `./mk/debug-test.sh` will drop you into GDB once the script reaches that point:
+Then, running the test with [`--interactive`](https://mesonbuild.com/Unit-tests.html#other-test-options) will prevent Meson from hijacking the terminal so you can drop you into GDB once the script reaches that point:
 
 ```shell-session
-$ ./mk/debug-test.sh tests/functional/${testName}.sh
+$ meson test ${testName} --interactive
 ...
 + gdb blash blub
 GNU gdb (GDB) 12.1
@@ -297,7 +321,7 @@ Creating a Cachix cache for your installer tests and adding its authorisation to
   - `armv7l-linux`
   - `x86_64-darwin`
 
-- The `installer_test` job (which runs on `ubuntu-latest` and `macos-latest`) will try to install Nix with the cached installer and run a trivial Nix command.
+- The `installer_test` job (which runs on `ubuntu-24.04` and `macos-14`) will try to install Nix with the cached installer and run a trivial Nix command.
 
 ### One-time setup
 

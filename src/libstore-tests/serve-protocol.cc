@@ -4,13 +4,13 @@
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
 
-#include "serve-protocol.hh"
-#include "serve-protocol-impl.hh"
-#include "serve-protocol-connection.hh"
-#include "build-result.hh"
-#include "file-descriptor.hh"
-#include "tests/protocol.hh"
-#include "tests/characterization.hh"
+#include "nix/store/serve-protocol.hh"
+#include "nix/store/serve-protocol-impl.hh"
+#include "nix/store/serve-protocol-connection.hh"
+#include "nix/store/build-result.hh"
+#include "nix/util/file-descriptor.hh"
+#include "nix/store/tests/protocol.hh"
+#include "nix/util/tests/characterization.hh"
 
 namespace nix {
 
@@ -37,6 +37,8 @@ VERSIONED_CHARACTERIZATION_TEST(
         "大白兔",
         "oh no \0\0\0 what was that!",
     }))
+
+#ifndef DOXYGEN_SKIP
 
 VERSIONED_CHARACTERIZATION_TEST(
     ServeProtoTest,
@@ -83,6 +85,8 @@ VERSIONED_CHARACTERIZATION_TEST(
             .outputName = "quux",
         },
     }))
+
+#endif
 
 VERSIONED_CHARACTERIZATION_TEST(
     ServeProtoTest,
@@ -370,7 +374,7 @@ VERSIONED_CHARACTERIZATION_TEST(
     set,
     "set",
     defaultVersion,
-    (std::tuple<std::set<std::string>, std::set<std::string>, std::set<std::string>, std::set<std::set<std::string>>> {
+    (std::tuple<StringSet, StringSet, StringSet, std::set<StringSet>> {
         { },
         { "" },
         { "", "foo", "bar" },

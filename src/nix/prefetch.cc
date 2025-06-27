@@ -1,17 +1,19 @@
-#include "command.hh"
-#include "common-args.hh"
-#include "shared.hh"
-#include "store-api.hh"
-#include "filetransfer.hh"
-#include "finally.hh"
-#include "progress-bar.hh"
-#include "tarfile.hh"
-#include "attr-path.hh"
-#include "eval-inline.hh"
-#include "legacy.hh"
-#include "posix-source-accessor.hh"
-#include "misc-store-flags.hh"
-#include "terminal.hh"
+#include "nix/cmd/command.hh"
+#include "nix/main/common-args.hh"
+#include "nix/main/shared.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/filetransfer.hh"
+#include "nix/util/finally.hh"
+#include "nix/main/loggers.hh"
+#include "nix/util/tarfile.hh"
+#include "nix/expr/attr-path.hh"
+#include "nix/expr/eval-inline.hh"
+#include "nix/cmd/legacy.hh"
+#include "nix/util/posix-source-accessor.hh"
+#include "nix/cmd/misc-store-flags.hh"
+#include "nix/util/terminal.hh"
+
+#include "man-pages.hh"
 
 #include <nlohmann/json.hpp>
 
@@ -114,11 +116,11 @@ std::tuple<StorePath, Hash> prefetchFile(
             createDirs(unpacked);
             unpackTarfile(tmpFile.string(), unpacked);
 
-            auto entries = std::filesystem::directory_iterator{unpacked};
+            auto entries = DirectoryIterator{unpacked};
             /* If the archive unpacks to a single file/directory, then use
                that as the top-level. */
             tmpFile = entries->path();
-            auto fileCount = std::distance(entries, std::filesystem::directory_iterator{});
+            auto fileCount = std::distance(entries, DirectoryIterator{});
             if (fileCount != 1) {
                 /* otherwise, use the directory itself */
                 tmpFile = unpacked;
@@ -189,10 +191,7 @@ static int main_nix_prefetch_url(int argc, char * * argv)
         if (args.size() > 2)
             throw UsageError("too many arguments");
 
-        Finally f([]() { stopProgressBar(); });
-
-        if (isTTY())
-          startProgressBar();
+        setLogFormat("bar");
 
         auto store = openStore();
         auto state = std::make_unique<EvalState>(myArgs.lookupPath, store, fetchSettings, evalSettings);
@@ -246,7 +245,7 @@ static int main_nix_prefetch_url(int argc, char * * argv)
         auto [storePath, hash] = prefetchFile(
             store, resolveMirrorUrl(*state, url), name, ha, expectedHash, unpack, executable);
 
-        stopProgressBar();
+        logger->stop();
 
         if (!printPath)
             printInfo("path is '%s'", store->printStorePath(storePath));
@@ -276,7 +275,7 @@ struct CmdStorePrefetchFile : StoreCommand, MixJSON
             .longName = "name",
             .description = "Override the name component of the resulting store path. It defaults to the base name of *url*.",
             .labels = {"name"},
-            .handler = {&name}
+            .handler = {&name},
         });
 
         addFlag({
@@ -285,7 +284,7 @@ struct CmdStorePrefetchFile : StoreCommand, MixJSON
             .labels = {"hash"},
             .handler = {[&](std::string s) {
                 expectedHash = Hash::parseAny(s, hashAlgo);
-            }}
+            }},
         });
 
         addFlag(flag::hashAlgo("hash-type", &hashAlgo));
@@ -328,7 +327,7 @@ struct CmdStorePrefetchFile : StoreCommand, MixJSON
             auto res = nlohmann::json::object();
             res["storePath"] = store->printStorePath(storePath);
             res["hash"] = hash.to_string(HashFormat::SRI, true);
-            logger->cout(res.dump());
+            printJSON(res);
         } else {
             notice("Downloaded '%s' to '%s' (hash '%s').",
                 url,

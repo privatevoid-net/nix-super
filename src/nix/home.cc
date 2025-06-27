@@ -1,13 +1,12 @@
-#include "command.hh"
-#include "activatables.hh"
-#include "progress-bar.hh"
-#include "users.hh"
-#include "current-process.hh"
+#include "nix/cmd/command.hh"
+#include "nix/cmd/activatables.hh"
+#include "nix/util/users.hh"
+#include "nix/util/current-process.hh"
 
 using namespace nix;
 
 void execute(std::string program, Strings args) {
-    stopProgressBar();
+    logger->stop();
     restoreProcessContext();
     args.push_front(program);
     execvp(program.c_str(), stringsToCharPtrs(args).data());
@@ -27,7 +26,7 @@ struct HomeCommand : ActivatableCommand
         char hostname[1024];
         hostname[1023] = '\0';
         gethostname(hostname, 1024);
-        
+
         Strings res{
             "homeConfigurations." + username,
             "homeConfigurations." + username + "@" + std::string(hostname),

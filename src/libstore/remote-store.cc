@@ -1,34 +1,34 @@
-#include "serialise.hh"
-#include "util.hh"
-#include "path-with-outputs.hh"
-#include "gc-store.hh"
-#include "remote-fs-accessor.hh"
-#include "build-result.hh"
-#include "remote-store.hh"
-#include "remote-store-connection.hh"
-#include "worker-protocol.hh"
-#include "worker-protocol-impl.hh"
-#include "archive.hh"
-#include "globals.hh"
-#include "derivations.hh"
-#include "pool.hh"
-#include "finally.hh"
-#include "git.hh"
-#include "logging.hh"
-#include "callback.hh"
-#include "filetransfer.hh"
-#include "signals.hh"
+#include "nix/util/serialise.hh"
+#include "nix/util/util.hh"
+#include "nix/store/path-with-outputs.hh"
+#include "nix/store/gc-store.hh"
+#include "nix/store/remote-fs-accessor.hh"
+#include "nix/store/build-result.hh"
+#include "nix/store/remote-store.hh"
+#include "nix/store/remote-store-connection.hh"
+#include "nix/store/worker-protocol.hh"
+#include "nix/store/worker-protocol-impl.hh"
+#include "nix/util/archive.hh"
+#include "nix/store/globals.hh"
+#include "nix/store/derivations.hh"
+#include "nix/util/pool.hh"
+#include "nix/util/finally.hh"
+#include "nix/util/git.hh"
+#include "nix/util/logging.hh"
+#include "nix/util/callback.hh"
+#include "nix/store/filetransfer.hh"
+#include "nix/util/signals.hh"
 
 #include <nlohmann/json.hpp>
 
 namespace nix {
 
 /* TODO: Separate these store types into different files, give them better names */
-RemoteStore::RemoteStore(const Params & params)
-    : RemoteStoreConfig(params)
-    , Store(params)
+RemoteStore::RemoteStore(const Config & config)
+    : Store{config}
+    , config{config}
     , connections(make_ref<Pool<Connection>>(
-            std::max(1, (int) maxConnections),
+            std::max(1, config.maxConnections.get()),
             [this]() {
                 auto conn = openConnectionWrapper();
                 try {
@@ -44,7 +44,7 @@ RemoteStore::RemoteStore(const Params & params)
                     r->to.good()
                     && r->from.good()
                     && std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - r->startTime).count() < maxConnectionAge;
+                        std::chrono::steady_clock::now() - r->startTime).count() < this->config.maxConnectionAge;
             }
             ))
 {
@@ -122,7 +122,7 @@ void RemoteStore::setOptions(Connection & conn)
        << settings.useSubstitutes;
 
     if (GET_PROTOCOL_MINOR(conn.protoVersion) >= 12) {
-        std::map<std::string, Config::SettingInfo> overrides;
+        std::map<std::string, nix::Config::SettingInfo> overrides;
         settings.getSettings(overrides, true); // libstore settings
         fileTransferSettings.getSettings(overrides, true);
         overrides.erase(settings.keepFailed.name);
@@ -534,14 +534,27 @@ void RemoteStore::addToStore(const ValidPathInfo & info, Source & source,
 
 
 void RemoteStore::addMultipleToStore(
-    PathsSource & pathsToCopy,
+    PathsSource && pathsToCopy,
     Activity & act,
     RepairFlag repair,
     CheckSigsFlag checkSigs)
 {
+    // `addMultipleToStore` is single threaded
+    size_t bytesExpected = 0;
+    for (auto & [pathInfo, _] : pathsToCopy) {
+        bytesExpected += pathInfo.narSize;
+    }
+    act.setExpected(actCopyPath, bytesExpected);
+
     auto source = sinkToSource([&](Sink & sink) {
-        sink << pathsToCopy.size();
-        for (auto & [pathInfo, pathSource] : pathsToCopy) {
+        size_t nrTotal = pathsToCopy.size();
+        sink << nrTotal;
+        // Reverse, so we can release memory at the original start
+        std::reverse(pathsToCopy.begin(), pathsToCopy.end());
+        while (!pathsToCopy.empty()) {
+            act.progress(nrTotal - pathsToCopy.size(), nrTotal, size_t(1), size_t(0));
+
+            auto & [pathInfo, pathSource] = pathsToCopy.back();
             WorkerProto::Serialise<ValidPathInfo>::write(*this,
                  WorkerProto::WriteConn {
                      .to = sink,
@@ -549,6 +562,7 @@ void RemoteStore::addMultipleToStore(
                  },
                  pathInfo);
             pathSource->drainInto(sink);
+            pathsToCopy.pop_back();
         }
     });
 
@@ -594,7 +608,7 @@ void RemoteStore::queryRealisationUncached(const DrvOutput & id,
         auto conn(getConnection());
 
         if (GET_PROTOCOL_MINOR(conn->protoVersion) < 27) {
-            warn("the daemon is too old to support content-addressed derivations, please upgrade it to 2.4");
+            warn("the daemon is too old to support content-addressing derivations, please upgrade it to 2.4");
             return callback(nullptr);
         }
 

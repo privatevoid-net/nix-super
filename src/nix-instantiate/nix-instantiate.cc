@@ -1,17 +1,18 @@
-#include "globals.hh"
-#include "print-ambiguous.hh"
-#include "shared.hh"
-#include "eval.hh"
-#include "eval-inline.hh"
-#include "get-drvs.hh"
-#include "attr-path.hh"
-#include "signals.hh"
-#include "value-to-xml.hh"
-#include "value-to-json.hh"
-#include "store-api.hh"
-#include "local-fs-store.hh"
-#include "common-eval-args.hh"
-#include "legacy.hh"
+#include "nix/store/globals.hh"
+#include "nix/expr/print-ambiguous.hh"
+#include "nix/main/shared.hh"
+#include "nix/expr/eval.hh"
+#include "nix/expr/eval-inline.hh"
+#include "nix/expr/get-drvs.hh"
+#include "nix/expr/attr-path.hh"
+#include "nix/util/signals.hh"
+#include "nix/expr/value-to-xml.hh"
+#include "nix/expr/value-to-json.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/local-fs-store.hh"
+#include "nix/cmd/common-eval-args.hh"
+#include "nix/cmd/legacy.hh"
+#include "man-pages.hh"
 
 #include <map>
 #include <iostream>
@@ -24,7 +25,7 @@ static Path gcRoot;
 static int rootNr = 0;
 
 
-enum OutputKind { okPlain, okXML, okJSON };
+enum OutputKind { okPlain, okRaw, okXML, okJSON };
 
 void processExpr(EvalState & state, const Strings & attrPaths,
     bool parseOnly, bool strict, Bindings & autoArgs,
@@ -50,7 +51,11 @@ void processExpr(EvalState & state, const Strings & attrPaths,
                 vRes = v;
             else
                 state.autoCallFunction(autoArgs, v, vRes);
-            if (output == okXML)
+            if (output == okRaw)
+                std::cout << *state.coerceToString(noPos, vRes, context, "while generating the nix-instantiate output");
+                // We intentionally don't output a newline here. The default PS1 for Bash in NixOS starts with a newline
+                // and other interactive shells like Zsh are smart enough to print a missing newline before the prompt.
+            else if (output == okXML)
                 printValueAsXML(state, strict, location, vRes, std::cout, context, noPos);
             else if (output == okJSON) {
                 printValueAsJSON(state, strict, vRes, v.determinePos(noPos), std::cout, context);
@@ -132,6 +137,8 @@ static int main_nix_instantiate(int argc, char * * argv)
                 gcRoot = getArg(*arg, arg, end);
             else if (*arg == "--indirect")
                 ;
+            else if (*arg == "--raw")
+                outputKind = okRaw;
             else if (*arg == "--xml")
                 outputKind = okXML;
             else if (*arg == "--json")

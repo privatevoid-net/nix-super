@@ -1,6 +1,7 @@
-#include "environment-variables.hh"
+#include "nix/util/environment-variables.hh"
 
-#include "processenv.h"
+#ifdef _WIN32
+#  include "processenv.h"
 
 namespace nix {
 
@@ -12,8 +13,10 @@ std::optional<OsString> getEnvOs(const OsString & key)
         return std::nullopt;
     }
 
-    // Allocate a buffer to hold the environment variable value
-    std::wstring value{L'\0', bufferSize};
+    /* Allocate a buffer to hold the environment variable value.
+       WARNING: Do not even think about using uniform initialization here,
+       we DONT want to call the initializer list ctor accidentally. */
+    std::wstring value(bufferSize, L'\0');
 
     // Retrieve the environment variable value
     DWORD resultSize = GetEnvironmentVariableW(key.c_str(), &value[0], bufferSize);
@@ -43,3 +46,4 @@ int setEnvOs(const OsString & name, const OsString & value)
 }
 
 }
+#endif

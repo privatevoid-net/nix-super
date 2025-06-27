@@ -1,7 +1,7 @@
-#include "primops.hh"
-#include "eval-inline.hh"
-#include "derivations.hh"
-#include "store-api.hh"
+#include "nix/expr/primops.hh"
+#include "nix/expr/eval-inline.hh"
+#include "nix/store/derivations.hh"
+#include "nix/store/store-api.hh"
 
 namespace nix {
 
@@ -132,6 +132,8 @@ static void prim_addDrvOutputDependencies(EvalState & state, const PosIdx pos, V
             },
             [&](const NixStringContextElem::DrvDeep & c) -> NixStringContextElem::DrvDeep {
                 /* Reuse original item because we want this to be idempotent. */
+                /* FIXME: Suspicious move out of const. This is actually a copy, so the comment
+                 above does not make much sense. */
                 return std::move(c);
             },
         }, context.begin()->raw) }),
@@ -238,7 +240,7 @@ static RegisterPrimOp primop_getContext({
       The string context tracks references to derivations within a string.
       It is represented as an attribute set of [store derivation](@docroot@/glossary.md#gloss-store-derivation) paths mapping to output names.
 
-      Using [string interpolation](@docroot@/language/string-interpolation.md) on a derivation will add that derivation to the string context.
+      Using [string interpolation](@docroot@/language/string-interpolation.md) on a derivation adds that derivation to the string context.
       For example,
 
       ```nix

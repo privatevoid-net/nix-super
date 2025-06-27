@@ -1,5 +1,5 @@
-#include "installable-derived-path.hh"
-#include "derivations.hh"
+#include "nix/cmd/installable-derived-path.hh"
+#include "nix/store/derivations.hh"
 
 namespace nix {
 
@@ -32,16 +32,6 @@ InstallableDerivedPath InstallableDerivedPath::parse(
         // store path.
         [&](const ExtendedOutputsSpec::Default &) -> DerivedPath {
             auto storePath = store->followLinksToStorePath(prefix);
-            // Remove this prior to stabilizing the new CLI.
-            if (storePath.isDerivation()) {
-                auto oldDerivedPath = DerivedPath::Built {
-                    .drvPath = makeConstantStorePathRef(storePath),
-                    .outputs = OutputsSpec::All { },
-                };
-                warn(
-                    "The interpretation of store paths arguments ending in `.drv` recently changed. If this command is now failing try again with '%s'",
-                    oldDerivedPath.to_string(*store));
-            };
             return DerivedPath::Opaque {
                 .path = std::move(storePath),
             };

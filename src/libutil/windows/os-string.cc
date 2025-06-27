@@ -3,9 +3,11 @@
 #include <iostream>
 #include <locale>
 
-#include "file-path.hh"
-#include "file-path-impl.hh"
-#include "util.hh"
+#include "nix/util/file-path.hh"
+#include "nix/util/file-path-impl.hh"
+#include "nix/util/util.hh"
+
+#ifdef _WIN32
 
 namespace nix {
 
@@ -22,3 +24,5 @@ std::filesystem::path::string_type string_to_os_string(std::string_view s)
 }
 
 }
+
+#endif

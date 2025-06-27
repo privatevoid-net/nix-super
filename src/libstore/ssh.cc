@@ -1,9 +1,9 @@
-#include "ssh.hh"
-#include "finally.hh"
-#include "current-process.hh"
-#include "environment-variables.hh"
-#include "util.hh"
-#include "exec.hh"
+#include "nix/store/ssh.hh"
+#include "nix/util/finally.hh"
+#include "nix/util/current-process.hh"
+#include "nix/util/environment-variables.hh"
+#include "nix/util/util.hh"
+#include "nix/util/exec.hh"
 
 namespace nix {
 
@@ -34,15 +34,24 @@ SSHMaster::SSHMaster(
         throw Error("invalid SSH host name '%s'", host);
 
     auto state(state_.lock());
-    state->tmpDir = std::make_unique<AutoDelete>(createTempDir("", "nix", true, true, 0700));
+    state->tmpDir = std::make_unique<AutoDelete>(createTempDir("", "nix", 0700));
 }
 
 void SSHMaster::addCommonSSHOpts(Strings & args)
 {
     auto state(state_.lock());
 
-    for (auto & i : tokenizeString<Strings>(getEnv("NIX_SSHOPTS").value_or("")))
-        args.push_back(i);
+    std::string sshOpts = getEnv("NIX_SSHOPTS").value_or("");
+
+    try {
+        std::list<std::string> opts = shellSplitString(sshOpts);
+        for (auto & i : opts)
+            args.push_back(i);
+    } catch (Error & e) {
+        e.addTrace({}, "while splitting NIX_SSHOPTS '%s'", sshOpts);
+        throw;
+    }
+
     if (!keyFile.empty())
         args.insert(args.end(), {"-i", keyFile});
     if (!sshPublicHostKey.empty()) {
@@ -74,7 +83,7 @@ bool SSHMaster::isMasterRunning() {
 Strings createSSHEnv()
 {
     // Copy the environment and set SHELL=/bin/sh
-    std::map<std::string, std::string> env = getEnv();
+    StringMap env = getEnv();
 
     // SSH will invoke the "user" shell for -oLocalCommand, but that means
     // $SHELL. To keep things simple and avoid potential issues with other
@@ -108,10 +117,10 @@ std::unique_ptr<SSHMaster::Connection> SSHMaster::startCommand(
     ProcessOptions options;
     options.dieWithParent = false;
 
+    std::unique_ptr<Logger::Suspension> loggerSuspension;
     if (!fakeSSH && !useMaster) {
-        logger->pause();
+        loggerSuspension = std::make_unique<Logger::Suspension>(logger->suspend());
     }
-    Finally cleanup = [&]() { logger->resume(); };
 
     conn->sshPid = startProcess([&]() {
         restoreProcessContext();
@@ -190,8 +199,7 @@ Path SSHMaster::startMaster()
     ProcessOptions options;
     options.dieWithParent = false;
 
-    logger->pause();
-    Finally cleanup = [&]() { logger->resume(); };
+    auto suspension = logger->suspend();
 
     if (isMasterRunning())
         return state->socketPath;
@@ -230,5 +238,20 @@ Path SSHMaster::startMaster()
 }
 
 #endif
+
+void SSHMaster::Connection::trySetBufferSize(size_t size)
+{
+#ifdef F_SETPIPE_SZ
+    /* This `fcntl` method of doing this takes a positive `int`. Check
+       and convert accordingly.
+
+       The function overall still takes `size_t` because this is more
+       portable for a platform-agnostic interface. */
+    assert(size <= INT_MAX);
+    int pipesize = size;
+    fcntl(in.get(), F_SETPIPE_SZ, pipesize);
+    fcntl(out.get(), F_SETPIPE_SZ, pipesize);
+#endif
+}
 
 }

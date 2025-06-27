@@ -1,11 +1,11 @@
-#include "globals.hh"
-#include "current-process.hh"
-#include "shared.hh"
-#include "store-api.hh"
-#include "gc-store.hh"
-#include "loggers.hh"
-#include "progress-bar.hh"
-#include "signals.hh"
+#include "nix/store/globals.hh"
+#include "nix/util/current-process.hh"
+#include "nix/main/shared.hh"
+#include "nix/store/store-api.hh"
+#include "nix/store/gc-store.hh"
+#include "nix/main/loggers.hh"
+#include "nix/main/progress-bar.hh"
+#include "nix/util/signals.hh"
 
 #include <algorithm>
 #include <exception>
@@ -22,8 +22,11 @@
 
 #include <openssl/crypto.h>
 
-#include "exit.hh"
-#include "strings.hh"
+#include "nix/util/exit.hh"
+#include "nix/util/strings.hh"
+
+#include "main-config-private.hh"
+#include "nix/expr/config.hh"
 
 namespace nix {
 
@@ -141,7 +144,7 @@ void initNix(bool loadConfig)
     if (sigaction(SIGUSR1, &act, 0)) throw SysError("handling SIGUSR1");
 #endif
 
-#if __APPLE__
+#ifdef __APPLE__
     /* HACK: on darwin, we need can’t use sigprocmask with SIGWINCH.
      * Instead, add a dummy sigaction handler, and signalHandlerThread
      * can handle the rest. */
@@ -173,16 +176,6 @@ void initNix(bool loadConfig)
        now.  In particular, store objects should be readable by
        everybody. */
     umask(0022);
-
-    /* Initialise the PRNG. */
-    struct timeval tv;
-    gettimeofday(&tv, 0);
-#ifndef _WIN32
-    srandom(tv.tv_usec);
-#endif
-    srand(tv.tv_usec);
-
-
 }
 
 
@@ -228,7 +221,7 @@ LegacyArgs::LegacyArgs(const std::string & programName,
             .handler = {[=](std::string s) {
                 auto n = string2IntWithUnitPrefix<uint64_t>(s);
                 settings.set(dest, std::to_string(n));
-            }}
+            }},
         });
     };
 
@@ -297,7 +290,7 @@ void printVersion(const std::string & programName)
     std::cout << fmt("%1% (Nix Super) %2%", programName, nixVersion) << std::endl;
     if (verbosity > lvlInfo) {
         Strings cfg;
-#if HAVE_BOEHMGC
+#if NIX_USE_BOEHMGC
         cfg.push_back("gc");
 #endif
         cfg.push_back("signed-caches");
@@ -318,20 +311,6 @@ void printVersion(const std::string & programName)
     throw Exit();
 }
 
-
-void showManPage(const std::string & name)
-{
-    restoreProcessContext();
-    setEnv("MANPATH", settings.nixManDir.c_str());
-    execlp("man", "man", name.c_str(), nullptr);
-    if (errno == ENOENT) {
-        // Not SysError because we don't want to suffix the errno, aka No such file or directory.
-        throw Error("The '%1%' command was not found, but it is needed for '%2%' and some other '%3%' commands' help text. Perhaps you could install the '%1%' command?", "man", name.c_str(), "nix-*");
-    }
-    throw SysError("command 'man %1%' failed", name.c_str());
-}
-
-
 int handleExceptions(const std::string & programName, std::function<void()> fun)
 {
     ReceiveInterrupts receiveInterrupts; // FIXME: need better place for this
@@ -341,29 +320,34 @@ int handleExceptions(const std::string & programName, std::function<void()> fun)
     std::string error = ANSI_RED "error:" ANSI_NORMAL " ";
     try {
         try {
-            fun();
-        } catch (...) {
-            /* Subtle: we have to make sure that any `interrupted'
-               condition is discharged before we reach printMsg()
-               below, since otherwise it will throw an (uncaught)
-               exception. */
-            setInterruptThrown();
-            throw;
+            try {
+                fun();
+            } catch (...) {
+                /* Subtle: we have to make sure that any `interrupted'
+                   condition is discharged before we reach printMsg()
+                   below, since otherwise it will throw an (uncaught)
+                   exception. */
+                setInterruptThrown();
+                throw;
+            }
+        } catch (Exit & e) {
+            return e.status;
+        } catch (UsageError & e) {
+            logError(e.info());
+            printError("Try '%1% --help' for more information.", programName);
+            return 1;
+        } catch (BaseError & e) {
+            logError(e.info());
+            return e.info().status;
+        } catch (std::bad_alloc & e) {
+            printError(error + "out of memory");
+            return 1;
+        } catch (std::exception & e) {
+            printError(error + e.what());
+            return 1;
         }
-    } catch (Exit & e) {
-        return e.status;
-    } catch (UsageError & e) {
-        logError(e.info());
-        printError("Try '%1% --help' for more information.", programName);
-        return 1;
-    } catch (BaseError & e) {
-        logError(e.info());
-        return e.info().status;
-    } catch (std::bad_alloc & e) {
-        printError(error + "out of memory");
-        return 1;
-    } catch (std::exception & e) {
-        printError(error + e.what());
+    } catch (...) {
+        /* In case logger also throws just give up. */
         return 1;
     }
 
@@ -378,7 +362,7 @@ RunPager::RunPager()
     if (!pager) pager = getenv("PAGER");
     if (pager && ((std::string) pager == "" || (std::string) pager == "cat")) return;
 
-    stopProgressBar();
+    logger->stop();
 
     Pipe toPager;
     toPager.create();

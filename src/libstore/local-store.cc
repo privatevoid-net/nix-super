@@ -1,22 +1,24 @@
-#include "local-store.hh"
-#include "globals.hh"
-#include "git.hh"
-#include "archive.hh"
-#include "pathlocks.hh"
-#include "worker-protocol.hh"
-#include "derivations.hh"
-#include "realisation.hh"
-#include "nar-info.hh"
-#include "references.hh"
-#include "callback.hh"
-#include "topo-sort.hh"
-#include "finally.hh"
-#include "compression.hh"
-#include "signals.hh"
-#include "posix-fs-canonicalise.hh"
-#include "posix-source-accessor.hh"
-#include "keys.hh"
-#include "users.hh"
+#include "nix/store/local-store.hh"
+#include "nix/store/globals.hh"
+#include "nix/util/git.hh"
+#include "nix/util/archive.hh"
+#include "nix/store/pathlocks.hh"
+#include "nix/store/worker-protocol.hh"
+#include "nix/store/derivations.hh"
+#include "nix/store/realisation.hh"
+#include "nix/store/nar-info.hh"
+#include "nix/util/references.hh"
+#include "nix/util/callback.hh"
+#include "nix/util/topo-sort.hh"
+#include "nix/util/finally.hh"
+#include "nix/util/compression.hh"
+#include "nix/util/signals.hh"
+#include "nix/store/posix-fs-canonicalise.hh"
+#include "nix/util/posix-source-accessor.hh"
+#include "nix/store/keys.hh"
+#include "nix/util/users.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/store-registration.hh"
 
 #include <iostream>
 #include <algorithm>
@@ -38,7 +40,7 @@
 # include <grp.h>
 #endif
 
-#if __linux__
+#ifdef __linux__
 # include <sched.h>
 # include <sys/statvfs.h>
 # include <sys/mount.h>
@@ -52,7 +54,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "strings.hh"
+#include "nix/util/strings.hh"
+
+#include "store-config-private.hh"
 
 
 namespace nix {
@@ -71,6 +75,21 @@ std::string LocalStoreConfig::doc()
     return
         #include "local-store.md"
         ;
+}
+
+Path LocalBuildStoreConfig::getBuildDir() const
+{
+    return
+        settings.buildDir.get().has_value()
+        ? *settings.buildDir.get()
+        : buildDir.get().has_value()
+        ? *buildDir.get()
+        : stateDir.get() + "/builds";
+}
+
+ref<Store> LocalStore::Config::openStore() const
+{
+    return make_ref<LocalStore>(ref{shared_from_this()});
 }
 
 struct LocalStore::State::Stmts {
@@ -95,94 +114,45 @@ struct LocalStore::State::Stmts {
     SQLiteStmt AddRealisationReference;
 };
 
-static int getSchema(Path schemaPath)
-{
-    int curSchema = 0;
-    if (pathExists(schemaPath)) {
-        auto s = readFile(schemaPath);
-        auto n = string2Int<int>(s);
-        if (!n)
-            throw Error("'%1%' is corrupt", schemaPath);
-        curSchema = *n;
-    }
-    return curSchema;
-}
-
-void migrateCASchema(SQLite& db, Path schemaPath, AutoCloseFD& lockFd)
-{
-    const int nixCASchemaVersion = 4;
-    int curCASchema = getSchema(schemaPath);
-    if (curCASchema != nixCASchemaVersion) {
-        if (curCASchema > nixCASchemaVersion) {
-            throw Error("current Nix store ca-schema is version %1%, but I only support %2%",
-                 curCASchema, nixCASchemaVersion);
-        }
-
-        if (!lockFile(lockFd.get(), ltWrite, false)) {
-            printInfo("waiting for exclusive access to the Nix store for ca drvs...");
-            lockFile(lockFd.get(), ltNone, false); // We have acquired a shared lock; release it to prevent deadlocks
-            lockFile(lockFd.get(), ltWrite, true);
-        }
-
-        if (curCASchema == 0) {
-            static const char schema[] =
-              #include "ca-specific-schema.sql.gen.hh"
-                ;
-            db.exec(schema);
-            curCASchema = nixCASchemaVersion;
-        }
-
-        if (curCASchema < 4)
-            throw Error("experimental CA schema version %d is no longer supported", curCASchema);
-
-        writeFile(schemaPath, fmt("%d", nixCASchemaVersion), 0666, true);
-        lockFile(lockFd.get(), ltRead, true);
-    }
-}
-
-LocalStore::LocalStore(
-    std::string_view scheme,
-    PathView path,
-    const Params & params)
-    : StoreConfig(params)
-    , LocalFSStoreConfig(path, params)
-    , LocalStoreConfig(scheme, path, params)
-    , Store(params)
-    , LocalFSStore(params)
-    , dbDir(stateDir + "/db")
-    , linksDir(realStoreDir + "/.links")
+LocalStore::LocalStore(ref<const Config> config)
+    : Store{*config}
+    , LocalFSStore{*config}
+    , config{config}
+    , dbDir(config->stateDir + "/db")
+    , linksDir(config->realStoreDir + "/.links")
     , reservedPath(dbDir + "/reserved")
     , schemaPath(dbDir + "/schema")
-    , tempRootsDir(stateDir + "/temproots")
+    , tempRootsDir(config->stateDir + "/temproots")
     , fnTempRoots(fmt("%s/%d", tempRootsDir, getpid()))
-    , locksHeld(tokenizeString<PathSet>(getEnv("NIX_HELD_LOCKS").value_or("")))
 {
     auto state(_state.lock());
     state->stmts = std::make_unique<State::Stmts>();
 
     /* Create missing state directories if they don't already exist. */
-    createDirs(realStoreDir);
-    if (readOnly) {
+    createDirs(config->realStoreDir.get());
+    if (config->readOnly) {
         experimentalFeatureSettings.require(Xp::ReadOnlyLocalStore);
     } else {
         makeStoreWritable();
     }
     createDirs(linksDir);
-    Path profilesDir = stateDir + "/profiles";
+    Path profilesDir = config->stateDir + "/profiles";
     createDirs(profilesDir);
     createDirs(tempRootsDir);
     createDirs(dbDir);
-    Path gcRootsDir = stateDir + "/gcroots";
+    Path gcRootsDir = config->stateDir + "/gcroots";
     if (!pathExists(gcRootsDir)) {
         createDirs(gcRootsDir);
-        createSymlink(profilesDir, gcRootsDir + "/profiles");
+        replaceSymlink(profilesDir, gcRootsDir + "/profiles");
     }
 
     for (auto & perUserDir : {profilesDir + "/per-user", gcRootsDir + "/per-user"}) {
         createDirs(perUserDir);
-        if (!readOnly) {
-            if (chmod(perUserDir.c_str(), 0755) == -1)
-                throw SysError("could not set permissions on '%s' to 755", perUserDir);
+        if (!config->readOnly) {
+            // Skip chmod call if the directory already has the correct permissions (0755).
+            // This is to avoid failing when the executing user lacks permissions to change the directory's permissions
+            // even if it would be no-op.
+            chmodIfNeeded(perUserDir, 0755, S_IRWXU | S_IRWXG | S_IRWXO);
         }
     }
 
@@ -195,16 +165,16 @@ LocalStore::LocalStore(
         struct group * gr = getgrnam(settings.buildUsersGroup.get().c_str());
         if (!gr)
             printError("warning: the group '%1%' specified in 'build-users-group' does not exist", settings.buildUsersGroup);
-        else if (!readOnly) {
+        else if (!config->readOnly) {
             struct stat st;
-            if (stat(realStoreDir.get().c_str(), &st))
-                throw SysError("getting attributes of path '%1%'", realStoreDir);
+            if (stat(config->realStoreDir.get().c_str(), &st))
+                throw SysError("getting attributes of path '%1%'", config->realStoreDir);
 
             if (st.st_uid != 0 || st.st_gid != gr->gr_gid || (st.st_mode & ~S_IFMT) != perm) {
-                if (chown(realStoreDir.get().c_str(), 0, gr->gr_gid) == -1)
-                    throw SysError("changing ownership of path '%1%'", realStoreDir);
-                if (chmod(realStoreDir.get().c_str(), perm) == -1)
-                    throw SysError("changing permissions on path '%1%'", realStoreDir);
+                if (chown(config->realStoreDir.get().c_str(), 0, gr->gr_gid) == -1)
+                    throw SysError("changing ownership of path '%1%'", config->realStoreDir);
+                if (chmod(config->realStoreDir.get().c_str(), perm) == -1)
+                    throw SysError("changing permissions on path '%1%'", config->realStoreDir);
             }
         }
     }
@@ -212,16 +182,15 @@ LocalStore::LocalStore(
 
     /* Ensure that the store and its parents are not symlinks. */
     if (!settings.allowSymlinkedStore) {
-        Path path = realStoreDir;
-        struct stat st;
-        while (path != "/") {
-            st = lstat(path);
-            if (S_ISLNK(st.st_mode))
+        std::filesystem::path path = config->realStoreDir.get();
+        std::filesystem::path root = path.root_path();
+        while (path != root) {
+            if (std::filesystem::is_symlink(path))
                 throw Error(
                         "the path '%1%' is a symlink; "
                         "this is not allowed for the Nix store and its parent directories",
                         path);
-            path = dirOf(path);
+            path = path.parent_path();
         }
     }
 
@@ -260,12 +229,12 @@ LocalStore::LocalStore(
 
     /* Acquire the big fat lock in shared mode to make sure that no
        schema upgrade is in progress. */
-    if (!readOnly) {
+    if (!config->readOnly) {
         Path globalLockPath = dbDir + "/big-lock";
         globalLock = openLockFile(globalLockPath.c_str(), true);
     }
 
-    if (!readOnly && !lockFile(globalLock.get(), ltRead, false)) {
+    if (!config->readOnly && !lockFile(globalLock.get(), ltRead, false)) {
         printInfo("waiting for the big Nix store lock...");
         lockFile(globalLock.get(), ltRead, true);
     }
@@ -273,7 +242,7 @@ LocalStore::LocalStore(
     /* Check the current database schema and if necessary do an
        upgrade.  */
     int curSchema = getSchema();
-    if (readOnly && curSchema < nixSchemaVersion) {
+    if (config->readOnly && curSchema < nixSchemaVersion) {
         debug("current schema version: %d", curSchema);
         debug("supported schema version: %d", nixSchemaVersion);
         throw Error(curSchema == 0 ?
@@ -288,7 +257,7 @@ LocalStore::LocalStore(
     else if (curSchema == 0) { /* new store */
         curSchema = nixSchemaVersion;
         openDB(*state, true);
-        writeFile(schemaPath, fmt("%1%", nixSchemaVersion), 0666, true);
+        writeFile(schemaPath, fmt("%1%", curSchema), 0666, FsSync::Yes);
     }
 
     else if (curSchema < nixSchemaVersion) {
@@ -316,6 +285,10 @@ LocalStore::LocalStore(
 
         openDB(*state, false);
 
+        /* Legacy database schema migrations. Don't bump 'schema' for
+           new migrations; instead, add a migration to
+           upgradeDBSchema(). */
+
         if (curSchema < 8) {
             SQLiteTxn txn(state->db);
             state->db.exec("alter table ValidPaths add column ultimate integer");
@@ -335,20 +308,14 @@ LocalStore::LocalStore(
             txn.commit();
         }
 
-        writeFile(schemaPath, fmt("%1%", nixSchemaVersion), 0666, true);
+        writeFile(schemaPath, fmt("%1%", nixSchemaVersion), 0666, FsSync::Yes);
 
         lockFile(globalLock.get(), ltRead, true);
     }
 
     else openDB(*state, false);
 
-    if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations)) {
-        if (!readOnly) {
-            migrateCASchema(state->db, dbDir + "/ca-schema", globalLock);
-        } else {
-            throw Error("need to migrate to content-addressed schema, but this cannot be done in read-only mode");
-        }
-    }
+    upgradeDBSchema(*state);
 
     /* Prepare SQL statements. */
     state->stmts->RegisterValidPath.create(state->db,
@@ -423,15 +390,9 @@ LocalStore::LocalStore(
 }
 
 
-LocalStore::LocalStore(const Params & params)
-    : LocalStore("local", "", params)
-{
-}
-
-
 AutoCloseFD LocalStore::openGCLock()
 {
-    Path fnGCLock = stateDir + "/gc.lock";
+    Path fnGCLock = config->stateDir + "/gc.lock";
     auto fdGCLock = open(fnGCLock.c_str(), O_RDWR | O_CREAT
 #ifndef _WIN32
         | O_CLOEXEC
@@ -483,21 +444,31 @@ std::string LocalStore::getUri()
 
 
 int LocalStore::getSchema()
-{ return nix::getSchema(schemaPath); }
+{
+    int curSchema = 0;
+    if (pathExists(schemaPath)) {
+        auto s = readFile(schemaPath);
+        auto n = string2Int<int>(s);
+        if (!n)
+            throw Error("'%1%' is corrupt", schemaPath);
+        curSchema = *n;
+    }
+    return curSchema;
+}
 
 void LocalStore::openDB(State & state, bool create)
 {
-    if (create && readOnly) {
+    if (create && config->readOnly) {
         throw Error("cannot create database while in read-only mode");
     }
 
-    if (access(dbDir.c_str(), R_OK | (readOnly ? 0 : W_OK)))
+    if (access(dbDir.c_str(), R_OK | (config->readOnly ? 0 : W_OK)))
         throw SysError("Nix database directory '%1%' is not writable", dbDir);
 
     /* Open the Nix database. */
     std::string dbPath = dbDir + "/db.sqlite";
     auto & db(state.db);
-    auto openMode = readOnly ? SQLiteOpenMode::Immutable
+    auto openMode = config->readOnly ? SQLiteOpenMode::Immutable
                   : create ? SQLiteOpenMode::Normal
                   : SQLiteOpenMode::NoCreate;
     state.db = SQLite(dbPath, openMode);
@@ -566,20 +537,56 @@ void LocalStore::openDB(State & state, bool create)
 }
 
 
+void LocalStore::upgradeDBSchema(State & state)
+{
+    state.db.exec("create table if not exists SchemaMigrations (migration text primary key not null);");
+
+    StringSet schemaMigrations;
+
+    {
+        SQLiteStmt querySchemaMigrations;
+        querySchemaMigrations.create(state.db, "select migration from SchemaMigrations;");
+        auto useQuerySchemaMigrations(querySchemaMigrations.use());
+        while (useQuerySchemaMigrations.next())
+            schemaMigrations.insert(useQuerySchemaMigrations.getStr(0));
+    }
+
+    auto doUpgrade = [&](const std::string & migrationName, const std::string & stmt)
+    {
+        if (schemaMigrations.contains(migrationName))
+            return;
+
+        debug("executing Nix database schema migration '%s'...", migrationName);
+
+        SQLiteTxn txn(state.db);
+        state.db.exec(stmt + fmt(";\ninsert into SchemaMigrations values('%s')", migrationName));
+        txn.commit();
+
+        schemaMigrations.insert(migrationName);
+    };
+
+    if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
+        doUpgrade(
+            "20220326-ca-derivations",
+            #include "ca-specific-schema.sql.gen.hh"
+            );
+}
+
+
 /* To improve purity, users may want to make the Nix store a read-only
    bind mount.  So make the Nix store writable for this process. */
 void LocalStore::makeStoreWritable()
 {
-#if __linux__
+#ifdef __linux__
     if (!isRootUser()) return;
     /* Check if /nix/store is on a read-only mount. */
     struct statvfs stat;
-    if (statvfs(realStoreDir.get().c_str(), &stat) != 0)
+    if (statvfs(config->realStoreDir.get().c_str(), &stat) != 0)
         throw SysError("getting info about the Nix store mount point");
 
     if (stat.f_flag & ST_RDONLY) {
-        if (mount(0, realStoreDir.get().c_str(), "none", MS_REMOUNT | MS_BIND, 0) == -1)
-            throw SysError("remounting %1% writable", realStoreDir);
+        if (mount(0, config->realStoreDir.get().c_str(), "none", MS_REMOUNT | MS_BIND, 0) == -1)
+            throw SysError("remounting %1% writable", config->realStoreDir);
     }
 #endif
 }
@@ -919,7 +926,7 @@ StorePathSet LocalStore::querySubstitutablePaths(const StorePathSet & paths)
     for (auto & sub : getDefaultSubstituters()) {
         if (remaining.empty()) break;
         if (sub->storeDir != storeDir) continue;
-        if (!sub->wantMassQuery) continue;
+        if (!sub->config.wantMassQuery) continue;
 
         auto valid = sub->queryValidPaths(remaining);
 
@@ -1031,12 +1038,12 @@ const PublicKeys & LocalStore::getPublicKeys()
 
 bool LocalStore::pathInfoIsUntrusted(const ValidPathInfo & info)
 {
-    return requireSigs && !info.checkSignatures(*this, getPublicKeys());
+    return config->requireSigs && !info.checkSignatures(*this, getPublicKeys());
 }
 
 bool LocalStore::realisationIsUntrusted(const Realisation & realisation)
 {
-    return requireSigs && !realisation.checkSignatures(getPublicKeys());
+    return config->requireSigs && !realisation.checkSignatures(getPublicKeys());
 }
 
 void LocalStore::addToStore(const ValidPathInfo & info, Source & source,
@@ -1101,7 +1108,7 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source,
                     auto & specified = *info.ca;
                     auto actualHash = ({
                         auto accessor = getFSAccessor(false);
-                        CanonPath path { printStorePath(info.path) };
+                        CanonPath path { info.path.to_string() };
                         Hash h { HashAlgorithm::SHA256 }; // throwaway def to appease C++
                         auto fim = specified.method.getFileIngestionMethod();
                         switch (fim) {
@@ -1333,7 +1340,7 @@ std::pair<std::filesystem::path, AutoCloseFD> LocalStore::createTempDirInStore()
         /* There is a slight possibility that `tmpDir' gets deleted by
            the GC between createTempDir() and when we acquire a lock on it.
            We'll repeat until 'tmpDir' exists and we've locked it. */
-        tmpDirFn = createTempDir(realStoreDir, "tmp");
+        tmpDirFn = createTempDir(config->realStoreDir, "tmp");
         tmpDirFd = openDirectory(tmpDirFn);
         if (!tmpDirFd) {
             continue;
@@ -1381,7 +1388,7 @@ bool LocalStore::verifyStore(bool checkContents, RepairFlag repair)
 
         printInfo("checking link hashes...");
 
-        for (auto & link : std::filesystem::directory_iterator{linksDir}) {
+        for (auto & link : DirectoryIterator{linksDir}) {
             checkInterrupt();
             auto name = link.path().filename();
             printMsg(lvlTalkative, "checking contents of '%s'", name);
@@ -1474,7 +1481,7 @@ LocalStore::VerificationResult LocalStore::verifyAllValidPaths(RepairFlag repair
        database and the filesystem) in the loop below, in order to catch
        invalid states.
      */
-    for (auto & i : std::filesystem::directory_iterator{realStoreDir.to_string()}) {
+    for (auto & i : DirectoryIterator{config->realStoreDir.get()}) {
         checkInterrupt();
         try {
             storePathsInStoreDir.insert({i.path().filename().string()});
@@ -1583,33 +1590,6 @@ void LocalStore::addSignatures(const StorePath & storePath, const StringSet & si
 }
 
 
-void LocalStore::signRealisation(Realisation & realisation)
-{
-    // FIXME: keep secret keys in memory.
-
-    auto secretKeyFiles = settings.secretKeyFiles;
-
-    for (auto & secretKeyFile : secretKeyFiles.get()) {
-        SecretKey secretKey(readFile(secretKeyFile));
-        LocalSigner signer(std::move(secretKey));
-        realisation.sign(signer);
-    }
-}
-
-void LocalStore::signPathInfo(ValidPathInfo & info)
-{
-    // FIXME: keep secret keys in memory.
-
-    auto secretKeyFiles = settings.secretKeyFiles;
-
-    for (auto & secretKeyFile : secretKeyFiles.get()) {
-        SecretKey secretKey(readFile(secretKeyFile));
-        LocalSigner signer(std::move(secretKey));
-        info.sign(*this, signer);
-    }
-}
-
-
 std::optional<std::pair<int64_t, Realisation>> LocalStore::queryRealisationCore_(
         LocalStore::State & state,
         const DrvOutput & id)
@@ -1690,7 +1670,7 @@ void LocalStore::addBuildLog(const StorePath & drvPath, std::string_view log)
 
     auto baseName = drvPath.to_string();
 
-    auto logPath = fmt("%s/%s/%s/%s.bz2", logDir, drvsLogDir, baseName.substr(0, 2), baseName.substr(2));
+    auto logPath = fmt("%s/%s/%s/%s.bz2", config->logDir, drvsLogDir, baseName.substr(0, 2), baseName.substr(2));
 
     if (pathExists(logPath)) return;
 
@@ -1708,6 +1688,6 @@ std::optional<std::string> LocalStore::getVersion()
     return nixVersion;
 }
 
-static RegisterStoreImplementation<LocalStore, LocalStoreConfig> regLocalStore;
+static RegisterStoreImplementation<LocalStore::Config> regLocalStore;
 
 }  // namespace nix

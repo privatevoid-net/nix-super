@@ -3,11 +3,12 @@
 #include "nix_api_util.h"
 #include "nix_api_util_internal.h"
 
-#include "path.hh"
-#include "store-api.hh"
-#include "build-result.hh"
+#include "nix/store/path.hh"
+#include "nix/store/store-api.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/build-result.hh"
 
-#include "globals.hh"
+#include "nix/store/globals.hh"
 
 nix_err nix_libstore_init(nix_c_context * context)
 {
@@ -42,7 +43,7 @@ Store * nix_store_open(nix_c_context * context, const char * uri, const char ***
         if (!params)
             return new Store{nix::openStore(uri_str)};
 
-        nix::Store::Params params_map;
+        nix::Store::Config::Params params_map;
         for (size_t i = 0; params[i] != nullptr; i++) {
             params_map[params[i][0]] = params[i][1];
         }
@@ -68,6 +69,17 @@ nix_err nix_store_get_uri(nix_c_context * context, Store * store, nix_get_string
 }
 
 nix_err
+nix_store_get_storedir(nix_c_context * context, Store * store, nix_get_string_callback callback, void * user_data)
+{
+    if (context)
+        context->last_err_code = NIX_OK;
+    try {
+        return call_nix_get_string_callback(store->ptr->storeDir, callback, user_data);
+    }
+    NIXC_CATCH_ERRS
+}
+
+nix_err
 nix_store_get_version(nix_c_context * context, Store * store, nix_get_string_callback callback, void * user_data)
 {
     if (context)
@@ -87,6 +99,18 @@ bool nix_store_is_valid_path(nix_c_context * context, Store * store, StorePath *
         return store->ptr->isValidPath(path->path);
     }
     NIXC_CATCH_ERRS_RES(false);
+}
+
+nix_err nix_store_real_path(
+    nix_c_context * context, Store * store, StorePath * path, nix_get_string_callback callback, void * user_data)
+{
+    if (context)
+        context->last_err_code = NIX_OK;
+    try {
+        auto res = store->ptr->toRealPath(path->path);
+        return call_nix_get_string_callback(res, callback, user_data);
+    }
+    NIXC_CATCH_ERRS
 }
 
 StorePath * nix_store_parse_path(nix_c_context * context, Store * store, const char * path)

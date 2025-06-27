@@ -1,8 +1,10 @@
-#include "markdown.hh"
-#include "environment-variables.hh"
-#include "error.hh"
-#include "finally.hh"
-#include "terminal.hh"
+#include "nix/cmd/markdown.hh"
+#include "nix/util/environment-variables.hh"
+#include "nix/util/error.hh"
+#include "nix/util/finally.hh"
+#include "nix/util/terminal.hh"
+
+#include "cmd-config-private.hh"
 
 #if HAVE_LOWDOWN
 #  include <sys/queue.h>
@@ -16,13 +18,25 @@ static std::string doRenderMarkdownToTerminal(std::string_view markdown)
 {
     int windowWidth = getWindowSize().second;
 
-    struct lowdown_opts opts
-    {
-        .type = LOWDOWN_TERM,
-        .maxdepth = 20,
+#if HAVE_LOWDOWN_1_4
+    struct lowdown_opts_term opts_term {
         .cols = (size_t) std::max(windowWidth - 5, 60),
         .hmargin = 0,
         .vmargin = 0,
+    };
+#endif
+    struct lowdown_opts opts
+    {
+        .type = LOWDOWN_TERM,
+#if HAVE_LOWDOWN_1_4
+        .term = opts_term,
+#endif
+        .maxdepth = 20,
+#if !HAVE_LOWDOWN_1_4
+        .cols = (size_t) std::max(windowWidth - 5, 60),
+        .hmargin = 0,
+        .vmargin = 0,
+#endif
         .feat = LOWDOWN_COMMONMARK | LOWDOWN_FENCED | LOWDOWN_DEFLIST | LOWDOWN_TABLES,
         .oflags = LOWDOWN_TERM_NOLINK,
     };

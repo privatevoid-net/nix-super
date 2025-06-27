@@ -19,10 +19,11 @@ nix-build -E '(import ./.).packages.${builtins.currentSystem}.nix.doc'
 or
 
 ```console
-nix build .#nix^doc
+nix build .#nix-manual
 ```
 
-and open `./result-doc/share/doc/nix/manual/index.html`.
+and open `./result/share/doc/nix/manual/index.html`.
+
 
 To build the manual incrementally, [enter the development shell](./building.md) and run:
 
@@ -203,7 +204,7 @@ $ xdg-open ./result/share/doc/nix/internal-api/html/index.html
 or inside `nix-shell` or `nix develop`:
 
 ```console
-$ mesonConfigurePhase
+$ configurePhase
 $ ninja src/internal-api-docs/html
 $ xdg-open src/internal-api-docs/html/index.html
 ```
@@ -224,7 +225,7 @@ $ xdg-open ./result/share/doc/nix/external-api/html/index.html
 or inside `nix-shell` or `nix develop`:
 
 ```
-$ mesonConfigurePhase
+$ configurePhase
 $ ninja src/external-api-docs/html
 $ xdg-open src/external-api-docs/html/index.html
 ```

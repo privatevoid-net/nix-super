@@ -5,12 +5,12 @@
 #include <regex>
 #include <strings.h> // for strcasecmp
 
-#include "signals.hh"
-#include "config.hh"
-#include "hash.hh"
+#include "nix/util/signals.hh"
+#include "nix/util/configuration.hh"
+#include "nix/util/hash.hh"
 
-#include "git.hh"
-#include "serialise.hh"
+#include "nix/util/git.hh"
+#include "nix/util/serialise.hh"
 
 namespace nix::git {
 
@@ -33,7 +33,7 @@ std::optional<Mode> decodeMode(RawMode m) {
 static std::string getStringUntil(Source & source, char byte)
 {
     std::string s;
-    char n[1];
+    char n[1] = { 0 };
     source(std::string_view { n, 1 });
     while (*n != byte) {
         s += *n;
@@ -134,7 +134,7 @@ void parseTree(
         RawMode rawMode = std::stoi(perms, 0, 8);
         auto modeOpt = decodeMode(rawMode);
         if (!modeOpt)
-            throw Error("Unknown Git permission: %o", perms);
+            throw Error("Unknown Git permission: %o", rawMode);
         auto mode = std::move(*modeOpt);
 
         std::string name = getStringUntil(source, '\0');
@@ -200,7 +200,11 @@ std::optional<Mode> convertMode(SourceAccessor::Type type)
     case SourceAccessor::tSymlink:   return Mode::Symlink;
     case SourceAccessor::tRegular:   return Mode::Regular;
     case SourceAccessor::tDirectory: return Mode::Directory;
-    case SourceAccessor::tMisc:      return std::nullopt;
+    case SourceAccessor::tChar:
+    case SourceAccessor::tBlock:
+    case SourceAccessor::tSocket:
+    case SourceAccessor::tFifo:      return std::nullopt;
+    case SourceAccessor::tUnknown:
     default: unreachable();
     }
 }
@@ -314,9 +318,13 @@ Mode dump(
         return Mode::Symlink;
     }
 
-    case SourceAccessor::tMisc:
+    case SourceAccessor::tChar:
+    case SourceAccessor::tBlock:
+    case SourceAccessor::tSocket:
+    case SourceAccessor::tFifo:
+    case SourceAccessor::tUnknown:
     default:
-        throw Error("file '%1%' has an unsupported type", path);
+        throw Error("file '%1%' has an unsupported type of %2%", path, st.typeString());
     }
 }
 

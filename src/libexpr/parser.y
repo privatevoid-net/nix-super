@@ -17,14 +17,14 @@
 
 #include <variant>
 
-#include "finally.hh"
-#include "util.hh"
-#include "users.hh"
+#include "nix/util/finally.hh"
+#include "nix/util/util.hh"
+#include "nix/util/users.hh"
 
-#include "nixexpr.hh"
-#include "eval.hh"
-#include "eval-settings.hh"
-#include "parser-state.hh"
+#include "nix/expr/nixexpr.hh"
+#include "nix/expr/eval.hh"
+#include "nix/expr/eval-settings.hh"
+#include "nix/expr/parser-state.hh"
 
 // Bison seems to have difficulty growing the parser stack when using C++ with
 // a custom location type. This undocumented macro tells Bison that our
@@ -179,7 +179,12 @@ static Expr * makeCall(PosIdx pos, Expr * fn, Expr * arg) {
 
 %%
 
-start: expr { state->result = $1; };
+start: expr {
+  state->result = $1;
+
+  // This parser does not use yynerrs; suppress the warning.
+  (void) yynerrs;
+};
 
 expr: expr_function;
 
@@ -360,11 +365,18 @@ string_parts_interpolated
 
 path_start
   : PATH {
-    Path path(absPath(std::string_view{$1.p, $1.l}, state->basePath.path.abs()));
+    std::string_view literal({$1.p, $1.l});
+    Path path(absPath(literal, state->basePath.path.abs()));
     /* add back in the trailing '/' to the first segment */
-    if ($1.p[$1.l-1] == '/' && $1.l > 1)
-      path += "/";
-    $$ = new ExprPath(ref<SourceAccessor>(state->rootFS), std::move(path));
+    if (literal.size() > 1 && literal.back() == '/')
+      path += '/';
+    $$ =
+        /* Absolute paths are always interpreted relative to the
+           root filesystem accessor, rather than the accessor of the
+           current Nix expression. */
+        literal.front() == '/'
+        ? new ExprPath(state->rootFS, std::move(path))
+        : new ExprPath(state->basePath.accessor, std::move(path));
   }
   | HPATH {
     if (state->settings.pureEval) {
@@ -508,7 +520,7 @@ formal
 
 %%
 
-#include "eval.hh"
+#include "nix/expr/eval.hh"
 
 
 namespace nix {

@@ -1,15 +1,16 @@
-{ lib
-, stdenv
-, mkMesonLibrary
+{
+  lib,
+  mkMesonLibrary,
 
-, openssl
+  openssl,
 
-, nix-util
-, nix-store
+  nix-util,
+  nix-store,
+  nix-expr,
 
-# Configuration Options
+  # Configuration Options
 
-, version
+  version,
 }:
 
 let
@@ -22,32 +23,25 @@ mkMesonLibrary (finalAttrs: {
 
   workDir = ./.;
   fileset = fileset.unions [
-    ../../build-utils-meson
-    ./build-utils-meson
+    ../../nix-meson-build-support
+    ./nix-meson-build-support
     ../../.version
     ./.version
     ./meson.build
+    ./include/nix/main/meson.build
     (fileset.fileFilter (file: file.hasExt "cc") ./.)
     (fileset.fileFilter (file: file.hasExt "hh") ./.)
   ];
 
   propagatedBuildInputs = [
+    # FIXME: This is only here for the NIX_USE_BOEHMGC macro dependency
+    #        Removing nix-expr will make the build more concurrent and is
+    #        architecturally nice, perhaps.
+    nix-expr
     nix-util
     nix-store
     openssl
   ];
-
-  preConfigure =
-    # "Inline" .version so it's not a symlink, and includes the suffix.
-    # Do the meson utils, without modification.
-    ''
-      chmod u+w ./.version
-      echo ${version} > ../../.version
-    '';
-
-  env = lib.optionalAttrs (stdenv.isLinux && !(stdenv.hostPlatform.isStatic && stdenv.system == "aarch64-linux")) {
-    LDFLAGS = "-fuse-ld=gold";
-  };
 
   meta = {
     platforms = lib.platforms.unix ++ lib.platforms.windows;

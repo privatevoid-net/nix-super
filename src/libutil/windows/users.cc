@@ -1,9 +1,10 @@
-#include "util.hh"
-#include "users.hh"
-#include "environment-variables.hh"
-#include "file-system.hh"
-#include "windows-error.hh"
+#include "nix/util/util.hh"
+#include "nix/util/users.hh"
+#include "nix/util/environment-variables.hh"
+#include "nix/util/file-system.hh"
+#include "nix/util/windows-error.hh"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -50,3 +51,4 @@ bool isRootUser() {
 }
 
 }
+#endif

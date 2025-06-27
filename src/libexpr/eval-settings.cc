@@ -1,8 +1,8 @@
-#include "users.hh"
-#include "globals.hh"
-#include "profiles.hh"
-#include "eval.hh"
-#include "eval-settings.hh"
+#include "nix/util/users.hh"
+#include "nix/store/globals.hh"
+#include "nix/store/profiles.hh"
+#include "nix/expr/eval.hh"
+#include "nix/expr/eval-settings.hh"
 
 namespace nix {
 
@@ -57,7 +57,7 @@ Strings EvalSettings::getDefaultNixPath()
 {
     Strings res;
     auto add = [&](const Path & p, const std::string & s = std::string()) {
-        if (pathAccessible(p)) {
+        if (std::filesystem::exists(p)) {
             if (s.empty()) {
                 res.push_back(p);
             } else {
@@ -103,4 +103,4 @@ Path getNixDefExpr()
         : getHome() + "/.nix-defexpr";
 }
 
-}
+} // namespace nix

@@ -5,7 +5,7 @@
 # Synopsis
 
 `nix-instantiate`
-  [`--parse` | `--eval` [`--strict`] [`--json`] [`--xml`] ]
+  [`--parse` | `--eval` [`--strict`] [`--raw` | `--json` | `--xml`] ]
   [`--read-write-mode`]
   [`--arg` *name* *value*]
   [{`--attr`| `-A`} *attrPath*]
@@ -42,8 +42,8 @@ standard input.
 - `--eval`
 
   Just parse and evaluate the input files, and print the resulting
-  values on standard output. No instantiation of store derivations
-  takes place.
+  values on standard output.
+  Store derivations are not serialized and written to the store, but instead just hashed and discarded.
 
   > **Warning**
   >
@@ -101,6 +101,11 @@ standard input.
   >
   > This option can cause non-termination, because lazy data
   > structures can be infinitely large.
+
+- `--raw`
+
+  When used with `--eval`, the evaluation result must be a string,
+  which is printed verbatim, without quoting, escaping or trailing newline.
 
 - `--json`
 

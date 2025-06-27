@@ -12,7 +12,7 @@ repo=$TEST_ROOT/./git
 
 export _NIX_FORCE_HTTP=1
 
-rm -rf $repo ${repo}-tmp $TEST_HOME/.cache/nix $TEST_ROOT/worktree $TEST_ROOT/shallow $TEST_ROOT/minimal
+rm -rf $repo ${repo}-tmp $TEST_HOME/.cache/nix $TEST_ROOT/worktree $TEST_ROOT/minimal
 
 git init $repo
 git -C $repo config user.email "foobar@example.com"
@@ -37,6 +37,7 @@ nix-instantiate --eval -E "builtins.readFile ((builtins.fetchGit file://$TEST_RO
 
 # Fetch a worktree.
 unset _NIX_FORCE_HTTP
+expectStderr 0 nix eval -vvvv --impure --raw --expr "(builtins.fetchGit file://$TEST_ROOT/worktree).outPath" | grepQuiet "copying '$TEST_ROOT/worktree/' to the store"
 path0=$(nix eval --impure --raw --expr "(builtins.fetchGit file://$TEST_ROOT/worktree).outPath")
 path0_=$(nix eval --impure --raw --expr "(builtins.fetchTree { type = \"git\"; url = file://$TEST_ROOT/worktree; }).outPath")
 [[ $path0 = $path0_ ]]
@@ -64,7 +65,7 @@ git -C $repo add differentbranch
 git -C $repo commit -m 'Test2'
 git -C $repo checkout master
 devrev=$(git -C $repo rev-parse devtest)
-nix eval --impure --raw --expr "builtins.fetchGit { url = file://$repo; rev = \"$devrev\"; }"
+nix eval --raw --expr "builtins.fetchGit { url = file://$repo; rev = \"$devrev\"; }"
 
 [[ $(nix eval --raw --expr "builtins.readFile (builtins.fetchGit { url = file://$repo; rev = \"$devrev\"; allRefs = true; } + \"/differentbranch\")") = 'different file' ]]
 
@@ -79,8 +80,8 @@ path2=$(nix eval --raw --expr "(builtins.fetchGit { url = file://$repo; rev = \"
 # In pure eval mode, fetchGit with a revision should succeed.
 [[ $(nix eval --raw --expr "builtins.readFile (fetchGit { url = file://$repo; rev = \"$rev2\"; } + \"/hello\")") = world ]]
 
-# But without a hash, it fails
-expectStderr 1 nix eval --expr 'builtins.fetchGit "file:///foo"' | grepQuiet "'fetchGit' will not fetch unlocked input"
+# But without a hash, it fails.
+expectStderr 1 nix eval --expr 'builtins.fetchGit "file:///foo"' | grepQuiet "'fetchGit' doesn't fetch unlocked input"
 
 # Fetch again. This should be cached.
 mv $repo ${repo}-tmp
@@ -141,12 +142,16 @@ path4=$(nix eval --impure --refresh --raw --expr "(builtins.fetchGit file://$rep
 [[ $(nix eval --impure --expr "builtins.hasAttr \"dirtyRev\" (builtins.fetchGit $repo)") == "false" ]]
 [[ $(nix eval --impure --expr "builtins.hasAttr \"dirtyShortRev\" (builtins.fetchGit $repo)") == "false" ]]
 
-status=0
-nix eval --impure --raw --expr "(builtins.fetchGit { url = $repo; rev = \"$rev2\"; narHash = \"sha256-B5yIPHhEm0eysJKEsO7nqxprh9vcblFxpJG11gXJus1=\"; }).outPath" || status=$?
-[[ "$status" = "102" ]]
+expect 102 nix eval --raw --expr "(builtins.fetchGit { url = $repo; rev = \"$rev2\"; narHash = \"sha256-B5yIPHhEm0eysJKEsO7nqxprh9vcblFxpJG11gXJus1=\"; }).outPath"
 
-path5=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = $repo; rev = \"$rev2\"; narHash = \"sha256-Hr8g6AqANb3xqX28eu1XnjK/3ab8Gv6TJSnkb1LezG9=\"; }).outPath")
+path5=$(nix eval --raw --expr "(builtins.fetchGit { url = $repo; rev = \"$rev2\"; narHash = \"sha256-Hr8g6AqANb3xqX28eu1XnjK/3ab8Gv6TJSnkb1LezG9=\"; }).outPath")
 [[ $path = $path5 ]]
+
+# Ensure that NAR hashes are checked.
+expectStderr 102 nix eval --raw --expr "(builtins.fetchGit { url = $repo; rev = \"$rev2\"; narHash = \"sha256-Hr8g6AqANb4xqX28eu1XnjK/3ab8Gv6TJSnkb1LezG9=\"; }).outPath" | grepQuiet "error: NAR hash mismatch"
+
+# It's allowed to use only a narHash, but you should get a warning.
+expectStderr 0 nix eval --raw --expr "(builtins.fetchGit { url = $repo; ref = \"tag2\"; narHash = \"sha256-Hr8g6AqANb3xqX28eu1XnjK/3ab8Gv6TJSnkb1LezG9=\"; }).outPath" | grepQuiet "warning: Input .* is unlocked"
 
 # tarball-ttl should be ignored if we specify a rev
 echo delft > $repo/hello
@@ -211,18 +216,6 @@ git -C $TEST_ROOT/minimal fetch $repo $rev2
 git -C $TEST_ROOT/minimal checkout $rev2
 [[ $(nix eval --impure --raw --expr "(builtins.fetchGit { url = $TEST_ROOT/minimal; }).rev") = $rev2 ]]
 
-# Fetching a shallow repo shouldn't work by default, because we can't
-# return a revCount.
-git clone --depth 1 file://$repo $TEST_ROOT/shallow
-(! nix eval --impure --raw --expr "(builtins.fetchGit { url = $TEST_ROOT/shallow; ref = \"dev\"; }).outPath")
-
-# But you can request a shallow clone, which won't return a revCount.
-path6=$(nix eval --impure --raw --expr "(builtins.fetchTree { type = \"git\"; url = \"file://$TEST_ROOT/shallow\"; ref = \"dev\"; shallow = true; }).outPath")
-[[ $path3 = $path6 ]]
-[[ $(nix eval --impure --expr "(builtins.fetchTree { type = \"git\"; url = \"file://$TEST_ROOT/shallow\"; ref = \"dev\"; shallow = true; }).revCount or 123") == 123 ]]
-
-expectStderr 1 nix eval --expr 'builtins.fetchTree { type = "git"; url = "file:///foo"; }' | grepQuiet "'fetchTree' will not fetch unlocked input"
-
 # Explicit ref = "HEAD" should work, and produce the same outPath as without ref
 path7=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = \"file://$repo\"; ref = \"HEAD\"; }).outPath")
 path8=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = \"file://$repo\"; }).outPath")
@@ -255,7 +248,7 @@ echo "/exported-wonky export-ignore=wonk" >> $repo/.gitattributes
 git -C $repo add not-exported-file exported-wonky .gitattributes
 git -C $repo commit -m 'Bla6'
 rev5=$(git -C $repo rev-parse HEAD)
-path12=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = file://$repo; rev = \"$rev5\"; }).outPath")
+path12=$(nix eval --raw --expr "(builtins.fetchGit { url = file://$repo; rev = \"$rev5\"; }).outPath")
 [[ ! -e $path12/not-exported-file ]]
 [[ -e $path12/exported-wonky ]]
 
@@ -287,17 +280,20 @@ path11=$(nix eval --impure --raw --expr "(builtins.fetchGit ./.).outPath")
 empty="$TEST_ROOT/empty"
 git init "$empty"
 
-emptyAttrs='{ lastModified = 0; lastModifiedDate = "19700101000000"; narHash = "sha256-pQpattmS9VmO3ZIQUFn66az8GSmB4IvYhTTCFn6SUmo="; rev = "0000000000000000000000000000000000000000"; revCount = 0; shortRev = "0000000"; submodules = false; }'
-
-[[ $(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]") = $emptyAttrs ]]
+emptyAttrs="{ lastModified = 0; lastModifiedDate = \"19700101000000\"; narHash = \"sha256-pQpattmS9VmO3ZIQUFn66az8GSmB4IvYhTTCFn6SUmo=\"; rev = \"0000000000000000000000000000000000000000\"; revCount = 0; shortRev = \"0000000\"; submodules = false; }"
+result=$(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]")
+[[ "$result" = "$emptyAttrs" ]]
 
 echo foo > "$empty/x"
 
-[[ $(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]") = $emptyAttrs ]]
+result=$(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]")
+[[ "$result" = "$emptyAttrs" ]]
 
 git -C "$empty" add x
 
-[[ $(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]") = '{ lastModified = 0; lastModifiedDate = "19700101000000"; narHash = "sha256-wzlAGjxKxpaWdqVhlq55q5Gxo4Bf860+kLeEa/v02As="; rev = "0000000000000000000000000000000000000000"; revCount = 0; shortRev = "0000000"; submodules = false; }' ]]
+expected_attrs="{ lastModified = 0; lastModifiedDate = \"19700101000000\"; narHash = \"sha256-wzlAGjxKxpaWdqVhlq55q5Gxo4Bf860+kLeEa/v02As=\"; rev = \"0000000000000000000000000000000000000000\"; revCount = 0; shortRev = \"0000000\"; submodules = false; }"
+result=$(nix eval --impure --expr "builtins.removeAttrs (builtins.fetchGit $empty) [\"outPath\"]")
+[[ "$result" = "$expected_attrs" ]]
 
 # Test a repo with an empty commit.
 git -C "$empty" rm -f x

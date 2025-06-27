@@ -1,15 +1,17 @@
-#if ENABLE_S3
+#include "nix/store/s3-binary-cache-store.hh"
+
+#if NIX_WITH_S3_SUPPORT
 
 #include <assert.h>
 
-#include "s3.hh"
-#include "s3-binary-cache-store.hh"
-#include "nar-info.hh"
-#include "nar-info-disk-cache.hh"
-#include "globals.hh"
-#include "compression.hh"
-#include "filetransfer.hh"
-#include "signals.hh"
+#include "nix/store/s3.hh"
+#include "nix/store/nar-info.hh"
+#include "nix/store/nar-info-disk-cache.hh"
+#include "nix/store/globals.hh"
+#include "nix/util/compression.hh"
+#include "nix/store/filetransfer.hh"
+#include "nix/util/signals.hh"
+#include "nix/store/store-registration.hh"
 
 #include <aws/core/Aws.h>
 #include <aws/core/VersionConfig.h>
@@ -20,6 +22,7 @@
 #include <aws/core/utils/logging/FormattedLogSystem.h>
 #include <aws/core/utils/logging/LogMacros.h>
 #include <aws/core/utils/threading/Executor.h>
+#include <aws/identity-management/auth/STSProfileCredentialsProvider.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/HeadObjectRequest.h>
@@ -48,7 +51,11 @@ R && checkAws(std::string_view s, Aws::Utils::Outcome<R, E> && outcome)
     if (!outcome.IsSuccess())
         throw S3Error(
             outcome.GetError().GetErrorType(),
-            s + ": " + outcome.GetError().GetMessage());
+            fmt(
+                "%s: %s (request id: %s)",
+                s,
+                outcome.GetError().GetMessage(),
+                outcome.GetError().GetRequestId()));
     return outcome.GetResultWithOwnership();
 }
 
@@ -64,6 +71,29 @@ class AwsLogger : public Aws::Utils::Logging::FormattedLogSystem
 #if !(AWS_SDK_VERSION_MAJOR <= 1 && AWS_SDK_VERSION_MINOR <= 7 && AWS_SDK_VERSION_PATCH <= 115)
     void Flush() override {}
 #endif
+};
+
+/* Retrieve the credentials from the list of AWS default providers, with the addition of the STS creds provider. This
+   last can be used to acquire further permissions with a specific IAM role.
+   Roughly based on https://github.com/aws/aws-sdk-cpp/issues/150#issuecomment-538548438
+*/
+struct CustomAwsCredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain
+{
+    CustomAwsCredentialsProviderChain(const std::string & profile)
+    {
+        if (profile.empty()) {
+            // Use all the default AWS providers, plus the possibility to acquire a IAM role directly via a profile.
+            Aws::Auth::DefaultAWSCredentialsProviderChain default_aws_chain;
+            for (auto provider : default_aws_chain.GetProviders())
+                AddProvider(provider);
+            AddProvider(std::make_shared<Aws::Auth::STSProfileCredentialsProvider>());
+        } else {
+            // Override the profile name to retrieve from the AWS config and credentials. I believe this option
+            // comes from the ?profile querystring in nix.conf.
+            AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>(profile.c_str()));
+            AddProvider(std::make_shared<Aws::Auth::STSProfileCredentialsProvider>(profile));
+        }
+    }
 };
 
 static void initAWS()
@@ -97,13 +127,8 @@ S3Helper::S3Helper(
     const std::string & endpoint)
     : config(makeConfig(region, scheme, endpoint))
     , client(make_ref<Aws::S3::S3Client>(
-            profile == ""
-            ? std::dynamic_pointer_cast<Aws::Auth::AWSCredentialsProvider>(
-                std::make_shared<Aws::Auth::DefaultAWSCredentialsProviderChain>())
-            : std::dynamic_pointer_cast<Aws::Auth::AWSCredentialsProvider>(
-                std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>(profile.c_str())),
+            std::make_shared<CustomAwsCredentialsProviderChain>(profile),
             *config,
-            // FIXME: https://github.com/aws/aws-sdk-cpp/issues/759
 #if AWS_SDK_VERSION_MAJOR == 1 && AWS_SDK_VERSION_MINOR < 3
             false,
 #else
@@ -121,9 +146,10 @@ class RetryStrategy : public Aws::Client::DefaultRetryStrategy
         checkInterrupt();
         auto retry = Aws::Client::DefaultRetryStrategy::ShouldRetry(error, attemptedRetries);
         if (retry)
-            printError("AWS error '%s' (%s), will retry in %d ms",
+            printError("AWS error '%s' (%s; request id: %s), will retry in %d ms",
                 error.GetExceptionName(),
                 error.GetMessage(),
+                error.GetRequestId(),
                 CalculateDelayBeforeNextRetry(error, attemptedRetries));
         return retry;
     }
@@ -154,7 +180,10 @@ ref<Aws::Client::ClientConfiguration> S3Helper::makeConfig(
 S3Helper::FileTransferResult S3Helper::getObject(
     const std::string & bucketName, const std::string & key)
 {
-    debug("fetching 's3://%s/%s'...", bucketName, key);
+    std::string uri = "s3://" + bucketName + "/" + key;
+    Activity act(*logger, lvlTalkative, actFileTransfer,
+        fmt("downloading '%s'", uri),
+        Logger::Fields{uri}, getCurActivity());
 
     auto request =
         Aws::S3::Model::GetObjectRequest()
@@ -165,6 +194,22 @@ S3Helper::FileTransferResult S3Helper::getObject(
         return Aws::New<std::stringstream>("STRINGSTREAM");
     });
 
+    size_t bytesDone = 0;
+    size_t bytesExpected = 0;
+    request.SetDataReceivedEventHandler([&](const Aws::Http::HttpRequest * req, Aws::Http::HttpResponse * resp, long long l) {
+        if (!bytesExpected && resp->HasHeader("Content-Length")) {
+            if (auto length = string2Int<size_t>(resp->GetHeader("Content-Length"))) {
+                bytesExpected = *length;
+            }
+        }
+        bytesDone += l;
+        act.progress(bytesDone, bytesExpected);
+    });
+
+    request.SetContinueRequestHandler([](const Aws::Http::HttpRequest*) {
+        return !isInterrupted();
+    });
+
     FileTransferResult res;
 
     auto now1 = std::chrono::steady_clock::now();
@@ -173,6 +218,8 @@ S3Helper::FileTransferResult S3Helper::getObject(
 
         auto result = checkAws(fmt("AWS error fetching '%s'", key),
             client->GetObject(request));
+
+        act.progress(result.GetContentLength(), result.GetContentLength());
 
         res.data = decompress(result.GetContentEncoding(),
             dynamic_cast<std::stringstream &>(result.GetBody()).str());
@@ -188,11 +235,6 @@ S3Helper::FileTransferResult S3Helper::getObject(
 
     return res;
 }
-
-S3BinaryCacheStore::S3BinaryCacheStore(const Params & params)
-    : BinaryCacheStoreConfig(params)
-    , BinaryCacheStore(params)
-{ }
 
 
 S3BinaryCacheStoreConfig::S3BinaryCacheStoreConfig(
@@ -212,6 +254,12 @@ S3BinaryCacheStoreConfig::S3BinaryCacheStoreConfig(
         throw UsageError("`%s` store requires a bucket name in its Store URI", uriScheme);
 }
 
+
+S3BinaryCacheStore::S3BinaryCacheStore(ref<Config> config)
+    : BinaryCacheStore(*config)
+    , config{config}
+{ }
+
 std::string S3BinaryCacheStoreConfig::doc()
 {
     return
@@ -220,40 +268,37 @@ std::string S3BinaryCacheStoreConfig::doc()
 }
 
 
-struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual S3BinaryCacheStore
+struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStore
 {
     Stats stats;
 
     S3Helper s3Helper;
 
-    S3BinaryCacheStoreImpl(
-        std::string_view uriScheme,
-        std::string_view bucketName,
-        const Params & params)
-        : StoreConfig(params)
-        , BinaryCacheStoreConfig(params)
-        , S3BinaryCacheStoreConfig(uriScheme, bucketName, params)
-        , Store(params)
-        , BinaryCacheStore(params)
-        , S3BinaryCacheStore(params)
-        , s3Helper(profile, region, scheme, endpoint)
+    S3BinaryCacheStoreImpl(ref<Config> config)
+        : Store{*config}
+        , BinaryCacheStore{*config}
+        , S3BinaryCacheStore{config}
+        , s3Helper(config->profile, config->region, config->scheme, config->endpoint)
     {
         diskCache = getNarInfoDiskCache();
+
+        init();
     }
 
     std::string getUri() override
     {
-        return "s3://" + bucketName;
+        return "s3://" + config->bucketName;
     }
 
     void init() override
     {
         if (auto cacheInfo = diskCache->upToDateCacheExists(getUri())) {
-            wantMassQuery.setDefault(cacheInfo->wantMassQuery);
-            priority.setDefault(cacheInfo->priority);
+            config->wantMassQuery.setDefault(cacheInfo->wantMassQuery);
+            config->priority.setDefault(cacheInfo->priority);
         } else {
             BinaryCacheStore::init();
-            diskCache->createCache(getUri(), storeDir, wantMassQuery, priority);
+            diskCache->createCache(
+                getUri(), config->storeDir, config->wantMassQuery, config->priority);
         }
     }
 
@@ -282,7 +327,7 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
 
         auto res = s3Helper.client->HeadObject(
             Aws::S3::Model::HeadObjectRequest()
-            .WithBucket(bucketName)
+            .WithBucket(config->bucketName)
             .WithKey(path));
 
         if (!res.IsSuccess()) {
@@ -301,11 +346,35 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
     std::shared_ptr<TransferManager> transferManager;
     std::once_flag transferManagerCreated;
 
+    struct AsyncContext : public Aws::Client::AsyncCallerContext
+    {
+        mutable std::mutex mutex;
+        mutable std::condition_variable cv;
+        const Activity & act;
+
+        void notify() const
+        {
+            cv.notify_one();
+        }
+
+        void wait() const
+        {
+            std::unique_lock<std::mutex> lk(mutex);
+            cv.wait(lk);
+        }
+
+        AsyncContext(const Activity & act) : act(act) {}
+    };
+
     void uploadFile(const std::string & path,
         std::shared_ptr<std::basic_iostream<char>> istream,
         const std::string & mimeType,
         const std::string & contentEncoding)
     {
+        std::string uri = "s3://" + config->bucketName + "/" + path;
+        Activity act(*logger, lvlTalkative, actFileTransfer,
+            fmt("uploading '%s'", uri),
+            Logger::Fields{uri}, getCurActivity());
         istream->seekg(0, istream->end);
         auto size = istream->tellg();
         istream->seekg(0, istream->beg);
@@ -317,23 +386,32 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
 
         std::call_once(transferManagerCreated, [&]()
         {
-            if (multipartUpload) {
+            if (config->multipartUpload) {
                 TransferManagerConfiguration transferConfig(executor.get());
 
                 transferConfig.s3Client = s3Helper.client;
-                transferConfig.bufferSize = bufferSize;
+                transferConfig.bufferSize = config->bufferSize;
 
                 transferConfig.uploadProgressCallback =
-                    [](const TransferManager *transferManager,
-                        const std::shared_ptr<const TransferHandle>
-                        &transferHandle)
+                    [](const TransferManager * transferManager,
+                        const std::shared_ptr<const TransferHandle> & transferHandle)
                     {
-                        //FIXME: find a way to properly abort the multipart upload.
-                        //checkInterrupt();
-                        debug("upload progress ('%s'): '%d' of '%d' bytes",
-                            transferHandle->GetKey(),
-                            transferHandle->GetBytesTransferred(),
-                            transferHandle->GetBytesTotalSize());
+                        auto context = std::dynamic_pointer_cast<const AsyncContext>(transferHandle->GetContext());
+                        size_t bytesDone = transferHandle->GetBytesTransferred();
+                        size_t bytesTotal = transferHandle->GetBytesTotalSize();
+                        try {
+                            checkInterrupt();
+                            context->act.progress(bytesDone, bytesTotal);
+                        } catch (...) {
+                            context->notify();
+                        }
+                    };
+                transferConfig.transferStatusUpdatedCallback =
+                    [](const TransferManager * transferManager,
+                        const std::shared_ptr<const TransferHandle> & transferHandle)
+                    {
+                        auto context = std::dynamic_pointer_cast<const AsyncContext>(transferHandle->GetContext());
+                        context->notify();
                     };
 
                 transferManager = TransferManager::Create(transferConfig);
@@ -342,33 +420,57 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
 
         auto now1 = std::chrono::steady_clock::now();
 
+        auto & bucketName = config->bucketName;
+
         if (transferManager) {
 
             if (contentEncoding != "")
                 throw Error("setting a content encoding is not supported with S3 multi-part uploads");
 
+            auto context = std::make_shared<AsyncContext>(act);
             std::shared_ptr<TransferHandle> transferHandle =
                 transferManager->UploadFile(
                     istream, bucketName, path, mimeType,
                     Aws::Map<Aws::String, Aws::String>(),
-                    nullptr /*, contentEncoding */);
+                    context /*, contentEncoding */);
 
-            transferHandle->WaitUntilFinished();
+            TransferStatus status = transferHandle->GetStatus();
+            while (status == TransferStatus::IN_PROGRESS || status == TransferStatus::NOT_STARTED) {
+                if (!isInterrupted()) {
+                    context->wait();
+                } else {
+                    transferHandle->Cancel();
+                    transferHandle->WaitUntilFinished();
+                }
+                status = transferHandle->GetStatus();
+            }
+            act.progress(transferHandle->GetBytesTransferred(), transferHandle->GetBytesTotalSize());
 
-            if (transferHandle->GetStatus() == TransferStatus::FAILED)
+            if (status == TransferStatus::FAILED)
                 throw Error("AWS error: failed to upload 's3://%s/%s': %s",
                     bucketName, path, transferHandle->GetLastError().GetMessage());
 
-            if (transferHandle->GetStatus() != TransferStatus::COMPLETED)
+            if (status != TransferStatus::COMPLETED)
                 throw Error("AWS error: transfer status of 's3://%s/%s' in unexpected state",
                     bucketName, path);
 
         } else {
+            act.progress(0, size);
 
             auto request =
                 Aws::S3::Model::PutObjectRequest()
                 .WithBucket(bucketName)
                 .WithKey(path);
+
+            size_t bytesSent = 0;
+            request.SetDataSentEventHandler([&](const Aws::Http::HttpRequest * req, long long l) {
+                bytesSent += l;
+                act.progress(bytesSent, size);
+            });
+
+            request.SetContinueRequestHandler([](const Aws::Http::HttpRequest*) {
+                return !isInterrupted();
+            });
 
             request.SetContentType(mimeType);
 
@@ -379,6 +481,8 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
 
             auto result = checkAws(fmt("AWS error uploading '%s'", path),
                 s3Helper.client->PutObject(request));
+
+            act.progress(size, size);
         }
 
         auto now2 = std::chrono::steady_clock::now();
@@ -405,12 +509,12 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
             return std::make_shared<std::stringstream>(std::move(compressed));
         };
 
-        if (narinfoCompression != "" && hasSuffix(path, ".narinfo"))
-            uploadFile(path, compress(narinfoCompression), mimeType, narinfoCompression);
-        else if (lsCompression != "" && hasSuffix(path, ".ls"))
-            uploadFile(path, compress(lsCompression), mimeType, lsCompression);
-        else if (logCompression != "" && hasPrefix(path, "log/"))
-            uploadFile(path, compress(logCompression), mimeType, logCompression);
+        if (config->narinfoCompression != "" && hasSuffix(path, ".narinfo"))
+            uploadFile(path, compress(config->narinfoCompression), mimeType, config->narinfoCompression);
+        else if (config->lsCompression != "" && hasSuffix(path, ".ls"))
+            uploadFile(path, compress(config->lsCompression), mimeType, config->lsCompression);
+        else if (config->logCompression != "" && hasPrefix(path, "log/"))
+            uploadFile(path, compress(config->logCompression), mimeType, config->logCompression);
         else
             uploadFile(path, istream, mimeType, "");
     }
@@ -420,14 +524,14 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
         stats.get++;
 
         // FIXME: stream output to sink.
-        auto res = s3Helper.getObject(bucketName, path);
+        auto res = s3Helper.getObject(config->bucketName, path);
 
         stats.getBytes += res.data ? res.data->size() : 0;
         stats.getTimeMs += res.durationMs;
 
         if (res.data) {
             printTalkative("downloaded 's3://%s/%s' (%d bytes) in %d ms",
-                bucketName, path, res.data->size(), res.durationMs);
+                config->bucketName, path, res.data->size(), res.durationMs);
 
             sink(*res.data);
         } else
@@ -438,6 +542,8 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
     {
         StorePathSet paths;
         std::string marker;
+
+        auto & bucketName = config->bucketName;
 
         do {
             debug("listing bucket 's3://%s' from key '%s'...", bucketName, marker);
@@ -454,7 +560,7 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
             debug("got %d keys, next marker '%s'",
                 contents.size(), res.GetNextMarker());
 
-            for (auto object : contents) {
+            for (const auto & object : contents) {
                 auto & key = object.GetKey();
                 if (key.size() != 40 || !hasSuffix(key, ".narinfo")) continue;
                 paths.insert(parseStorePath(storeDir + "/" + key.substr(0, key.size() - 8) + "-" + MissingName));
@@ -477,7 +583,15 @@ struct S3BinaryCacheStoreImpl : virtual S3BinaryCacheStoreConfig, public virtual
     }
 };
 
-static RegisterStoreImplementation<S3BinaryCacheStoreImpl, S3BinaryCacheStoreConfig> regS3BinaryCacheStore;
+ref<Store> S3BinaryCacheStoreImpl::Config::openStore() const
+{
+    return make_ref<S3BinaryCacheStoreImpl>(ref{
+        // FIXME we shouldn't actually need a mutable config
+        std::const_pointer_cast<S3BinaryCacheStore::Config>(shared_from_this())
+    });
+}
+
+static RegisterStoreImplementation<S3BinaryCacheStoreImpl::Config> regS3BinaryCacheStore;
 
 }
 

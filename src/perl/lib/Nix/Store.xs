@@ -1,6 +1,3 @@
-#include "config-util.hh"
-#include "config-store.hh"
-
 #include "EXTERN.h"
 #include "perl.h"
 #include "XSUB.h"
@@ -9,11 +6,11 @@
 #undef do_open
 #undef do_close
 
-#include "derivations.hh"
-#include "realisation.hh"
-#include "globals.hh"
-#include "store-api.hh"
-#include "posix-source-accessor.hh"
+#include "nix/store/derivations.hh"
+#include "nix/store/realisation.hh"
+#include "nix/store/globals.hh"
+#include "nix/store/store-open.hh"
+#include "nix/util/posix-source-accessor.hh"
 
 #include <sodium.h>
 #include <nlohmann/json.hpp>
@@ -194,7 +191,7 @@ StoreWrapper::computeFSClosure(int flipDirection, int includeOutputs, ...)
     PPCODE:
         try {
             StorePathSet paths;
-            for (int n = 2; n < items; ++n)
+            for (int n = 3; n < items; ++n)
                 THIS->store->computeFSClosure(THIS->store->parseStorePath(SvPV_nolen(ST(n))), paths, flipDirection, includeOutputs);
             for (auto & i : paths)
                 XPUSHs(sv_2mortal(newSVpv(THIS->store->printStorePath(i).c_str(), 0)));
@@ -208,7 +205,7 @@ StoreWrapper::topoSortPaths(...)
     PPCODE:
         try {
             StorePathSet paths;
-            for (int n = 0; n < items; ++n) paths.insert(THIS->store->parseStorePath(SvPV_nolen(ST(n))));
+            for (int n = 1; n < items; ++n) paths.insert(THIS->store->parseStorePath(SvPV_nolen(ST(n))));
             auto sorted = THIS->store->topoSortPaths(paths);
             for (auto & i : sorted)
                 XPUSHs(sv_2mortal(newSVpv(THIS->store->printStorePath(i).c_str(), 0)));
@@ -234,7 +231,7 @@ StoreWrapper::exportPaths(int fd, ...)
     PPCODE:
         try {
             StorePathSet paths;
-            for (int n = 1; n < items; ++n) paths.insert(THIS->store->parseStorePath(SvPV_nolen(ST(n))));
+            for (int n = 2; n < items; ++n) paths.insert(THIS->store->parseStorePath(SvPV_nolen(ST(n))));
             FdSink sink(fd);
             THIS->store->exportPaths(paths, sink);
         } catch (Error & e) {

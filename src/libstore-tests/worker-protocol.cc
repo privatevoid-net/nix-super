@@ -4,13 +4,13 @@
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
 
-#include "worker-protocol.hh"
-#include "worker-protocol-connection.hh"
-#include "worker-protocol-impl.hh"
-#include "derived-path.hh"
-#include "build-result.hh"
-#include "tests/protocol.hh"
-#include "tests/characterization.hh"
+#include "nix/store/worker-protocol.hh"
+#include "nix/store/worker-protocol-connection.hh"
+#include "nix/store/worker-protocol-impl.hh"
+#include "nix/store/derived-path.hh"
+#include "nix/store/build-result.hh"
+#include "nix/store/tests/protocol.hh"
+#include "nix/util/tests/characterization.hh"
 
 namespace nix {
 
@@ -38,6 +38,8 @@ VERSIONED_CHARACTERIZATION_TEST(
         "大白兔",
         "oh no \0\0\0 what was that!",
     }))
+
+#ifndef DOXYGEN_SKIP
 
 VERSIONED_CHARACTERIZATION_TEST(
     WorkerProtoTest,
@@ -68,6 +70,8 @@ VERSIONED_CHARACTERIZATION_TEST(
             .hash = hashString(HashAlgorithm::SHA256, "(...)"),
         },
     }))
+
+#endif
 
 VERSIONED_CHARACTERIZATION_TEST(
     WorkerProtoTest,
@@ -570,7 +574,7 @@ VERSIONED_CHARACTERIZATION_TEST(
     set,
     "set",
     defaultVersion,
-    (std::tuple<std::set<std::string>, std::set<std::string>, std::set<std::string>, std::set<std::set<std::string>>> {
+    (std::tuple<StringSet, StringSet, StringSet, std::set<StringSet>> {
         { },
         { "" },
         { "", "foo", "bar" },
@@ -681,7 +685,7 @@ TEST_F(WorkerProtoTest, handshake_features)
     toClient.create();
     toServer.create();
 
-    std::tuple<WorkerProto::Version, std::set<WorkerProto::Feature>> clientResult;
+    std::tuple<WorkerProto::Version, WorkerProto::FeatureSet> clientResult;
 
     auto clientThread = std::thread([&]() {
         FdSink out { toServer.writeSide.get() };
@@ -698,8 +702,8 @@ TEST_F(WorkerProtoTest, handshake_features)
     clientThread.join();
 
     EXPECT_EQ(clientResult, daemonResult);
-    EXPECT_EQ(std::get<0>(clientResult), 123);
-    EXPECT_EQ(std::get<1>(clientResult), std::set<WorkerProto::Feature>({"bar", "xyzzy"}));
+    EXPECT_EQ(std::get<0>(clientResult), 123u);
+    EXPECT_EQ(std::get<1>(clientResult), WorkerProto::FeatureSet({"bar", "xyzzy"}));
 }
 
 /// Has to be a `BufferedSink` for handshake.

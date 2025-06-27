@@ -3,16 +3,16 @@
 : "${file?must be defined by caller (remote building test case using this)}"
 
 requireSandboxSupport
+requiresUnprivilegedUserNamespaces
 [[ "${busybox-}" =~ busybox ]] || skipTest "no busybox"
 
 # Avoid store dir being inside sandbox build-dir
 unset NIX_STORE_DIR
-unset NIX_STATE_DIR
 
 function join_by { local d=$1; shift; echo -n "$1"; shift; printf "%s" "${@/#/$d}"; }
 
 EXTRA_SYSTEM_FEATURES=()
-if [[ -n "${CONTENT_ADDRESSED-}" ]]; then
+if [[ -n "${NIX_TESTS_CA_BY_DEFAULT-}" ]]; then
     EXTRA_SYSTEM_FEATURES=("ca-derivations")
 fi
 
@@ -26,6 +26,7 @@ builders=(
 
 chmod -R +w "$TEST_ROOT/machine"* || true
 rm -rf "$TEST_ROOT/machine"* || true
+
 
 # Note: ssh://localhost bypasses ssh, directly invoking nix-store as a
 # child process. This allows us to test LegacySSHStore::buildDerivation().
@@ -83,6 +84,7 @@ out="$(nix-build 2>&1 failing.nix \
   --arg busybox "$busybox")" || true
 
 [[ "$out" =~ .*"note: keeping build directory".* ]]
+[[ "$out" =~ .*"The failed build directory was kept on the remote builder due to".* ]]
 
 build_dir="$(grep "note: keeping build" <<< "$out" | sed -E "s/^(.*)note: keeping build directory '(.*)'(.*)$/\2/")"
 [[ "foo" = $(<"$build_dir"/bar) ]]

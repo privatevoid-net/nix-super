@@ -1,22 +1,23 @@
-#include "users.hh"
-#include "attr-path.hh"
-#include "common-eval-args.hh"
-#include "derivations.hh"
-#include "eval.hh"
-#include "get-drvs.hh"
-#include "globals.hh"
-#include "names.hh"
-#include "profiles.hh"
-#include "path-with-outputs.hh"
-#include "shared.hh"
-#include "store-api.hh"
-#include "local-fs-store.hh"
+#include "nix/util/users.hh"
+#include "nix/expr/attr-path.hh"
+#include "nix/cmd/common-eval-args.hh"
+#include "nix/store/derivations.hh"
+#include "nix/expr/eval.hh"
+#include "nix/expr/get-drvs.hh"
+#include "nix/store/globals.hh"
+#include "nix/store/names.hh"
+#include "nix/store/profiles.hh"
+#include "nix/store/path-with-outputs.hh"
+#include "nix/main/shared.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/local-fs-store.hh"
 #include "user-env.hh"
-#include "value-to-json.hh"
-#include "xml-writer.hh"
-#include "legacy.hh"
-#include "eval-settings.hh" // for defexpr
-#include "terminal.hh"
+#include "nix/expr/value-to-json.hh"
+#include "nix/util/xml-writer.hh"
+#include "nix/cmd/legacy.hh"
+#include "nix/expr/eval-settings.hh" // for defexpr
+#include "nix/util/terminal.hh"
+#include "man-pages.hh"
 
 #include <cerrno>
 #include <ctime>
@@ -237,9 +238,9 @@ static void checkSelectorUse(DrvNames & selectors)
 
 namespace {
 
-std::set<std::string> searchByPrefix(const PackageInfos & allElems, std::string_view prefix) {
+StringSet searchByPrefix(const PackageInfos & allElems, std::string_view prefix) {
     constexpr std::size_t maxResults = 3;
-    std::set<std::string> result;
+    StringSet result;
     for (const auto & packageInfo : allElems) {
         const auto drvName = DrvName { packageInfo.queryName() };
         if (hasPrefix(drvName.name, prefix)) {
@@ -481,12 +482,13 @@ static void printMissing(EvalState & state, PackageInfos & elems)
 {
     std::vector<DerivedPath> targets;
     for (auto & i : elems)
-        if (auto drvPath = i.queryDrvPath())
-            targets.emplace_back(DerivedPath::Built{
+        if (auto drvPath = i.queryDrvPath()) {
+            auto path = DerivedPath::Built{
                 .drvPath = makeConstantStorePathRef(*drvPath),
                 .outputs = OutputsSpec::All { },
-            });
-        else
+            };
+            targets.emplace_back(std::move(path));
+        } else
             targets.emplace_back(DerivedPath::Opaque{
                 .path = i.queryOutPath(),
             });
@@ -500,9 +502,17 @@ static bool keep(PackageInfo & drv)
     return drv.queryMetaBool("keep", false);
 }
 
+static void setMetaFlag(EvalState & state, PackageInfo & drv,
+    const std::string & name, const std::string & value)
+{
+    auto v = state.allocValue();
+    v->mkString(value);
+    drv.setMeta(name, v);
+}
+
 
 static void installDerivations(Globals & globals,
-    const Strings & args, const Path & profile)
+    const Strings & args, const Path & profile, std::optional<int> priority)
 {
     debug("installing derivations");
 
@@ -526,6 +536,11 @@ static void installDerivations(Globals & globals,
         newNames.insert(DrvName(i.queryName()).name);
     }
 
+    if (priority) {
+        for (auto & drv : newElems) {
+            setMetaFlag(*globals.state, drv, "priority", std::to_string((priority.value())));
+        }
+    }
 
     while (true) {
         auto lockToken = optimisticLockProfile(profile);
@@ -563,6 +578,7 @@ static void installDerivations(Globals & globals,
 
 static void opInstall(Globals & globals, Strings opFlags, Strings opArgs)
 {
+    std::optional<int> priority;
     for (Strings::iterator i = opFlags.begin(); i != opFlags.end(); ) {
         auto arg = *i++;
         if (parseInstallSourceOptions(globals, i, opFlags, arg)) ;
@@ -570,10 +586,17 @@ static void opInstall(Globals & globals, Strings opFlags, Strings opArgs)
             globals.preserveInstalled = true;
         else if (arg == "--remove-all" || arg == "-r")
             globals.removeAll = true;
+        else if (arg == "--priority") {
+            if (i == opFlags.end())
+                throw UsageError("'%1%' requires an argument", arg);
+            priority = string2Int<int>(*i++);
+            if (!priority)
+                throw UsageError("'--priority' requires an integer argument");
+        }
         else throw UsageError("unknown flag '%1%'", arg);
     }
 
-    installDerivations(globals, opArgs, globals.profile);
+    installDerivations(globals, opArgs, globals.profile, priority);
 }
 
 
@@ -685,15 +708,6 @@ static void opUpgrade(Globals & globals, Strings opFlags, Strings opArgs)
     }
 
     upgradeDerivations(globals, opArgs, upgradeType);
-}
-
-
-static void setMetaFlag(EvalState & state, PackageInfo & drv,
-    const std::string & name, const std::string & value)
-{
-    auto v = state.allocValue();
-    v->mkString(value);
-    drv.setMeta(name, v);
 }
 
 
@@ -1506,7 +1520,8 @@ static int main_nix_env(int argc, char * * argv)
                 opFlags.push_back(*arg);
                 /* FIXME: hacky */
                 if (*arg == "--from-profile" ||
-                    (op == opQuery && (*arg == "--attr" || *arg == "-A")))
+                    (op == opQuery && (*arg == "--attr" || *arg == "-A")) ||
+                    (op == opInstall && (*arg == "--priority")))
                     opFlags.push_back(getArg(*arg, arg, end));
             }
             else

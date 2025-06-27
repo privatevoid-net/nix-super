@@ -1,11 +1,10 @@
-#include "command-installable-value.hh"
-#include "common-args.hh"
-#include "shared.hh"
-#include "store-api.hh"
-#include "eval.hh"
-#include "eval-inline.hh"
-#include "value-to-json.hh"
-#include "progress-bar.hh"
+#include "nix/cmd/command-installable-value.hh"
+#include "nix/main/common-args.hh"
+#include "nix/main/shared.hh"
+#include "nix/store/store-api.hh"
+#include "nix/expr/eval.hh"
+#include "nix/expr/eval-inline.hh"
+#include "nix/expr/value-to-json.hh"
 
 #include <nlohmann/json.hpp>
 
@@ -17,7 +16,7 @@ struct CmdEval : MixJSON, InstallableValueCommand, MixReadOnlyOption
 {
     bool raw = false;
     std::optional<std::string> apply;
-    std::optional<fs::path> writeTo;
+    std::optional<std::filesystem::path> writeTo;
 
     CmdEval() : InstallableValueCommand()
     {
@@ -75,21 +74,21 @@ struct CmdEval : MixJSON, InstallableValueCommand, MixReadOnlyOption
         }
 
         if (writeTo) {
-            stopProgressBar();
+            logger->stop();
 
-            if (fs::symlink_exists(*writeTo))
+            if (pathExists(*writeTo))
                 throw Error("path '%s' already exists", writeTo->string());
 
-            std::function<void(Value & v, const PosIdx pos, const fs::path & path)> recurse;
+            std::function<void(Value & v, const PosIdx pos, const std::filesystem::path & path)> recurse;
 
-            recurse = [&](Value & v, const PosIdx pos, const fs::path & path)
+            recurse = [&](Value & v, const PosIdx pos, const std::filesystem::path & path)
             {
                 state->forceValue(v, pos);
                 if (v.type() == nString)
                     // FIXME: disallow strings with contexts?
                     writeFile(path.string(), v.string_view());
                 else if (v.type() == nAttrs) {
-                    [[maybe_unused]] bool directoryCreated = fs::create_directory(path);
+                    [[maybe_unused]] bool directoryCreated = std::filesystem::create_directory(path);
                     // Directory should not already exist
                     assert(directoryCreated);
                     for (auto & attr : *v.attrs()) {
@@ -114,12 +113,12 @@ struct CmdEval : MixJSON, InstallableValueCommand, MixReadOnlyOption
         }
 
         else if (raw) {
-            stopProgressBar();
+            logger->stop();
             writeFull(getStandardOutput(), *state->coerceToString(noPos, *v, context, "while generating the eval command output"));
         }
 
         else if (json) {
-            logger->cout("%s", printValueAsJSON(*state, true, *v, pos, context, false));
+            printJSON(printValueAsJSON(*state, true, *v, pos, context, false));
         }
 
         else {

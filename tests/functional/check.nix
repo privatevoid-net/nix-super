@@ -1,46 +1,45 @@
-{checkBuildId ? 0}:
+{
+  checkBuildId ? 0,
+}:
 
-with import "${builtins.getEnv "_NIX_TEST_BUILD_DIR"}/config.nix";
+with import ./config.nix;
 
 {
   nondeterministic = mkDerivation {
     inherit checkBuildId;
     name = "nondeterministic";
-    buildCommand =
-      ''
-        mkdir $out
-        date +%s.%N > $out/date
-        echo "CHECK_TMPDIR=$TMPDIR"
-        echo "checkBuildId=$checkBuildId"
-        echo "$checkBuildId" > $TMPDIR/checkBuildId
-      '';
+    buildCommand = ''
+      mkdir $out
+      date +%s.%N > $out/date
+      echo "CHECK_TMPDIR=$TMPDIR"
+      echo "checkBuildId=$checkBuildId"
+      echo "$checkBuildId" > $TMPDIR/checkBuildId
+    '';
   };
 
   deterministic = mkDerivation {
     inherit checkBuildId;
     name = "deterministic";
-    buildCommand =
-      ''
-        mkdir $out
-        echo date > $out/date
-        echo "CHECK_TMPDIR=$TMPDIR"
-        echo "checkBuildId=$checkBuildId"
-        echo "$checkBuildId" > $TMPDIR/checkBuildId
-      '';
+    buildCommand = ''
+      mkdir $out
+      echo date > $out/date
+      echo "CHECK_TMPDIR=$TMPDIR"
+      echo "checkBuildId=$checkBuildId"
+      echo "$checkBuildId" > $TMPDIR/checkBuildId
+    '';
   };
 
   failed = mkDerivation {
     inherit checkBuildId;
     name = "failed";
-    buildCommand =
-      ''
-        mkdir $out
-        echo date > $out/date
-        echo "CHECK_TMPDIR=$TMPDIR"
-        echo "checkBuildId=$checkBuildId"
-        echo "$checkBuildId" > $TMPDIR/checkBuildId
-        false
-      '';
+    buildCommand = ''
+      mkdir $out
+      echo date > $out/date
+      echo "CHECK_TMPDIR=$TMPDIR"
+      echo "checkBuildId=$checkBuildId"
+      echo "$checkBuildId" > $TMPDIR/checkBuildId
+      false
+    '';
   };
 
   hashmismatch = import <nix/fetchurl.nix> {

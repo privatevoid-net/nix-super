@@ -1,11 +1,11 @@
 #include <unordered_set>
 #include <queue>
 
-#include "command.hh"
-#include "eval.hh"
+#include "nix/cmd/command.hh"
+#include "nix/expr/eval.hh"
 #include "run.hh"
-#include "strings.hh"
-#include "executable-path.hh"
+#include "nix/util/strings.hh"
+#include "nix/util/executable-path.hh"
 
 using namespace nix;
 
@@ -44,9 +44,10 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             .description = "Command and arguments to be executed, defaulting to `$SHELL`",
             .labels = {"command", "args"},
             .handler = {[&](std::vector<std::string> ss) {
-                if (ss.empty()) throw UsageError("--command requires at least one argument");
+                if (ss.empty())
+                    throw UsageError("--command requires at least one argument");
                 command = ss;
-            }}
+            }},
         });
     }
 
@@ -64,9 +65,10 @@ struct CmdShell : InstallablesCommand, MixEnvironment
 
     void run(ref<Store> store, Installables && installables) override
     {
-        auto outPaths = Installable::toStorePaths(getEvalStore(), store, Realise::Outputs, OperateOn::Output, installables);
+        auto state = getEvalState();
 
-        auto accessor = store->getFSAccessor();
+        auto outPaths =
+            Installable::toStorePaths(getEvalStore(), store, Realise::Outputs, OperateOn::Output, installables);
 
         std::unordered_set<StorePath> done;
         std::queue<StorePath> todo;
@@ -107,21 +109,24 @@ struct CmdShell : InstallablesCommand, MixEnvironment
             todo.pop();
             if (!done.insert(path).second) continue;
 
-            if (true)
-                pathAdditions.push_back(store->printStorePath(path) + "/bin");
+            auto binDir = state->storeFS->resolveSymlinks(CanonPath(store->printStorePath(path)) / "bin");
+            if (!store->isInStore(binDir.abs()))
+                throw Error("path '%s' is not in the Nix store", binDir);
+
+            pathAdditions.push_back(binDir.abs());
 
             auto pathString = store->printStorePath(path);
 
             for (auto const& pathV : extraPathVarMapping) {
-                auto realPath = accessor->resolveSymlinks(CanonPath(pathString + pathV.second));
-                if (auto st = accessor->maybeLstat(realPath); st)
+                auto realPath = state->storeFS->resolveSymlinks(CanonPath(pathString + pathV.second));
+                if (auto st = state->storeFS->maybeLstat(realPath); st)
                     extraPathVars[pathV.first].push_front(pathString + pathV.second);
             }
 
-            auto propPath = accessor->resolveSymlinks(
+            auto propPath = state->storeFS->resolveSymlinks(
                 CanonPath(store->printStorePath(path)) / "nix-support" / "propagated-user-env-packages");
-            if (auto st = accessor->maybeLstat(propPath); st && st->type == SourceAccessor::tRegular) {
-                for (auto & p : tokenizeString<Paths>(accessor->readFile(propPath)))
+            if (auto st = state->storeFS->maybeLstat(propPath); st && st->type == SourceAccessor::tRegular) {
+                for (auto & p : tokenizeString<Paths>(state->storeFS->readFile(propPath)))
                     todo.push(store->parseStorePath(p));
             }
         }
@@ -134,7 +139,7 @@ struct CmdShell : InstallablesCommand, MixEnvironment
 
         for (auto const& pathV : extraPathVarMapping) {
             if (!extraPathVars[pathV.first].empty()) {
-                setenv(pathV.first.c_str(), concatStringsSep(":", extraPathVars[pathV.first]).c_str(), 1);
+                setEnvOs(pathV.first, concatStringsSep(":", extraPathVars[pathV.first]).c_str());
             }
         }
 
@@ -142,6 +147,10 @@ struct CmdShell : InstallablesCommand, MixEnvironment
 
         Strings args;
         for (auto & arg : command) args.push_back(arg);
+
+        // Release our references to eval caches to ensure they are persisted to disk, because
+        // we are about to exec out of this process without running C++ destructors.
+        state->evalCaches.clear();
 
         execProgramInStore(store, UseLookupPath::Use, *command.begin(), args);
     }

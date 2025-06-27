@@ -1,22 +1,24 @@
-#include "archive.hh"
-#include "derivations.hh"
+#include "nix/util/archive.hh"
+#include "nix/store/derivations.hh"
 #include "dotgraph.hh"
-#include "globals.hh"
-#include "store-cast.hh"
-#include "local-fs-store.hh"
-#include "log-store.hh"
-#include "serve-protocol.hh"
-#include "serve-protocol-connection.hh"
-#include "shared.hh"
+#include "nix/store/globals.hh"
+#include "nix/store/store-open.hh"
+#include "nix/store/store-cast.hh"
+#include "nix/store/local-fs-store.hh"
+#include "nix/store/log-store.hh"
+#include "nix/store/serve-protocol.hh"
+#include "nix/store/serve-protocol-connection.hh"
+#include "nix/main/shared.hh"
 #include "graphml.hh"
-#include "legacy.hh"
-#include "posix-source-accessor.hh"
-#include "path-with-outputs.hh"
+#include "nix/cmd/legacy.hh"
+#include "nix/util/posix-source-accessor.hh"
+#include "nix/store/path-with-outputs.hh"
+#include "man-pages.hh"
 
 #ifndef _WIN32 // TODO implement on Windows or provide allowed-to-noop interface
-# include "local-store.hh"
-# include "monitor-fd.hh"
-# include "posix-fs-canonicalise.hh"
+# include "nix/store/local-store.hh"
+# include "nix/util/monitor-fd.hh"
+# include "nix/store/posix-fs-canonicalise.hh"
 #endif
 
 #include <iostream>
@@ -26,9 +28,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#include "build-result.hh"
-#include "exit.hh"
-#include "serve-protocol-impl.hh"
+#include "nix/store/build-result.hh"
+#include "nix/util/exit.hh"
+#include "nix/store/serve-protocol-impl.hh"
 
 namespace nix_store {
 
@@ -183,9 +185,9 @@ static void opAdd(Strings opFlags, Strings opArgs)
     if (!opFlags.empty()) throw UsageError("unknown flag");
 
     for (auto & i : opArgs) {
-        auto [accessor, canonPath] = PosixSourceAccessor::createAtRoot(i);
+        auto sourcePath = PosixSourceAccessor::createAtRoot(makeParentCanonical(i));
         cout << fmt("%s\n", store->printStorePath(store->addToStore(
-            std::string(baseNameOf(i)), {accessor, canonPath})));
+            std::string(baseNameOf(i)), sourcePath)));
     }
 }
 
@@ -207,10 +209,10 @@ static void opAddFixed(Strings opFlags, Strings opArgs)
     opArgs.pop_front();
 
     for (auto & i : opArgs) {
-        auto [accessor, canonPath] = PosixSourceAccessor::createAtRoot(i);
+        auto sourcePath = PosixSourceAccessor::createAtRoot(makeParentCanonical(i));
         std::cout << fmt("%s\n", store->printStorePath(store->addToStoreSlow(
             baseNameOf(i),
-            {accessor, canonPath},
+            sourcePath,
             method,
             hashAlgo).path));
     }
@@ -222,7 +224,7 @@ static void opPrintFixedPath(Strings opFlags, Strings opArgs)
 {
     auto method = FileIngestionMethod::Flat;
 
-    for (auto i : opFlags)
+    for (const auto & i : opFlags)
         if (i == "--recursive") method = FileIngestionMethod::NixArchive;
         else throw UsageError("unknown flag '%1%'", i);
 
@@ -252,7 +254,7 @@ static StorePathSet maybeUseOutputs(const StorePath & storePath, bool useOutput,
             return store->queryDerivationOutputs(storePath);
         for (auto & i : drv.outputsAndOptPaths(*store)) {
             if (!i.second.second)
-                throw UsageError("Cannot use output path of floating content-addressed derivation until we know what it is (e.g. by building it)");
+                throw UsageError("Cannot use output path of floating content-addressing derivation until we know what it is (e.g. by building it)");
             outputs.insert(*i.second.second);
         }
         return outputs;
@@ -496,7 +498,7 @@ static void opPrintEnv(Strings opFlags, Strings opArgs)
     /* Print each environment variable in the derivation in a format
      * that can be sourced by the shell. */
     for (auto & i : drv.env)
-        logger->cout("export %1%; %1%=%2%\n", i.first, shellEscape(i.second));
+        logger->cout("export %1%; %1%=%2%\n", i.first, escapeShellArgAlways(i.second));
 
     /* Also output the arguments.  This doesn't preserve whitespace in
        arguments. */
@@ -505,7 +507,7 @@ static void opPrintEnv(Strings opFlags, Strings opArgs)
     for (auto & i : drv.args) {
         if (!first) cout << ' ';
         first = false;
-        cout << shellEscape(i);
+        cout << escapeShellArgAlways(i);
     }
     cout << "'\n";
 }
@@ -562,7 +564,7 @@ static void registerValidity(bool reregister, bool hashGiven, bool canonicalise)
 #endif
             if (!hashGiven) {
                 HashResult hash = hashPath(
-                    {store->getFSAccessor(false), CanonPath { store->printStorePath(info->path) }},
+                    {store->getFSAccessor(false), CanonPath { info->path.to_string() }},
                     FileSerialisationMethod::NixArchive, HashAlgorithm::SHA256);
                 info->narHash = hash.first;
                 info->narSize = hash.second;
@@ -860,7 +862,7 @@ static void opServe(Strings opFlags, Strings opArgs)
 
         auto options = ServeProto::Serialise<ServeProto::BuildOptions>::read(*store, rconn);
 
-        // Only certain feilds get initialized based on the protocol
+        // Only certain fields get initialized based on the protocol
         // version. This is why not all the code below is unconditional.
         // See how the serialization logic in
         // `ServeProto::Serialise<ServeProto::BuildOptions>` matches

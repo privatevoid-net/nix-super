@@ -1,12 +1,16 @@
 # This is just a stub project to include all the others as subprojects
 # for development shell purposes
 
-project('nix-dev-shell', 'cpp',
+project(
+  'nix-dev-shell',
+  'cpp',
   version : files('.version'),
   subproject_dir : 'src',
   default_options : [
     'localstatedir=/nix/var',
-  ]
+    # hack for trailing newline
+  ],
+  meson_version : '>= 1.1',
 )
 
 # Internal Libraries
@@ -33,7 +37,9 @@ endif
 # External C wrapper libraries
 subproject('libutil-c')
 subproject('libstore-c')
+subproject('libfetchers-c')
 subproject('libexpr-c')
+subproject('libflake-c')
 subproject('libmain-c')
 
 # Language Bindings

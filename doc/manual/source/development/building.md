@@ -28,27 +28,27 @@ $ nix-shell --attr devShells.x86_64-linux.native-clangStdenvPackages
 
 > **Note**
 >
-> You can use `native-ccacheStdenvPackages` to drastically improve rebuild time.
+> You can use `native-ccacheStdenv` to drastically improve rebuild time.
 > By default, [ccache](https://ccache.dev) keeps artifacts in `~/.cache/ccache/`.
 
 To build Nix itself in this shell:
 
 ```console
 [nix-shell]$ mesonFlags+=" --prefix=$(pwd)/outputs/out"
-[nix-shell]$ dontAddPrefix=1 mesonConfigurePhase
-[nix-shell]$ ninjaBuildPhase
+[nix-shell]$ dontAddPrefix=1 configurePhase
+[nix-shell]$ buildPhase
 ```
 
 To test it:
 
 ```console
-[nix-shell]$ mesonCheckPhase
+[nix-shell]$ checkPhase
 ```
 
 To install it in `$(pwd)/outputs`:
 
 ```console
-[nix-shell]$ ninjaInstallPhase
+[nix-shell]$ installPhase
 [nix-shell]$ ./outputs/out/bin/nix --version
 nix (Nix) 2.12
 ```
@@ -79,7 +79,7 @@ This shell also adds `./outputs/bin/nix` to your `$PATH` so you can run `nix` im
 To get a shell with one of the other [supported compilation environments](#compilation-environments):
 
 ```console
-$ nix develop .#native-clangStdenvPackages
+$ nix develop .#native-clangStdenv
 ```
 
 > **Note**
@@ -90,20 +90,20 @@ $ nix develop .#native-clangStdenvPackages
 To build Nix itself in this shell:
 
 ```console
-[nix-shell]$ mesonConfigurePhase
-[nix-shell]$ ninjaBuildPhase
+[nix-shell]$ configurePhase
+[nix-shell]$ buildPhase
 ```
 
 To test it:
 
 ```console
-[nix-shell]$ mesonCheckPhase
+[nix-shell]$ checkPhase
 ```
 
 To install it in `$(pwd)/outputs`:
 
 ```console
-[nix-shell]$ ninjaInstallPhase
+[nix-shell]$ installPhase
 [nix-shell]$ nix --version
 nix (Nix) 2.12
 ```
@@ -167,35 +167,25 @@ It is useful to perform multiple cross and native builds on the same source tree
 for example to ensure that better support for one platform doesn't break the build for another.
 Meson thankfully makes this very easy by confining all build products to the build directory --- one simple shares the source directory between multiple build directories, each of which contains the build for Nix to a different platform.
 
-Nixpkgs's `mesonConfigurePhase` always chooses `build` in the current directory as the name and location of the build.
-This makes having multiple build directories slightly more inconvenient.
-The good news is that Meson/Ninja seem to cope well with relocating the build directory after it is created.
+Here's how to do that:
 
-Here's how to do that
+1. Instruct Nixpkgs's infra where we want Meson to put its build directory
+
+   ```bash
+   mesonBuildDir=build-my-variant-name
+   ```
 
 1. Configure as usual
 
    ```bash
-   mesonConfigurePhase
-   ```
-
-2. Rename the build directory
-
-   ```bash
-   cd .. # since `mesonConfigurePhase` cd'd inside
-   mv build build-linux # or whatever name we want
-   cd build-linux
+   configurePhase
    ```
 
 3. Build as usual
 
    ```bash
-   ninjaBuildPhase
+   buildPhase
    ```
-
-> **N.B.**
-> [`nixpkgs#335818`](https://github.com/NixOS/nixpkgs/issues/335818) tracks giving `mesonConfigurePhase` proper support for custom build directories.
-> When it is fixed, we can simplify these instructions and then remove this notice.
 
 ## System type
 
@@ -205,19 +195,25 @@ Nix uses a string with the following format to identify the *system type* or *pl
 <cpu>-<os>[-<abi>]
 ```
 
-It is set when Nix is compiled for the given system, and based on the output of [`config.guess`](https://github.com/nixos/nix/blob/master/config/config.guess) ([upstream](https://git.savannah.gnu.org/cgit/config.git/tree/config.guess)):
+It is set when Nix is compiled for the given system, and based on the output of Meson's [`host_machine` information](https://mesonbuild.com/Reference-manual_builtin_host_machine.html)>
 
 ```
 <cpu>-<vendor>-<os>[<version>][-<abi>]
 ```
 
-When Nix is built such that `./configure` is passed any of the `--host`, `--build`, `--target` options, the value is based on the output of [`config.sub`](https://github.com/nixos/nix/blob/master/config/config.sub) ([upstream](https://git.savannah.gnu.org/cgit/config.git/tree/config.sub)):
+When cross-compiling Nix with Meson for local development, you need to specify a [cross-file](https://mesonbuild.com/Cross-compilation.html) using the `--cross-file` option. Cross-files define the target architecture and toolchain. When cross-compiling Nix with Nix, Nixpkgs takes care of this for you.
+
+In the nix flake we also have some cross-compilation targets available:
 
 ```
-<cpu>-<vendor>[-<kernel>]-<os>
+nix build .#nix-everything-riscv64-unknown-linux-gnu
+nix build .#nix-everything-armv7l-unknown-linux-gnueabihf
+nix build .#nix-everything-armv7l-unknown-linux-gnueabihf
+nix build .#nix-everything-x86_64-unknown-freebsd
+nix build .#nix-everything-x86_64-w64-mingw32
 ```
 
-For historic reasons and backward-compatibility, some CPU and OS identifiers are translated from the GNU Autotools naming convention in [`configure.ac`](https://github.com/nixos/nix/blob/master/configure.ac) as follows:
+For historic reasons and backward-compatibility, some CPU and OS identifiers are translated as follows:
 
 | `config.guess`             | Nix                 |
 |----------------------------|---------------------|
@@ -240,18 +236,18 @@ Nix can be compiled using multiple environments:
 To build with one of those environments, you can use
 
 ```console
-$ nix build .#nix-ccacheStdenv
+$ nix build .#nix-cli-ccacheStdenv
 ```
 
 for flake-enabled Nix, or
 
 ```console
-$ nix-build --attr nix-ccacheStdenv
+$ nix-build --attr nix-cli-ccacheStdenv
 ```
 
 for classic Nix.
 
-You can use any of the other supported environments in place of `nix-ccacheStdenv`.
+You can use any of the other supported environments in place of `nix-cli-ccacheStdenv`.
 
 ## Editor integration
 
@@ -261,7 +257,8 @@ See [supported compilation environments](#compilation-environments) and instruct
 To use the LSP with your editor, you will want a `compile_commands.json` file telling `clangd` how we are compiling the code.
 Meson's configure always produces this inside the build directory.
 
-Configure your editor to use the `clangd` from the `.#native-clangStdenvPackages` shell. You can do that either by running it inside the development shell, or by using [nix-direnv](https://github.com/nix-community/nix-direnv) and [the appropriate editor plugin](https://github.com/direnv/direnv/wiki#editor-integration).
+Configure your editor to use the `clangd` from the `.#native-clangStdenv` shell.
+You can do that either by running it inside the development shell, or by using [nix-direnv](https://github.com/nix-community/nix-direnv) and [the appropriate editor plugin](https://github.com/direnv/direnv/wiki#editor-integration).
 
 > **Note**
 >
@@ -277,6 +274,8 @@ You may run the formatters as a one-off using:
 ./maintainers/format.sh
 ```
 
+### Pre-commit hooks
+
 If you'd like to run the formatters before every commit, install the hooks:
 
 ```
@@ -291,3 +290,30 @@ If it fails, run `git add --patch` to approve the suggestions _and commit again_
 To refresh pre-commit hook's config file, do the following:
 1. Exit the development shell and start it again by running `nix develop`.
 2. If you also use the pre-commit hook, also run `pre-commit-hooks-install` again.
+
+### VSCode
+
+Insert the following json into your `.vscode/settings.json` file to configure `nixfmt`.
+This will be picked up by the _Format Document_ command, `"editor.formatOnSave"`, etc.
+
+```json
+{
+  "nix.formatterPath": "nixfmt",
+  "nix.serverSettings": {
+    "nixd": {
+      "formatting": {
+        "command": [
+          "nixfmt"
+        ],
+      },
+    },
+    "nil": {
+      "formatting": {
+        "command": [
+          "nixfmt"
+        ],
+      },
+    },
+  },
+}
+```
