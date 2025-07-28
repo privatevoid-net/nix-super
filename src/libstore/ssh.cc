@@ -5,6 +5,8 @@
 #include "nix/util/util.hh"
 #include "nix/util/exec.hh"
 
+#include "store-config-private.hh"
+
 namespace nix {
 
 static std::string parsePublicHostKey(std::string_view host, std::string_view sshPublicHostKey)
@@ -91,7 +93,11 @@ Strings createSSHEnv()
     // Technically, we don't need that, and we could reinvoke ourselves to print
     // "started". Self-reinvocation is tricky with library consumers, but mostly
     // solved; refer to the development history of nixExePath in libstore/globals.cc.
+#if (defined(__linux__) || defined(__FreeBSD__)) && defined(EXTERNAL_HELPER_SHELL)
+    env.insert_or_assign("SHELL", EXTERNAL_HELPER_SHELL);
+#else
     env.insert_or_assign("SHELL", "/bin/sh");
+#endif
 
     Strings r;
     for (auto & [k, v] : env) {

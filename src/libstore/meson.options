@@ -12,6 +12,10 @@ option('sandbox-shell', type : 'string', value : 'busybox',
   description : 'path to a statically-linked shell to use as /bin/sh in sandboxes (usually busybox)',
 )
 
+option('external-helper-shell', type : 'string', value : 'sh',
+  description : 'path to a shell to use as SHELL when calling certain external programs (usually busybox)',
+)
+
 option('store-dir', type : 'string', value : '/nix/store',
   description : 'path of the Nix store',
 )

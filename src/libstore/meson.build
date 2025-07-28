@@ -156,6 +156,7 @@ foreach header : [
 endforeach
 
 busybox = find_program(get_option('sandbox-shell'), required : false)
+extSh = find_program(get_option('external-helper-shell'), required : false)
 
 configdata_priv.set('HAVE_EMBEDDED_SANDBOX_SHELL', get_option('embedded-sandbox-shell').to_int())
 
@@ -163,6 +164,10 @@ if get_option('embedded-sandbox-shell')
   configdata_priv.set_quoted('SANDBOX_SHELL', '__embedded_sandbox_shell__')
 elif busybox.found()
   configdata_priv.set_quoted('SANDBOX_SHELL', busybox.full_path())
+endif
+
+if extSh.found()
+  configdata_priv.set_quoted('EXTERNAL_HELPER_SHELL', extSh.full_path())
 endif
 
 if get_option('embedded-sandbox-shell')

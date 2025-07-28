@@ -81,6 +81,7 @@ mkMesonLibrary (finalAttrs: {
     ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [
       (lib.mesonOption "sandbox-shell" "${busybox-sandbox-shell}/bin/busybox")
+      (lib.mesonOption "external-helper-shell" "${busybox-sandbox-shell}/bin/sh")
     ];
 
   meta = {
