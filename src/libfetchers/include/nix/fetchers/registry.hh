@@ -2,9 +2,12 @@
 ///@file
 
 #include "nix/util/types.hh"
+#include "nix/util/source-path.hh"
 #include "nix/fetchers/fetchers.hh"
 
-namespace nix { class Store; }
+namespace nix {
+class Store;
+}
 
 namespace nix::fetchers {
 
@@ -34,18 +37,14 @@ struct Registry
     Registry(const Settings & settings, RegistryType type)
         : settings{settings}
         , type{type}
-    { }
+    {
+    }
 
-    static std::shared_ptr<Registry> read(
-        const Settings & settings,
-        const Path & path, RegistryType type);
+    static std::shared_ptr<Registry> read(const Settings & settings, const SourcePath & path, RegistryType type);
 
     void write(const Path & path);
 
-    void add(
-        const Input & from,
-        const Input & to,
-        const Attrs & extraAttrs);
+    void add(const Input & from, const Input & to, const Attrs & extraAttrs);
 
     void remove(const Input & input);
 };
@@ -60,10 +59,7 @@ Path getUserRegistryPath();
 
 Registries getRegistries(const Settings & settings, ref<Store> store);
 
-void overrideRegistry(
-    const Input & from,
-    const Input & to,
-    const Attrs & extraAttrs);
+void overrideRegistry(const Input & from, const Input & to, const Attrs & extraAttrs);
 
 enum class UseRegistries : int {
     No,
@@ -75,9 +71,6 @@ enum class UseRegistries : int {
  * Rewrite a flakeref using the registries. If `filter` is set, only
  * use the registries for which the filter function returns true.
  */
-std::pair<Input, Attrs> lookupInRegistries(
-    ref<Store> store,
-    const Input & input,
-    UseRegistries useRegistries);
+std::pair<Input, Attrs> lookupInRegistries(ref<Store> store, const Input & input, UseRegistries useRegistries);
 
-}
+} // namespace nix::fetchers

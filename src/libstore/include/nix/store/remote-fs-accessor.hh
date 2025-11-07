@@ -27,9 +27,13 @@ class RemoteFSAccessor : public SourceAccessor
 
 public:
 
-    RemoteFSAccessor(ref<Store> store,
-        bool requireValidPath = true,
-        const /* FIXME: use std::optional */ Path & cacheDir = "");
+    /**
+     * @return nullptr if the store does not contain any object at that path.
+     */
+    std::shared_ptr<SourceAccessor> accessObject(const StorePath & path);
+
+    RemoteFSAccessor(
+        ref<Store> store, bool requireValidPath = true, const /* FIXME: use std::optional */ Path & cacheDir = "");
 
     std::optional<Stat> maybeLstat(const CanonPath & path) override;
 
@@ -40,4 +44,4 @@ public:
     std::string readLink(const CanonPath & path) override;
 };
 
-}
+} // namespace nix

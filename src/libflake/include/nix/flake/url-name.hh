@@ -1,9 +1,8 @@
-#include "nix/util/url.hh"
-#include "nix/util/url-parts.hh"
-#include "nix/util/util.hh"
-#include "nix/util/split.hh"
+#include <optional>
+#include <string>
 
 namespace nix {
+struct ParsedURL;
 
 /**
  * Try to extract a reasonably unique and meaningful, human-readable
@@ -17,4 +16,4 @@ namespace nix {
  */
 std::optional<std::string> getNameFromURL(const ParsedURL & url);
 
-}
+} // namespace nix

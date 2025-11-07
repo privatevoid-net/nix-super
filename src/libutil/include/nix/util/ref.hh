@@ -17,39 +17,60 @@ private:
 
     std::shared_ptr<T> p;
 
-public:
-    explicit ref(const std::shared_ptr<T> & p)
-        : p(p)
+    void assertNonNull()
     {
         if (!p)
             throw std::invalid_argument("null pointer cast to ref");
+    }
+
+public:
+
+    using element_type = T;
+
+    explicit ref(const std::shared_ptr<T> & p)
+        : p(p)
+    {
+        assertNonNull();
+    }
+
+    explicit ref(std::shared_ptr<T> && p)
+        : p(std::move(p))
+    {
+        assertNonNull();
     }
 
     explicit ref(T * p)
         : p(p)
     {
-        if (!p)
-            throw std::invalid_argument("null pointer cast to ref");
+        assertNonNull();
     }
 
-    T* operator ->() const
+    T * operator->() const
     {
         return &*p;
     }
 
-    T& operator *() const
+    T & operator*() const
     {
         return *p;
     }
 
-    operator std::shared_ptr<T> () const
+    std::shared_ptr<T> get_ptr() const &
     {
         return p;
     }
 
-    std::shared_ptr<T> get_ptr() const
+    std::shared_ptr<T> get_ptr() &&
     {
-        return p;
+        return std::move(p);
+    }
+
+    /**
+     * Convenience to avoid explicit `get_ptr()` call in some cases.
+     */
+    operator std::shared_ptr<T>(this auto && self)
+    {
+        return std::forward<decltype(self)>(self).get_ptr();
     }
 
     template<typename T2>
@@ -65,22 +86,22 @@ public:
     }
 
     template<typename T2>
-    operator ref<T2> () const
+    operator ref<T2>() const
     {
         return ref<T2>((std::shared_ptr<T2>) p);
     }
 
-    bool operator == (const ref<T> & other) const
+    bool operator==(const ref<T> & other) const
     {
         return p == other.p;
     }
 
-    bool operator != (const ref<T> & other) const
+    bool operator!=(const ref<T> & other) const
     {
         return p != other.p;
     }
 
-    auto operator <=> (const ref<T> & other) const
+    auto operator<=>(const ref<T> & other) const
     {
         return p <=> other.p;
     }
@@ -88,17 +109,14 @@ public:
 private:
 
     template<typename T2, typename... Args>
-    friend ref<T2>
-    make_ref(Args&&... args);
-
+    friend ref<T2> make_ref(Args &&... args);
 };
 
 template<typename T, typename... Args>
-inline ref<T>
-make_ref(Args&&... args)
+inline ref<T> make_ref(Args &&... args)
 {
     auto p = std::make_shared<T>(std::forward<Args>(args)...);
     return ref<T>(p);
 }
 
-}
+} // namespace nix

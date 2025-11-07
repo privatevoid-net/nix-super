@@ -1,5 +1,6 @@
 #include "nix/util/experimental-features.hh"
 #include "nix/util/fmt.hh"
+#include "nix/util/strings.hh"
 #include "nix/util/util.hh"
 
 #include <nlohmann/json.hpp>
@@ -268,7 +269,7 @@ constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails
         .tag = Xp::LocalOverlayStore,
         .name = "local-overlay-store",
         .description = R"(
-            Allow the use of [local overlay store](@docroot@/command-ref/new-cli/nix3-help-stores.md#local-overlay-store).
+            Allow the use of [local overlay store](@docroot@/command-ref/new-cli/nix3-help-stores.md#experimental-local-overlay-store).
         )",
         .trackingUrl = "https://github.com/NixOS/nix/milestone/50",
     },
@@ -305,6 +306,14 @@ constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails
         .trackingUrl = "https://github.com/NixOS/nix/milestone/55",
     },
     {
+        .tag = Xp::ExternalBuilders,
+        .name = "external-builders",
+        .description = R"(
+            Enables support for external builders / sandbox providers.
+        )",
+        .trackingUrl = "",
+    },
+    {
         .tag = Xp::BLAKE3Hashes,
         .name = "blake3-hashes",
         .description = R"(
@@ -317,7 +326,7 @@ constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails
 static_assert(
     []() constexpr {
         for (auto [index, feature] : enumerate(xpFeatureDetails))
-            if (index != (size_t)feature.tag)
+            if (index != (size_t) feature.tag)
                 return false;
         return true;
     }(),
@@ -342,8 +351,8 @@ const std::optional<ExperimentalFeature> parseExperimentalFeature(const std::str
 
 std::string_view showExperimentalFeature(const ExperimentalFeature tag)
 {
-    assert((size_t)tag < xpFeatureDetails.size());
-    return xpFeatureDetails[(size_t)tag].name;
+    assert((size_t) tag < xpFeatureDetails.size());
+    return xpFeatureDetails[(size_t) tag].name;
 }
 
 nlohmann::json documentExperimentalFeatures()
@@ -352,7 +361,8 @@ nlohmann::json documentExperimentalFeatures()
     for (auto & xpFeature : xpFeatureDetails) {
         std::stringstream docOss;
         docOss << stripIndentation(xpFeature.description);
-        docOss << fmt("\nRefer to [%1% tracking issue](%2%) for feature tracking.", xpFeature.name, xpFeature.trackingUrl);
+        docOss << fmt(
+            "\nRefer to [%1% tracking issue](%2%) for feature tracking.", xpFeature.name, xpFeature.trackingUrl);
         res[std::string{xpFeature.name}] = trim(docOss.str());
     }
     return (nlohmann::json) res;
@@ -367,12 +377,17 @@ std::set<ExperimentalFeature> parseFeatures(const StringSet & rawFeatures)
     return res;
 }
 
-MissingExperimentalFeature::MissingExperimentalFeature(ExperimentalFeature feature)
-    : Error("experimental Nix feature '%1%' is disabled; add '--extra-experimental-features %1%' to enable it", showExperimentalFeature(feature))
+MissingExperimentalFeature::MissingExperimentalFeature(ExperimentalFeature feature, std::string reason)
+    : Error(
+          "experimental Nix feature '%1%' is disabled%2%; add '--extra-experimental-features %1%' to enable it",
+          showExperimentalFeature(feature),
+          Uncolored(optionalBracket(" (", reason, ")")))
     , missingFeature(feature)
-{}
+    , reason{reason}
+{
+}
 
-std::ostream & operator <<(std::ostream & str, const ExperimentalFeature & feature)
+std::ostream & operator<<(std::ostream & str, const ExperimentalFeature & feature)
 {
     return str << showExperimentalFeature(feature);
 }
@@ -393,4 +408,4 @@ void from_json(const nlohmann::json & j, ExperimentalFeature & feature)
         throw Error("Unknown experimental feature '%s' in JSON input", input);
 }
 
-}
+} // namespace nix

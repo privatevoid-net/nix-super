@@ -4,6 +4,8 @@
 #include <string_view>
 
 #include "nix/util/types.hh"
+#include "nix/util/json-impls.hh"
+#include "nix/util/json-non-null.hh"
 
 namespace nix {
 
@@ -12,7 +14,8 @@ struct Hash;
 /**
  * Check whether a name is a valid store path name.
  *
- * @throws BadStorePathName if the name is invalid. The message is of the format "name %s is not valid, for this specific reason".
+ * @throws BadStorePathName if the name is invalid. The message is of the format "name %s is not valid, for this
+ * specific reason".
  */
 void checkName(std::string_view name);
 
@@ -49,8 +52,8 @@ public:
         return baseName;
     }
 
-    bool operator == (const StorePath & other) const noexcept = default;
-    auto operator <=> (const StorePath & other) const noexcept = default;
+    bool operator==(const StorePath & other) const noexcept = default;
+    auto operator<=>(const StorePath & other) const noexcept = default;
 
     /**
      * Check whether a file name ends with the extension for derivations.
@@ -86,15 +89,32 @@ typedef std::vector<StorePath> StorePaths;
  */
 constexpr std::string_view drvExtension = ".drv";
 
-}
+template<>
+struct json_avoids_null<StorePath> : std::true_type
+{};
+
+} // namespace nix
 
 namespace std {
 
-template<> struct hash<nix::StorePath> {
+template<>
+struct hash<nix::StorePath>
+{
     std::size_t operator()(const nix::StorePath & path) const noexcept
     {
-        return * (std::size_t *) path.to_string().data();
+        return *(std::size_t *) path.to_string().data();
     }
 };
 
+} // namespace std
+
+namespace nix {
+
+inline std::size_t hash_value(const StorePath & path)
+{
+    return std::hash<StorePath>{}(path);
 }
+
+} // namespace nix
+
+JSON_IMPL(nix::StorePath)

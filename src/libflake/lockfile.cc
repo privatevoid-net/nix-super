@@ -1,25 +1,54 @@
-#include <unordered_set>
-
-#include "nix/fetchers/fetch-settings.hh"
-#include "nix/flake/settings.hh"
-#include "nix/flake/lockfile.hh"
-#include "nix/store/store-api.hh"
-#include "nix/util/strings.hh"
-
+#include <boost/unordered/unordered_flat_set.hpp>
+#include <nlohmann/json.hpp>
+#include <assert.h>
+#include <boost/unordered/unordered_flat_set_fwd.hpp>
+#include <nlohmann/detail/iterators/iter_impl.hpp>
+#include <nlohmann/detail/iterators/iteration_proxy.hpp>
+#include <nlohmann/json_fwd.hpp>
 #include <algorithm>
 #include <iomanip>
-
 #include <iterator>
-#include <nlohmann/json.hpp>
+#include <compare>
+#include <ctime>
+#include <format>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <ostream>
+#include <regex>
+#include <set>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
 
+#include "nix/fetchers/fetch-settings.hh"
+#include "nix/flake/lockfile.hh"
+#include "nix/util/strings.hh"
+#include "nix/fetchers/attrs.hh"
+#include "nix/fetchers/fetchers.hh"
+#include "nix/flake/flakeref.hh"
+#include "nix/store/path.hh"
+#include "nix/util/ansicolor.hh"
+#include "nix/util/configuration.hh"
+#include "nix/util/error.hh"
+#include "nix/util/fmt.hh"
+#include "nix/util/hash.hh"
+#include "nix/util/logging.hh"
+#include "nix/util/ref.hh"
+#include "nix/util/types.hh"
+#include "nix/util/util.hh"
+
+namespace nix {
+class Store;
+} // namespace nix
 
 namespace nix::flake {
 
-static FlakeRef getFlakeRef(
-    const fetchers::Settings & fetchSettings,
-    const nlohmann::json & json,
-    const char * attr,
-    const char * info)
+static FlakeRef
+getFlakeRef(const fetchers::Settings & fetchSettings, const nlohmann::json & json, const char * attr, const char * info)
 {
     auto i = json.find(attr);
     if (i != json.end()) {
@@ -38,22 +67,22 @@ static FlakeRef getFlakeRef(
     throw Error("attribute '%s' missing in lock file", attr);
 }
 
-LockedNode::LockedNode(
-    const fetchers::Settings & fetchSettings,
-    const nlohmann::json & json)
+LockedNode::LockedNode(const fetchers::Settings & fetchSettings, const nlohmann::json & json)
     : lockedRef(getFlakeRef(fetchSettings, json, "locked", "info")) // FIXME: remove "info"
     , originalRef(getFlakeRef(fetchSettings, json, "original", nullptr))
     , isFlake(json.find("flake") != json.end() ? (bool) json["flake"] : true)
-    , parentInputAttrPath(json.find("parent") != json.end() ? (std::optional<InputAttrPath>) json["parent"] : std::nullopt)
+    , parentInputAttrPath(
+          json.find("parent") != json.end() ? (std::optional<InputAttrPath>) json["parent"] : std::nullopt)
 {
     if (!lockedRef.input.isLocked() && !lockedRef.input.isRelative()) {
         if (lockedRef.input.getNarHash())
             warn(
-                "Lock file entry '%s' is unlocked (e.g. lacks a Git revision) but does have a NAR hash. "
-                "This is deprecated since such inputs are verifiable but may not be reproducible.",
+                "Lock file entry '%s' is unlocked (e.g. lacks a Git revision) but is checked by NAR hash. "
+                "This is not reproducible and will break after garbage collection or when shared.",
                 lockedRef.to_string());
         else
-            throw Error("Lock file contains unlocked input '%s'. Use '--allow-dirty-locks' to accept this lock file.",
+            throw Error(
+                "Lock file contains unlocked input '%s'. Use '--allow-dirty-locks' to accept this lock file.",
                 fetchers::attrsToJSON(lockedRef.input.toAttrs()));
     }
 
@@ -67,7 +96,8 @@ StorePath LockedNode::computeStorePath(Store & store) const
     return lockedRef.input.computeStorePath(store);
 }
 
-static std::shared_ptr<Node> doFind(const ref<Node> & root, const InputAttrPath & path, std::vector<InputAttrPath> & visited)
+static std::shared_ptr<Node>
+doFind(const ref<Node> & root, const InputAttrPath & path, std::vector<InputAttrPath> & visited)
 {
     auto pos = root;
 
@@ -104,9 +134,7 @@ std::shared_ptr<Node> LockFile::findInput(const InputAttrPath & path)
     return doFind(root, path, visited);
 }
 
-LockFile::LockFile(
-    const fetchers::Settings & fetchSettings,
-    std::string_view contents, std::string_view path)
+LockFile::LockFile(const fetchers::Settings & fetchSettings, std::string_view contents, std::string_view path)
 {
     auto json = [=] {
         try {
@@ -119,13 +147,12 @@ LockFile::LockFile(
     if (version < 5 || version > 7)
         throw Error("lock file '%s' has unsupported version %d", path, version);
 
-    std::map<std::string, ref<Node>> nodeMap;
+    std::string rootKey = json["root"];
+    std::map<std::string, ref<Node>> nodeMap{{rootKey, root}};
 
-    std::function<void(Node & node, const nlohmann::json & jsonNode)> getInputs;
-
-    getInputs = [&](Node & node, const nlohmann::json & jsonNode)
-    {
-        if (jsonNode.find("inputs") == jsonNode.end()) return;
+    [&](this const auto & getInputs, Node & node, const nlohmann::json & jsonNode) {
+        if (jsonNode.find("inputs") == jsonNode.end())
+            return;
         for (auto & i : jsonNode["inputs"].items()) {
             if (i.value().is_array()) { // FIXME: remove, obsolete
                 InputAttrPath path;
@@ -151,11 +178,7 @@ LockFile::LockFile(
                     throw Error("lock file contains cycle to root node");
             }
         }
-    };
-
-    std::string rootKey = json["root"];
-    nodeMap.insert_or_assign(rootKey, root);
-    getInputs(*root, json["nodes"][rootKey]);
+    }(*root, json["nodes"][rootKey]);
 
     // FIXME: check that there are no cycles in version >= 7. Cycles
     // between inputs are only possible using 'follows' indirections.
@@ -167,18 +190,15 @@ std::pair<nlohmann::json, LockFile::KeyMap> LockFile::toJSON() const
 {
     nlohmann::json nodes;
     KeyMap nodeKeys;
-    std::unordered_set<std::string> keys;
+    boost::unordered_flat_set<std::string> keys;
 
-    std::function<std::string(const std::string & key, ref<const Node> node)> dumpNode;
-
-    dumpNode = [&](std::string key, ref<const Node> node) -> std::string
-    {
+    auto dumpNode = [&](this auto & dumpNode, std::string key, ref<const Node> node) -> std::string {
         auto k = nodeKeys.find(node);
         if (k != nodeKeys.end())
             return k->second;
 
         if (!keys.insert(key).second) {
-            for (int n = 2; ; ++n) {
+            for (int n = 2;; ++n) {
                 auto k = fmt("%s_%d", key, n);
                 if (keys.insert(k).second) {
                     key = k;
@@ -239,7 +259,7 @@ std::pair<std::string, LockFile::KeyMap> LockFile::to_string() const
     return {json.dump(2), std::move(nodeKeys)};
 }
 
-std::ostream & operator <<(std::ostream & stream, const LockFile & lockFile)
+std::ostream & operator<<(std::ostream & stream, const LockFile & lockFile)
 {
     stream << lockFile.toJSON().first.dump(2);
     return stream;
@@ -249,33 +269,27 @@ std::optional<FlakeRef> LockFile::isUnlocked(const fetchers::Settings & fetchSet
 {
     std::set<ref<const Node>> nodes;
 
-    std::function<void(ref<const Node> node)> visit;
-
-    visit = [&](ref<const Node> node)
-    {
-        if (!nodes.insert(node).second) return;
+    [&](this const auto & visit, ref<const Node> node) {
+        if (!nodes.insert(node).second)
+            return;
         for (auto & i : node->inputs)
             if (auto child = std::get_if<0>(&i.second))
                 visit(*child);
-    };
-
-    visit(root);
+    }(root);
 
     /* Return whether the input is either locked, or, if
        `allow-dirty-locks` is enabled, it has a NAR hash. In the
        latter case, we can verify the input but we may not be able to
        fetch it from anywhere. */
-    auto isConsideredLocked = [&](const fetchers::Input & input)
-    {
+    auto isConsideredLocked = [&](const fetchers::Input & input) {
         return input.isLocked() || (fetchSettings.allowDirtyLocks && input.getNarHash());
     };
 
     for (auto & i : nodes) {
-        if (i == ref<const Node>(root)) continue;
+        if (i == ref<const Node>(root))
+            continue;
         auto node = i.dynamic_pointer_cast<const LockedNode>();
-        if (node
-            && (!isConsideredLocked(node->lockedRef.input)
-                || !node->lockedRef.input.isFinal())
+        if (node && (!isConsideredLocked(node->lockedRef.input) || !node->lockedRef.input.isFinal())
             && !node->lockedRef.input.isRelative())
             return node->lockedRef;
     }
@@ -283,7 +297,7 @@ std::optional<FlakeRef> LockFile::isUnlocked(const fetchers::Settings & fetchSet
     return {};
 }
 
-bool LockFile::operator ==(const LockFile & other) const
+bool LockFile::operator==(const LockFile & other) const
 {
     // FIXME: slow
     return toJSON().first == other.toJSON().first;
@@ -307,22 +321,18 @@ std::map<InputAttrPath, Node::Edge> LockFile::getAllInputs() const
     std::set<ref<Node>> done;
     std::map<InputAttrPath, Node::Edge> res;
 
-    std::function<void(const InputAttrPath & prefix, ref<Node> node)> recurse;
+    [&](this const auto & recurse, const InputAttrPath & prefix, ref<Node> node) {
+        if (!done.insert(node).second)
+            return;
 
-    recurse = [&](const InputAttrPath & prefix, ref<Node> node)
-    {
-        if (!done.insert(node).second) return;
-
-        for (auto &[id, input] : node->inputs) {
+        for (auto & [id, input] : node->inputs) {
             auto inputAttrPath(prefix);
             inputAttrPath.push_back(id);
             res.emplace(inputAttrPath, input);
             if (auto child = std::get_if<0>(&input))
                 recurse(inputAttrPath, *child);
         }
-    };
-
-    recurse({}, root);
+    }({}, root);
 
     return res;
 }
@@ -337,7 +347,7 @@ static std::string describe(const FlakeRef & flakeRef)
     return s;
 }
 
-std::ostream & operator <<(std::ostream & stream, const Node::Edge & edge)
+std::ostream & operator<<(std::ostream & stream, const Node::Edge & edge)
 {
     if (auto node = std::get_if<0>(&edge))
         stream << describe((*node)->lockedRef);
@@ -368,18 +378,19 @@ std::string LockFile::diff(const LockFile & oldLocks, const LockFile & newLocks)
 
     while (i != oldFlat.end() || j != newFlat.end()) {
         if (j != newFlat.end() && (i == oldFlat.end() || i->first > j->first)) {
-            res += fmt("• " ANSI_GREEN "Added input '%s':" ANSI_NORMAL "\n    %s\n",
-                printInputAttrPath(j->first), j->second);
+            res += fmt(
+                "• " ANSI_GREEN "Added input '%s':" ANSI_NORMAL "\n    %s\n", printInputAttrPath(j->first), j->second);
             ++j;
         } else if (i != oldFlat.end() && (j == newFlat.end() || i->first < j->first)) {
             res += fmt("• " ANSI_RED "Removed input '%s'" ANSI_NORMAL "\n", printInputAttrPath(i->first));
             ++i;
         } else {
             if (!equals(i->second, j->second)) {
-                res += fmt("• " ANSI_BOLD "Updated input '%s':" ANSI_NORMAL "\n    %s\n  → %s\n",
-                    printInputAttrPath(i->first),
-                    i->second,
-                    j->second);
+                res +=
+                    fmt("• " ANSI_BOLD "Updated input '%s':" ANSI_NORMAL "\n    %s\n  → %s\n",
+                        printInputAttrPath(i->first),
+                        i->second,
+                        j->second);
             }
             ++i;
             ++j;
@@ -396,7 +407,8 @@ void LockFile::check()
     for (auto & [inputAttrPath, input] : inputs) {
         if (auto follows = std::get_if<1>(&input)) {
             if (!follows->empty() && !findInput(*follows))
-                throw Error("input '%s' follows a non-existent input '%s'",
+                throw Error(
+                    "input '%s' follows a non-existent input '%s'",
                     printInputAttrPath(inputAttrPath),
                     printInputAttrPath(*follows));
         }
@@ -410,4 +422,4 @@ std::string printInputAttrPath(const InputAttrPath & path)
     return concatStringsSep("/", path);
 }
 
-}
+} // namespace nix::flake

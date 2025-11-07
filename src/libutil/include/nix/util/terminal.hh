@@ -18,9 +18,8 @@ bool isTTY();
  * included in the character count. Also, tabs are expanded to
  * spaces.
  */
-std::string filterANSIEscapes(std::string_view s,
-    bool filterAll = false,
-    unsigned int width = std::numeric_limits<unsigned int>::max());
+std::string filterANSIEscapes(
+    std::string_view s, bool filterAll = false, unsigned int width = std::numeric_limits<unsigned int>::max());
 
 /**
  * Recalculate the window size, updating a global variable.
@@ -37,4 +36,12 @@ void updateWindowSize();
  */
 std::pair<unsigned short, unsigned short> getWindowSize();
 
-}
+/**
+ * Get the slave name of a pseudoterminal in a thread-safe manner.
+ *
+ * @param fd The file descriptor of the pseudoterminal master
+ * @return The slave device name as a string
+ */
+std::string getPtsName(int fd);
+
+} // namespace nix

@@ -35,12 +35,14 @@ nix shell -f shell-hello.nix hello -c env > "$TEST_ROOT/actual-env"
 # - _ is set by bash and is expectedf to differ because it contains the original command
 # - __CF_USER_TEXT_ENCODING is set by macOS and is beyond our control
 # - IN_NIX3_SHELL is set by nix shell
+# - __LLVM_PROFILE_RT_INIT_ONCE - implementation detail of LLVM source code coverage collection
 sed -i \
   -e 's/PATH=.*/PATH=.../' \
   -e 's/_=.*/_=.../' \
   -e '/^TMPDIR=\/var\/folders\/.*/d' \
   -e '/^__CF_USER_TEXT_ENCODING=.*$/d' \
   -e '/^IN_NIX3_SHELL=1$/d' \
+  -e '/^__LLVM_PROFILE_RT_INIT_ONCE=.*$/d' \
   "$TEST_ROOT/expected-env" "$TEST_ROOT/actual-env"
 sort "$TEST_ROOT/expected-env" > "$TEST_ROOT/expected-env.sorted"
 sort "$TEST_ROOT/actual-env" > "$TEST_ROOT/actual-env.sorted"

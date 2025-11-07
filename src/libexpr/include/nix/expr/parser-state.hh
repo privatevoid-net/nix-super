@@ -17,10 +17,13 @@ struct StringToken
     const char * p;
     size_t l;
     bool hasIndentation;
-    operator std::string_view() const { return {p, l}; }
+
+    operator std::string_view() const
+    {
+        return {p, l};
+    }
 };
 
-// This type must be trivially copyable; see YYLTYPE_IS_TRIVIAL in parser.y.
 struct ParserLocation
 {
     int beginOffset;
@@ -29,18 +32,17 @@ struct ParserLocation
     // backup to recover from yyless(0)
     int stashedBeginOffset, stashedEndOffset;
 
-    void stash() {
+    void stash()
+    {
         stashedBeginOffset = beginOffset;
         stashedEndOffset = endOffset;
     }
 
-    void unstash() {
+    void unstash()
+    {
         beginOffset = stashedBeginOffset;
         endOffset = stashedEndOffset;
     }
-
-    /** Latest doc comment position, or 0. */
-    int doc_comment_first_column, doc_comment_last_column;
 };
 
 struct LexerState
@@ -65,7 +67,7 @@ struct LexerState
     /**
      * @brief Maps some positions to a DocComment, where the comment is relevant to the location.
      */
-    std::unordered_map<PosIdx, DocComment> & positionToDocComment;
+    DocCommentMap & positionToDocComment;
 
     PosTable & positions;
     PosTable::Origin origin;
@@ -76,43 +78,42 @@ struct LexerState
 struct ParserState
 {
     const LexerState & lexerState;
+    Exprs & exprs;
     SymbolTable & symbols;
     PosTable & positions;
     Expr * result;
     SourcePath basePath;
     PosTable::Origin origin;
     const ref<SourceAccessor> rootFS;
-    const Expr::AstSymbols & s;
+    static constexpr Expr::AstSymbols s = StaticEvalSymbols::create().exprSymbols;
     const EvalSettings & settings;
 
     void dupAttr(const AttrPath & attrPath, const PosIdx pos, const PosIdx prevPos);
     void dupAttr(Symbol attr, const PosIdx pos, const PosIdx prevPos);
-    void addAttr(ExprAttrs * attrs, AttrPath && attrPath, const ParserLocation & loc, Expr * e, const ParserLocation & exprLoc);
+    void addAttr(
+        ExprAttrs * attrs, AttrPath && attrPath, const ParserLocation & loc, Expr * e, const ParserLocation & exprLoc);
     void addAttr(ExprAttrs * attrs, AttrPath & attrPath, const Symbol & symbol, ExprAttrs::AttrDef && def);
-    Formals * validateFormals(Formals * formals, PosIdx pos = noPos, Symbol arg = {});
-    Expr * stripIndentation(const PosIdx pos,
-        std::vector<std::pair<PosIdx, std::variant<Expr *, StringToken>>> && es);
+    void validateFormals(FormalsBuilder & formals, PosIdx pos = noPos, Symbol arg = {});
+    Expr * stripIndentation(const PosIdx pos, std::vector<std::pair<PosIdx, std::variant<Expr *, StringToken>>> && es);
     PosIdx at(const ParserLocation & loc);
 };
 
 inline void ParserState::dupAttr(const AttrPath & attrPath, const PosIdx pos, const PosIdx prevPos)
 {
-    throw ParseError({
-         .msg = HintFmt("attribute '%1%' already defined at %2%",
-             showAttrPath(symbols, attrPath), positions[prevPos]),
-         .pos = positions[pos]
-    });
+    throw ParseError(
+        {.msg = HintFmt("attribute '%1%' already defined at %2%", showAttrPath(symbols, attrPath), positions[prevPos]),
+         .pos = positions[pos]});
 }
 
 inline void ParserState::dupAttr(Symbol attr, const PosIdx pos, const PosIdx prevPos)
 {
-    throw ParseError({
-        .msg = HintFmt("attribute '%1%' already defined at %2%", symbols[attr], positions[prevPos]),
-        .pos = positions[pos]
-    });
+    throw ParseError(
+        {.msg = HintFmt("attribute '%1%' already defined at %2%", symbols[attr], positions[prevPos]),
+         .pos = positions[pos]});
 }
 
-inline void ParserState::addAttr(ExprAttrs * attrs, AttrPath && attrPath, const ParserLocation & loc, Expr * e, const ParserLocation & exprLoc)
+inline void ParserState::addAttr(
+    ExprAttrs * attrs, AttrPath && attrPath, const ParserLocation & loc, Expr * e, const ParserLocation & exprLoc)
 {
     AttrPath::iterator i;
     // All attrpaths have at least one attr
@@ -131,11 +132,11 @@ inline void ParserState::addAttr(ExprAttrs * attrs, AttrPath && attrPath, const 
                     dupAttr(attrPath, pos, j->second.pos);
                 }
             } else {
-                nested = new ExprAttrs;
+                nested = exprs.add<ExprAttrs>();
                 attrs->attrs[i->symbol] = ExprAttrs::AttrDef(nested, pos);
             }
         } else {
-            nested = new ExprAttrs;
+            nested = exprs.add<ExprAttrs>();
             attrs->dynamicAttrs.push_back(ExprAttrs::DynamicAttrDef(i->expr, nested, pos));
         }
         attrs = nested;
@@ -159,7 +160,8 @@ inline void ParserState::addAttr(ExprAttrs * attrs, AttrPath && attrPath, const 
  * Precondition: attrPath is used for error messages and should already contain
  * symbol as its last element.
  */
-inline void ParserState::addAttr(ExprAttrs * attrs, AttrPath & attrPath, const Symbol & symbol, ExprAttrs::AttrDef && def)
+inline void
+ParserState::addAttr(ExprAttrs * attrs, AttrPath & attrPath, const Symbol & symbol, ExprAttrs::AttrDef && def)
 {
     ExprAttrs::AttrDefs::iterator j = attrs->attrs.find(symbol);
     if (j != attrs->attrs.end()) {
@@ -189,12 +191,14 @@ inline void ParserState::addAttr(ExprAttrs * attrs, AttrPath & attrPath, const S
                 attrPath.pop_back();
             }
             ae->attrs.clear();
-            jAttrs->dynamicAttrs.insert(jAttrs->dynamicAttrs.end(),
+            jAttrs->dynamicAttrs.insert(
+                jAttrs->dynamicAttrs.end(),
                 std::make_move_iterator(ae->dynamicAttrs.begin()),
                 std::make_move_iterator(ae->dynamicAttrs.end()));
             ae->dynamicAttrs.clear();
             if (ae->inheritFromExprs) {
-                jAttrs->inheritFromExprs->insert(jAttrs->inheritFromExprs->end(),
+                jAttrs->inheritFromExprs->insert(
+                    jAttrs->inheritFromExprs->end(),
                     std::make_move_iterator(ae->inheritFromExprs->begin()),
                     std::make_move_iterator(ae->inheritFromExprs->end()));
                 ae->inheritFromExprs = nullptr;
@@ -209,39 +213,34 @@ inline void ParserState::addAttr(ExprAttrs * attrs, AttrPath & attrPath, const S
     }
 }
 
-inline Formals * ParserState::validateFormals(Formals * formals, PosIdx pos, Symbol arg)
+inline void ParserState::validateFormals(FormalsBuilder & formals, PosIdx pos, Symbol arg)
 {
-    std::sort(formals->formals.begin(), formals->formals.end(),
-        [] (const auto & a, const auto & b) {
-            return std::tie(a.name, a.pos) < std::tie(b.name, b.pos);
-        });
+    std::sort(formals.formals.begin(), formals.formals.end(), [](const auto & a, const auto & b) {
+        return std::tie(a.name, a.pos) < std::tie(b.name, b.pos);
+    });
 
     std::optional<std::pair<Symbol, PosIdx>> duplicate;
-    for (size_t i = 0; i + 1 < formals->formals.size(); i++) {
-        if (formals->formals[i].name != formals->formals[i + 1].name)
+    for (size_t i = 0; i + 1 < formals.formals.size(); i++) {
+        if (formals.formals[i].name != formals.formals[i + 1].name)
             continue;
-        std::pair thisDup{formals->formals[i].name, formals->formals[i + 1].pos};
+        std::pair thisDup{formals.formals[i].name, formals.formals[i + 1].pos};
         duplicate = std::min(thisDup, duplicate.value_or(thisDup));
     }
     if (duplicate)
-        throw ParseError({
-            .msg = HintFmt("duplicate formal function argument '%1%'", symbols[duplicate->first]),
-            .pos = positions[duplicate->second]
-        });
+        throw ParseError(
+            {.msg = HintFmt("duplicate formal function argument '%1%'", symbols[duplicate->first]),
+             .pos = positions[duplicate->second]});
 
-    if (arg && formals->has(arg))
-        throw ParseError({
-            .msg = HintFmt("duplicate formal function argument '%1%'", symbols[arg]),
-            .pos = positions[pos]
-        });
-
-    return formals;
+    if (arg && formals.has(arg))
+        throw ParseError(
+            {.msg = HintFmt("duplicate formal function argument '%1%'", symbols[arg]), .pos = positions[pos]});
 }
 
-inline Expr * ParserState::stripIndentation(const PosIdx pos,
-    std::vector<std::pair<PosIdx, std::variant<Expr *, StringToken>>> && es)
+inline Expr *
+ParserState::stripIndentation(const PosIdx pos, std::vector<std::pair<PosIdx, std::variant<Expr *, StringToken>>> && es)
 {
-    if (es.empty()) return new ExprString("");
+    if (es.empty())
+        return exprs.add<ExprString>("");
 
     /* Figure out the minimum indentation.  Note that by design
        whitespace-only final lines are not taken into account.  (So
@@ -255,7 +254,8 @@ inline Expr * ParserState::stripIndentation(const PosIdx pos,
             /* Anti-quotations and escaped characters end the current start-of-line whitespace. */
             if (atStartOfLine) {
                 atStartOfLine = false;
-                if (curIndent < minIndent) minIndent = curIndent;
+                if (curIndent < minIndent)
+                    minIndent = curIndent;
             }
             continue;
         }
@@ -269,7 +269,8 @@ inline Expr * ParserState::stripIndentation(const PosIdx pos,
                     curIndent = 0;
                 } else {
                     atStartOfLine = false;
-                    if (curIndent < minIndent) minIndent = curIndent;
+                    if (curIndent < minIndent)
+                        minIndent = curIndent;
                 }
             } else if (str->p[j] == '\n') {
                 atStartOfLine = true;
@@ -279,25 +280,24 @@ inline Expr * ParserState::stripIndentation(const PosIdx pos,
     }
 
     /* Strip spaces from each line. */
-    auto * es2 = new std::vector<std::pair<PosIdx, Expr *>>;
+    std::vector<std::pair<PosIdx, Expr *>> es2{};
     atStartOfLine = true;
     size_t curDropped = 0;
     size_t n = es.size();
     auto i = es.begin();
-    const auto trimExpr = [&] (Expr * e) {
+    const auto trimExpr = [&](Expr * e) {
         atStartOfLine = false;
         curDropped = 0;
-        es2->emplace_back(i->first, e);
+        es2.emplace_back(i->first, e);
     };
-    const auto trimString = [&] (const StringToken & t) {
+    const auto trimString = [&](const StringToken & t) {
         std::string s2;
         for (size_t j = 0; j < t.l; ++j) {
             if (atStartOfLine) {
                 if (t.p[j] == ' ') {
                     if (curDropped++ >= minIndent)
                         s2 += t.p[j];
-                }
-                else if (t.p[j] == '\n') {
+                } else if (t.p[j] == '\n') {
                     curDropped = 0;
                     s2 += t.p[j];
                 } else {
@@ -307,7 +307,8 @@ inline Expr * ParserState::stripIndentation(const PosIdx pos,
                 }
             } else {
                 s2 += t.p[j];
-                if (t.p[j] == '\n') atStartOfLine = true;
+                if (t.p[j] == '\n')
+                    atStartOfLine = true;
             }
         }
 
@@ -321,28 +322,26 @@ inline Expr * ParserState::stripIndentation(const PosIdx pos,
 
         // Ignore empty strings for a minor optimisation and AST simplification
         if (s2 != "") {
-            es2->emplace_back(i->first, new ExprString(std::move(s2)));
+            es2.emplace_back(i->first, exprs.add<ExprString>(exprs.alloc, s2));
         }
     };
     for (; i != es.end(); ++i, --n) {
-        std::visit(overloaded { trimExpr, trimString }, i->second);
+        std::visit(overloaded{trimExpr, trimString}, i->second);
     }
 
     // If there is nothing at all, return the empty string directly.
     // This also ensures that equivalent empty strings result in the same ast, which is helpful when testing formatters.
-    if (es2->size() == 0) {
-        auto *const result = new ExprString("");
-        delete es2;
+    if (es2.size() == 0) {
+        auto * const result = exprs.add<ExprString>("");
         return result;
     }
 
     /* If this is a single string, then don't do a concatenation. */
-    if (es2->size() == 1 && dynamic_cast<ExprString *>((*es2)[0].second)) {
-        auto *const result = (*es2)[0].second;
-        delete es2;
+    if (es2.size() == 1 && dynamic_cast<ExprString *>((es2)[0].second)) {
+        auto * const result = (es2)[0].second;
         return result;
     }
-    return new ExprConcatStrings(pos, true, es2);
+    return exprs.add<ExprConcatStrings>(exprs.alloc, pos, true, std::move(es2));
 }
 
 inline PosIdx LexerState::at(const ParserLocation & loc)
@@ -355,4 +354,4 @@ inline PosIdx ParserState::at(const ParserLocation & loc)
     return positions.add(origin, loc.beginOffset);
 }
 
-}
+} // namespace nix

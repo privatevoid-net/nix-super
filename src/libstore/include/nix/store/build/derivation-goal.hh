@@ -14,124 +14,98 @@ namespace nix {
 
 using std::map;
 
-/** Used internally */
-void runPostBuildHook(
-    Store & store,
-    Logger & logger,
-    const StorePath & drvPath,
-    const StorePathSet & outputPaths);
-
 /**
- * A goal for building some or all of the outputs of a derivation.
+ * A goal for realising a single output of a derivation. Various sorts of
+ * fetching (which will be done by other goal types) is tried, and if none of
+ * those succeed, the derivation is attempted to be built.
+ *
+ * This is a purely "administrative" goal type, which doesn't do any
+ * "real work" of substituting (that would be `PathSubstitutionGoal` or
+ * `DrvOutputSubstitutionGoal`) or building (that would be a
+ * `DerivationBuildingGoal`). This goal type creates those types of
+ * goals to attempt each way of realisation a derivation; they are tried
+ * sequentially in order of preference.
+ *
+ * The derivation must already be gotten (in memory, in C++, parsed) and passed
+ * to the caller. If the derivation itself needs to be gotten first, a
+ * `DerivationTrampolineGoal` goal must be used instead.
  */
 struct DerivationGoal : public Goal
 {
     /** The path of the derivation. */
-    ref<const SingleDerivedPath> drvReq;
+    StorePath drvPath;
 
     /**
      * The specific outputs that we need to build.
      */
-    OutputsSpec wantedOutputs;
+    OutputName wantedOutput;
 
     /**
-     * See `needRestart`; just for that field.
+     * @param storeDerivation See `DerivationBuildingGoal`. This is just passed along.
      */
-    enum struct NeedRestartForMoreOutputs {
-        /**
-         * The goal state machine is progressing based on the current value of
-         * `wantedOutputs. No actions are needed.
-         */
-        OutputsUnmodifiedDontNeed,
-        /**
-         * `wantedOutputs` has been extended, but the state machine is
-         * proceeding according to its old value, so we need to restart.
-         */
-        OutputsAddedDoNeed,
-        /**
-         * The goal state machine has progressed to the point of doing a build,
-         * in which case all outputs will be produced, so extensions to
-         * `wantedOutputs` no longer require a restart.
-         */
-        BuildInProgressWillNotNeed,
+    DerivationGoal(
+        const StorePath & drvPath,
+        const Derivation & drv,
+        const OutputName & wantedOutput,
+        Worker & worker,
+        BuildMode buildMode,
+        bool storeDerivation);
+    ~DerivationGoal() = default;
+
+    void timedOut(Error && ex) override
+    {
+        unreachable();
     };
 
-    /**
-     * Whether additional wanted outputs have been added.
-     */
-    NeedRestartForMoreOutputs needRestart = NeedRestartForMoreOutputs::OutputsUnmodifiedDontNeed;
+    std::string key() override;
+
+    JobCategory jobCategory() const override
+    {
+        return JobCategory::Administration;
+    };
+
+private:
 
     /**
-     * The derivation stored at `drvReq`.
+     * The derivation stored at drvPath.
      */
     std::unique_ptr<Derivation> drv;
+
+    const Hash outputHash;
+
+    const BuildMode buildMode;
 
     /**
      * The remainder is state held during the build.
      */
 
-    std::map<std::string, InitialOutput> initialOutputs;
-
-    BuildMode buildMode;
-
     std::unique_ptr<MaintainCount<uint64_t>> mcExpectedBuilds;
-
-    DerivationGoal(ref<const SingleDerivedPath> drvReq,
-        const OutputsSpec & wantedOutputs, Worker & worker,
-        BuildMode buildMode = bmNormal);
-    DerivationGoal(const StorePath & drvPath, const BasicDerivation & drv,
-        const OutputsSpec & wantedOutputs, Worker & worker,
-        BuildMode buildMode = bmNormal);
-    ~DerivationGoal() = default;
-
-    void timedOut(Error && ex) override { unreachable(); };
-
-    std::string key() override;
-
-    /**
-     * Add wanted outputs to an already existing derivation goal.
-     */
-    void addWantedOutputs(const OutputsSpec & outputs);
 
     /**
      * The states.
      */
-    Co loadDerivation();
-    Co haveDerivation(StorePath drvPath);
+    Co haveDerivation(bool storeDerivation);
 
     /**
-     * Wrappers around the corresponding Store methods that first consult the
-     * derivation.  This is currently needed because when there is no drv file
-     * there also is no DB entry.
+     * Return `std::nullopt` if the output is unknown, e.g. un unbuilt
+     * floating content-addressing derivation. Otherwise, returns a pair
+     * of a `Realisation`, containing among other things the store path
+     * of the wanted output, and a `PathStatus` with the
+     * current status of that output.
      */
-    std::map<std::string, std::optional<StorePath>> queryPartialDerivationOutputMap(const StorePath & drvPath);
-    OutputPathMap queryDerivationOutputMap(const StorePath & drvPath);
-
-    /**
-     * Update 'initialOutputs' to determine the current status of the
-     * outputs of the derivation. Also returns a Boolean denoting
-     * whether all outputs are valid and non-corrupt, and a
-     * 'SingleDrvOutputs' structure containing the valid outputs.
-     */
-    std::pair<bool, SingleDrvOutputs> checkPathValidity(const StorePath & drvPath);
+    std::optional<std::pair<UnkeyedRealisation, PathStatus>> checkPathValidity();
 
     /**
      * Aborts if any output is not valid or corrupt, and otherwise
-     * returns a 'SingleDrvOutputs' structure containing all outputs.
+     * returns a 'Realisation' for the wanted output.
      */
-    SingleDrvOutputs assertPathValidity(const StorePath & drvPath);
+    UnkeyedRealisation assertPathValidity();
 
-    Co repairClosure(StorePath drvPath);
+    Co repairClosure();
 
-    Done done(
-        const StorePath & drvPath,
-        BuildResult::Status status,
-        SingleDrvOutputs builtOutputs = {},
-        std::optional<Error> ex = {});
+    Done doneSuccess(BuildResult::Success::Status status, UnkeyedRealisation builtOutput);
 
-    JobCategory jobCategory() const override {
-        return JobCategory::Administration;
-    };
+    Done doneFailure(BuildError ex);
 };
 
-}
+} // namespace nix

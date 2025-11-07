@@ -2,18 +2,14 @@
 ///@file
 
 #include <nlohmann/json.hpp>
-#include <list>
 
 #include "nix/util/error.hh"
 #include "nix/util/types.hh"
+#include "nix/util/json-non-null.hh"
 
 namespace nix {
 
 enum struct ExperimentalFeature;
-
-const nlohmann::json * get(const nlohmann::json & map, const std::string & key);
-
-nlohmann::json * get(nlohmann::json & map, const std::string & key);
 
 /**
  * Get the value of a json object at a key safely, failing with a nice
@@ -21,12 +17,19 @@ nlohmann::json * get(nlohmann::json & map, const std::string & key);
  *
  * Use instead of nlohmann::json::at() to avoid ugly exceptions.
  */
-const nlohmann::json & valueAt(
-    const nlohmann::json::object_t & map,
-    const std::string & key);
+const nlohmann::json & valueAt(const nlohmann::json::object_t & map, std::string_view key);
 
-std::optional<nlohmann::json> optionalValueAt(const nlohmann::json::object_t & value, const std::string & key);
-std::optional<nlohmann::json> nullableValueAt(const nlohmann::json::object_t & value, const std::string & key);
+/**
+ * @return A pointer to the value assiocated with `key` if `value`
+ * contains `key`, otherwise return  `nullptr` (not JSON `null`!).
+ */
+const nlohmann::json * optionalValueAt(const nlohmann::json::object_t & value, std::string_view key);
+
+/**
+ * Prevents bugs; see `get` for the same trick.
+ */
+const nlohmann::json & valueAt(nlohmann::json::object_t && map, std::string_view key) = delete;
+const nlohmann::json * optionalValueAt(nlohmann::json::object_t && value, std::string_view key) = delete;
 
 /**
  * Downcast the json object, failing with a nice error if the conversion fails.
@@ -56,53 +59,23 @@ auto getInteger(const nlohmann::json & value) -> std::enable_if_t<std::is_signed
     throw Error("Out of range: JSON value '%s' cannot be casted to %d-bit integer", value.dump(), 8 * sizeof(T));
 }
 
+template<typename... Args>
+std::map<std::string, Args...> getMap(const nlohmann::json::object_t & jsonObject, auto && f)
+{
+    std::map<std::string, Args...> map;
+
+    for (const auto & [key, value] : jsonObject)
+        map.insert_or_assign(key, f(value));
+
+    return map;
+}
+
 const nlohmann::json::boolean_t & getBoolean(const nlohmann::json & value);
 Strings getStringList(const nlohmann::json & value);
 StringMap getStringMap(const nlohmann::json & value);
 StringSet getStringSet(const nlohmann::json & value);
 
-/**
- * For `adl_serializer<std::optional<T>>` below, we need to track what
- * types are not already using `null`. Only for them can we use `null`
- * to represent `std::nullopt`.
- */
-template<typename T>
-struct json_avoids_null;
-
-/**
- * Handle numbers in default impl
- */
-template<typename T>
-struct json_avoids_null : std::bool_constant<std::is_integral<T>::value> {};
-
-template<>
-struct json_avoids_null<std::nullptr_t> : std::false_type {};
-
-template<>
-struct json_avoids_null<bool> : std::true_type {};
-
-template<>
-struct json_avoids_null<std::string> : std::true_type {};
-
-template<typename T>
-struct json_avoids_null<std::vector<T>> : std::true_type {};
-
-template<typename T>
-struct json_avoids_null<std::list<T>> : std::true_type {};
-
-template<typename T, typename Compare>
-struct json_avoids_null<std::set<T, Compare>> : std::true_type {};
-
-template<typename K, typename V>
-struct json_avoids_null<std::map<K, V>> : std::true_type {};
-
-/**
- * `ExperimentalFeature` is always rendered as a string.
- */
-template<>
-struct json_avoids_null<ExperimentalFeature> : std::true_type {};
-
-}
+} // namespace nix
 
 namespace nlohmann {
 
@@ -123,12 +96,8 @@ struct adl_serializer<std::optional<T>>
      */
     static void from_json(const json & json, std::optional<T> & t)
     {
-        static_assert(
-            nix::json_avoids_null<T>::value,
-            "null is already in use for underlying type's JSON");
-        t = json.is_null()
-            ? std::nullopt
-            : std::make_optional(json.template get<T>());
+        static_assert(nix::json_avoids_null<T>::value, "null is already in use for underlying type's JSON");
+        t = json.is_null() ? std::nullopt : std::make_optional(json.template get<T>());
     }
 
     /**
@@ -137,9 +106,7 @@ struct adl_serializer<std::optional<T>>
      */
     static void to_json(json & json, const std::optional<T> & t)
     {
-        static_assert(
-            nix::json_avoids_null<T>::value,
-            "null is already in use for underlying type's JSON");
+        static_assert(nix::json_avoids_null<T>::value, "null is already in use for underlying type's JSON");
         if (t)
             json = *t;
         else
@@ -147,4 +114,4 @@ struct adl_serializer<std::optional<T>>
     }
 };
 
-}
+} // namespace nlohmann

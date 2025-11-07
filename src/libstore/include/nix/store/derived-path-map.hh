@@ -22,17 +22,19 @@ namespace nix {
  * @param V A type to instantiate for each output. It should probably
  * should be an "optional" type so not every interior node has to have a
  * value. For example, the scheduler uses
- * `DerivedPathMap<std::weak_ptr<DerivationCreationAndRealisationGoal>>` to
+ * `DerivedPathMap<std::weak_ptr<DerivationTrampolineGoal>>` to
  * remember which goals correspond to which outputs. `* const Something`
  * or `std::optional<Something>` would also be good choices for
  * "optional" types.
  */
 template<typename V>
-struct DerivedPathMap {
+struct DerivedPathMap
+{
     /**
      * A child node (non-root node).
      */
-    struct ChildNode {
+    struct ChildNode
+    {
         /**
          * Value of this child node.
          *
@@ -50,7 +52,7 @@ struct DerivedPathMap {
          */
         Map childMap;
 
-        bool operator == (const ChildNode &) const noexcept;
+        bool operator==(const ChildNode &) const noexcept;
 
         // TODO libc++ 16 (used by darwin) missing `std::map::operator <=>`, can't do yet.
         // decltype(std::declval<V>() <=> std::declval<V>())
@@ -67,7 +69,7 @@ struct DerivedPathMap {
      */
     Map map;
 
-    bool operator == (const DerivedPathMap &) const = default;
+    bool operator==(const DerivedPathMap &) const = default;
 
     // TODO libc++ 16 (used by darwin) missing `std::map::operator <=>`, can't do yet.
     // auto operator <=> (const DerivedPathMap &) const noexcept;
@@ -94,8 +96,7 @@ struct DerivedPathMap {
 };
 
 template<>
-bool DerivedPathMap<StringSet>::ChildNode::operator == (
-    const DerivedPathMap<StringSet>::ChildNode &) const noexcept;
+bool DerivedPathMap<StringSet>::ChildNode::operator==(const DerivedPathMap<StringSet>::ChildNode &) const noexcept;
 
 // TODO libc++ 16 (used by darwin) missing `std::map::operator <=>`, can't do yet.
 #if 0
@@ -110,4 +111,4 @@ inline auto DerivedPathMap<StringSet>::operator <=> (const DerivedPathMap<String
 extern template struct DerivedPathMap<StringSet>::ChildNode;
 extern template struct DerivedPathMap<StringSet>;
 
-}
+} // namespace nix

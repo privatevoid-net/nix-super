@@ -5,6 +5,7 @@
 #include "nix/store/outputs-spec.hh"
 #include "nix/util/configuration.hh"
 #include "nix/util/ref.hh"
+#include "nix/util/json-impls.hh"
 
 #include <variant>
 
@@ -14,9 +15,6 @@ namespace nix {
 
 struct StoreDirConfig;
 
-// TODO stop needing this, `toJSON` below should be pure
-class Store;
-
 /**
  * An opaque derived path.
  *
@@ -24,15 +22,15 @@ class Store;
  * cannot be simplified further. Since they are opaque, they cannot be
  * built, but they can fetched.
  */
-struct DerivedPathOpaque {
+struct DerivedPathOpaque
+{
     StorePath path;
 
     std::string to_string(const StoreDirConfig & store) const;
     static DerivedPathOpaque parse(const StoreDirConfig & store, std::string_view);
-    nlohmann::json toJSON(const StoreDirConfig & store) const;
 
-    bool operator == (const DerivedPathOpaque &) const = default;
-    auto operator <=> (const DerivedPathOpaque &) const = default;
+    bool operator==(const DerivedPathOpaque &) const = default;
+    auto operator<=>(const DerivedPathOpaque &) const = default;
 };
 
 struct SingleDerivedPath;
@@ -44,7 +42,8 @@ struct SingleDerivedPath;
  * evaluated by building the derivation, and then taking the resulting output
  * path of the given output name.
  */
-struct SingleDerivedPathBuilt {
+struct SingleDerivedPathBuilt
+{
     ref<const SingleDerivedPath> drvPath;
     OutputName output;
 
@@ -74,19 +73,16 @@ struct SingleDerivedPathBuilt {
      * @param xpSettings Stop-gap to avoid globals during unit tests.
      */
     static SingleDerivedPathBuilt parse(
-        const StoreDirConfig & store, ref<const SingleDerivedPath> drvPath,
+        const StoreDirConfig & store,
+        ref<const SingleDerivedPath> drvPath,
         OutputNameView outputs,
         const ExperimentalFeatureSettings & xpSettings = experimentalFeatureSettings);
-    nlohmann::json toJSON(Store & store) const;
 
-    bool operator == (const SingleDerivedPathBuilt &) const noexcept;
-    std::strong_ordering operator <=> (const SingleDerivedPathBuilt &) const noexcept;
+    bool operator==(const SingleDerivedPathBuilt &) const noexcept;
+    std::strong_ordering operator<=>(const SingleDerivedPathBuilt &) const noexcept;
 };
 
-using _SingleDerivedPathRaw = std::variant<
-    DerivedPathOpaque,
-    SingleDerivedPathBuilt
->;
+using _SingleDerivedPathRaw = std::variant<DerivedPathOpaque, SingleDerivedPathBuilt>;
 
 /**
  * A "derived path" is a very simple sort of expression (not a Nix
@@ -99,19 +95,21 @@ using _SingleDerivedPathRaw = std::variant<
  * - built, in which case it is a pair of a derivation path and an
  *   output name.
  */
-struct SingleDerivedPath : _SingleDerivedPathRaw {
+struct SingleDerivedPath : _SingleDerivedPathRaw
+{
     using Raw = _SingleDerivedPathRaw;
     using Raw::Raw;
 
     using Opaque = DerivedPathOpaque;
     using Built = SingleDerivedPathBuilt;
 
-    inline const Raw & raw() const {
+    inline const Raw & raw() const
+    {
         return static_cast<const Raw &>(*this);
     }
 
-    bool operator == (const SingleDerivedPath &) const = default;
-    auto operator <=> (const SingleDerivedPath &) const = default;
+    bool operator==(const SingleDerivedPath &) const = default;
+    auto operator<=>(const SingleDerivedPath &) const = default;
 
     /**
      * Get the store path this is ultimately derived from (by realising
@@ -151,12 +149,11 @@ struct SingleDerivedPath : _SingleDerivedPathRaw {
         const StoreDirConfig & store,
         std::string_view,
         const ExperimentalFeatureSettings & xpSettings = experimentalFeatureSettings);
-    nlohmann::json toJSON(Store & store) const;
 };
 
 static inline ref<SingleDerivedPath> makeConstantStorePathRef(StorePath drvPath)
 {
-    return make_ref<SingleDerivedPath>(SingleDerivedPath::Opaque { drvPath });
+    return make_ref<SingleDerivedPath>(SingleDerivedPath::Opaque{drvPath});
 }
 
 /**
@@ -171,7 +168,8 @@ static inline ref<SingleDerivedPath> makeConstantStorePathRef(StorePath drvPath)
  * evaluate to single values. Perhaps this should have just a single
  * output name.
  */
-struct DerivedPathBuilt {
+struct DerivedPathBuilt
+{
     ref<const SingleDerivedPath> drvPath;
     OutputsSpec outputs;
 
@@ -201,20 +199,17 @@ struct DerivedPathBuilt {
      * @param xpSettings Stop-gap to avoid globals during unit tests.
      */
     static DerivedPathBuilt parse(
-        const StoreDirConfig & store, ref<const SingleDerivedPath>,
+        const StoreDirConfig & store,
+        ref<const SingleDerivedPath>,
         std::string_view,
         const ExperimentalFeatureSettings & xpSettings = experimentalFeatureSettings);
-    nlohmann::json toJSON(Store & store) const;
 
-    bool operator == (const DerivedPathBuilt &) const noexcept;
+    bool operator==(const DerivedPathBuilt &) const noexcept;
     // TODO libc++ 16 (used by darwin) missing `std::set::operator <=>`, can't do yet.
-    bool operator < (const DerivedPathBuilt &) const noexcept;
+    bool operator<(const DerivedPathBuilt &) const noexcept;
 };
 
-using _DerivedPathRaw = std::variant<
-    DerivedPathOpaque,
-    DerivedPathBuilt
->;
+using _DerivedPathRaw = std::variant<DerivedPathOpaque, DerivedPathBuilt>;
 
 /**
  * A "derived path" is a very simple sort of expression that evaluates
@@ -226,20 +221,22 @@ using _DerivedPathRaw = std::variant<
  * - built, in which case it is a pair of a derivation path and some
  *   output names.
  */
-struct DerivedPath : _DerivedPathRaw {
+struct DerivedPath : _DerivedPathRaw
+{
     using Raw = _DerivedPathRaw;
     using Raw::Raw;
 
     using Opaque = DerivedPathOpaque;
     using Built = DerivedPathBuilt;
 
-    inline const Raw & raw() const {
+    inline const Raw & raw() const
+    {
         return static_cast<const Raw &>(*this);
     }
 
-    bool operator == (const DerivedPath &) const = default;
+    bool operator==(const DerivedPath &) const = default;
     // TODO libc++ 16 (used by darwin) missing `std::set::operator <=>`, can't do yet.
-    //auto operator <=> (const DerivedPath &) const = default;
+    // auto operator <=> (const DerivedPath &) const = default;
 
     /**
      * Get the store path this is ultimately derived from (by realising
@@ -284,8 +281,6 @@ struct DerivedPath : _DerivedPathRaw {
      * Convert a `SingleDerivedPath` to a `DerivedPath`.
      */
     static DerivedPath fromSingle(const SingleDerivedPath &);
-
-    nlohmann::json toJSON(Store & store) const;
 };
 
 typedef std::vector<DerivedPath> DerivedPaths;
@@ -300,6 +295,11 @@ typedef std::vector<DerivedPath> DerivedPaths;
  * @param xpSettings Stop-gap to avoid globals during unit tests.
  */
 void drvRequireExperiment(
-    const SingleDerivedPath & drv,
-    const ExperimentalFeatureSettings & xpSettings = experimentalFeatureSettings);
-}
+    const SingleDerivedPath & drv, const ExperimentalFeatureSettings & xpSettings = experimentalFeatureSettings);
+} // namespace nix
+
+JSON_IMPL(nix::SingleDerivedPath::Opaque)
+JSON_IMPL_WITH_XP_FEATURES(nix::SingleDerivedPath::Built)
+JSON_IMPL_WITH_XP_FEATURES(nix::SingleDerivedPath)
+JSON_IMPL_WITH_XP_FEATURES(nix::DerivedPath::Built)
+JSON_IMPL_WITH_XP_FEATURES(nix::DerivedPath)

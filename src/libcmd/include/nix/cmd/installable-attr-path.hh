@@ -39,7 +39,10 @@ class InstallableAttrPath : public InstallableValue
         const std::string & attrPath,
         ExtendedOutputsSpec extendedOutputsSpec);
 
-    std::string what() const override { return attrPath; };
+    std::string what() const override
+    {
+        return attrPath;
+    };
 
     DerivedPathsWithInfo toDerivedPaths() override;
 
@@ -55,4 +58,4 @@ public:
         ExtendedOutputsSpec extendedOutputsSpec);
 };
 
-}
+} // namespace nix

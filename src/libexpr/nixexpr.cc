@@ -11,13 +11,13 @@
 
 namespace nix {
 
-unsigned long Expr::nrExprs = 0;
+Counter Expr::nrExprs;
 
 ExprBlackHole eBlackHole;
 
 // FIXME: remove, because *symbols* are abstract and do not have a single
 //        textual representation; see printIdentifier()
-std::ostream & operator <<(std::ostream & str, const SymbolStr & symbol)
+std::ostream & operator<<(std::ostream & str, const SymbolStr & symbol)
 {
     std::string_view s = symbol;
     return printIdentifier(str, s);
@@ -40,12 +40,12 @@ void ExprFloat::show(const SymbolTable & symbols, std::ostream & str) const
 
 void ExprString::show(const SymbolTable & symbols, std::ostream & str) const
 {
-    printLiteralString(str, s);
+    printLiteralString(str, v.string_view());
 }
 
 void ExprPath::show(const SymbolTable & symbols, std::ostream & str) const
 {
-    str << s;
+    str << v.pathStrView();
 }
 
 void ExprVar::show(const SymbolTable & symbols, std::ostream & str) const
@@ -57,7 +57,7 @@ void ExprSelect::show(const SymbolTable & symbols, std::ostream & str) const
 {
     str << "(";
     e->show(symbols, str);
-    str << ")." << showAttrPath(symbols, attrPath);
+    str << ")." << showAttrPath(symbols, getAttrPath());
     if (def) {
         str << " or (";
         def->show(symbols, str);
@@ -76,7 +76,8 @@ void ExprAttrs::showBindings(const SymbolTable & symbols, std::ostream & str) co
 {
     typedef const decltype(attrs)::value_type * Attr;
     std::vector<Attr> sorted;
-    for (auto & i : attrs) sorted.push_back(&i);
+    for (auto & i : attrs)
+        sorted.push_back(&i);
     std::sort(sorted.begin(), sorted.end(), [&](Attr a, Attr b) {
         std::string_view sa = symbols[a->first], sb = symbols[b->first];
         return sa < sb;
@@ -102,14 +103,16 @@ void ExprAttrs::showBindings(const SymbolTable & symbols, std::ostream & str) co
     }
     if (!inherits.empty()) {
         str << "inherit";
-        for (auto sym : inherits) str << " " << symbols[sym];
+        for (auto sym : inherits)
+            str << " " << symbols[sym];
         str << "; ";
     }
     for (const auto & [from, syms] : inheritsFrom) {
         str << "inherit (";
         (*inheritFromExprs)[from]->show(symbols, str);
         str << ")";
-        for (auto sym : syms) str << " " << symbols[sym];
+        for (auto sym : syms)
+            str << " " << symbols[sym];
         str << "; ";
     }
     for (auto & i : sorted) {
@@ -130,7 +133,8 @@ void ExprAttrs::showBindings(const SymbolTable & symbols, std::ostream & str) co
 
 void ExprAttrs::show(const SymbolTable & symbols, std::ostream & str) const
 {
-    if (recursive) str << "rec ";
+    if (recursive)
+        str << "rec ";
     str << "{ ";
     showBindings(symbols, str);
     str << "}";
@@ -150,28 +154,34 @@ void ExprList::show(const SymbolTable & symbols, std::ostream & str) const
 void ExprLambda::show(const SymbolTable & symbols, std::ostream & str) const
 {
     str << "(";
-    if (hasFormals()) {
+    if (auto formals = getFormals()) {
         str << "{ ";
         bool first = true;
         // the natural Symbol ordering is by creation time, which can lead to the
         // same expression being printed in two different ways depending on its
         // context. always use lexicographic ordering to avoid this.
         for (auto & i : formals->lexicographicOrder(symbols)) {
-            if (first) first = false; else str << ", ";
+            if (first)
+                first = false;
+            else
+                str << ", ";
             str << symbols[i.name];
             if (i.def) {
                 str << " ? ";
                 i.def->show(symbols, str);
             }
         }
-        if (formals->ellipsis) {
-            if (!first) str << ", ";
+        if (ellipsis) {
+            if (!first)
+                str << ", ";
             str << "...";
         }
         str << " }";
-        if (arg) str << " @ ";
+        if (arg)
+            str << " @ ";
     }
-    if (arg) str << symbols[arg];
+    if (arg)
+        str << symbols[arg];
     str << ": ";
     body->show(symbols, str);
     str << ")";
@@ -182,7 +192,7 @@ void ExprCall::show(const SymbolTable & symbols, std::ostream & str) const
     str << '(';
     fun->show(symbols, str);
     for (auto e : args) {
-        str <<  ' ';
+        str << ' ';
         e->show(symbols, str);
     }
     str << ')';
@@ -236,8 +246,11 @@ void ExprConcatStrings::show(const SymbolTable & symbols, std::ostream & str) co
 {
     bool first = true;
     str << "(";
-    for (auto & i : *es) {
-        if (first) first = false; else str << " + ";
+    for (auto & i : es) {
+        if (first)
+            first = false;
+        else
+            str << " + ";
         i.second->show(symbols, str);
     }
     str << ")";
@@ -248,13 +261,15 @@ void ExprPos::show(const SymbolTable & symbols, std::ostream & str) const
     str << "__curPos";
 }
 
-
-std::string showAttrPath(const SymbolTable & symbols, const AttrPath & attrPath)
+std::string showAttrPath(const SymbolTable & symbols, std::span<const AttrName> attrPath)
 {
     std::ostringstream out;
     bool first = true;
     for (auto & i : attrPath) {
-        if (!first) out << '.'; else first = false;
+        if (!first)
+            out << '.';
+        else
+            first = false;
         if (i.symbol)
             out << symbols[i.symbol];
         else {
@@ -265,7 +280,6 @@ std::string showAttrPath(const SymbolTable & symbols, const AttrPath & attrPath)
     }
     return out.str();
 }
-
 
 /* Computing levels/displacements for variables. */
 
@@ -312,7 +326,8 @@ void ExprVar::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> & 
     int withLevel = -1;
     for (curEnv = env.get(), level = 0; curEnv; curEnv = curEnv->up.get(), level++) {
         if (curEnv->isWith) {
-            if (withLevel == -1) withLevel = level;
+            if (withLevel == -1)
+                withLevel = level;
         } else {
             auto i = curEnv->find(name);
             if (i != curEnv->vars.end()) {
@@ -327,10 +342,7 @@ void ExprVar::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> & 
        enclosing `with'.  If there is no `with', then we can issue an
        "undefined variable" error now. */
     if (withLevel == -1)
-        es.error<UndefinedVarError>(
-            "undefined variable '%1%'",
-            es.symbols[name]
-        ).atPos(pos).debugThrow();
+        es.error<UndefinedVarError>("undefined variable '%1%'", es.symbols[name]).atPos(pos).debugThrow();
     for (auto * e = env.get(); e && !fromWith; e = e->up.get())
         fromWith = e->isWith;
     this->level = withLevel;
@@ -348,8 +360,9 @@ void ExprSelect::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv>
         es.exprEnvs.insert(std::make_pair(this, env));
 
     e->bindVars(es, env);
-    if (def) def->bindVars(es, env);
-    for (auto & i : attrPath)
+    if (def)
+        def->bindVars(es, env);
+    for (auto & i : getAttrPath())
         if (!i.symbol)
             i.expr->bindVars(es, env);
 }
@@ -365,8 +378,8 @@ void ExprOpHasAttr::bindVars(EvalState & es, const std::shared_ptr<const StaticE
             i.expr->bindVars(es, env);
 }
 
-std::shared_ptr<const StaticEnv> ExprAttrs::bindInheritSources(
-    EvalState & es, const std::shared_ptr<const StaticEnv> & env)
+std::shared_ptr<const StaticEnv>
+ExprAttrs::bindInheritSources(EvalState & es, const std::shared_ptr<const StaticEnv> & env)
 {
     if (!inheritFromExprs)
         return nullptr;
@@ -392,7 +405,7 @@ void ExprAttrs::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> 
         es.exprEnvs.insert(std::make_pair(this, env));
 
     if (recursive) {
-        auto newEnv = [&] () -> std::shared_ptr<const StaticEnv> {
+        auto newEnv = [&]() -> std::shared_ptr<const StaticEnv> {
             auto newEnv = std::make_shared<StaticEnv>(nullptr, env, attrs.size());
 
             Displacement displ = 0;
@@ -411,8 +424,7 @@ void ExprAttrs::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> 
             i.nameExpr->bindVars(es, newEnv);
             i.valueExpr->bindVars(es, newEnv);
         }
-    }
-    else {
+    } else {
         auto inheritFromEnv = bindInheritSources(es, env);
 
         for (auto & i : attrs)
@@ -439,23 +451,23 @@ void ExprLambda::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv>
     if (es.debugRepl)
         es.exprEnvs.insert(std::make_pair(this, env));
 
-    auto newEnv = std::make_shared<StaticEnv>(
-        nullptr, env,
-        (hasFormals() ? formals->formals.size() : 0) +
-        (!arg ? 0 : 1));
+    auto newEnv =
+        std::make_shared<StaticEnv>(nullptr, env, (getFormals() ? getFormals()->formals.size() : 0) + (!arg ? 0 : 1));
 
     Displacement displ = 0;
 
-    if (arg) newEnv->vars.emplace_back(arg, displ++);
+    if (arg)
+        newEnv->vars.emplace_back(arg, displ++);
 
-    if (hasFormals()) {
+    if (auto formals = getFormals()) {
         for (auto & i : formals->formals)
             newEnv->vars.emplace_back(i.name, displ++);
 
         newEnv->sort();
 
         for (auto & i : formals->formals)
-            if (i.def) i.def->bindVars(es, newEnv);
+            if (i.def)
+                i.def->bindVars(es, newEnv);
     }
 
     body->bindVars(es, newEnv);
@@ -473,7 +485,7 @@ void ExprCall::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> &
 
 void ExprLet::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> & env)
 {
-    auto newEnv = [&] () -> std::shared_ptr<const StaticEnv> {
+    auto newEnv = [&]() -> std::shared_ptr<const StaticEnv> {
         auto newEnv = std::make_shared<StaticEnv>(nullptr, env, attrs->attrs.size());
 
         Displacement displ = 0;
@@ -511,6 +523,7 @@ void ExprWith::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> &
     prevWith = 0;
     for (curEnv = env.get(), level = 1; curEnv; curEnv = curEnv->up.get(), level++)
         if (curEnv->isWith) {
+            assert(level <= std::numeric_limits<uint32_t>::max());
             prevWith = level;
             break;
         }
@@ -552,7 +565,7 @@ void ExprConcatStrings::bindVars(EvalState & es, const std::shared_ptr<const Sta
     if (es.debugRepl)
         es.exprEnvs.insert(std::make_pair(this, env));
 
-    for (auto & i : *this->es)
+    for (auto & i : this->es)
         i.second->bindVars(es, env);
 }
 
@@ -562,13 +575,9 @@ void ExprPos::bindVars(EvalState & es, const std::shared_ptr<const StaticEnv> & 
         es.exprEnvs.insert(std::make_pair(this, env));
 }
 
-
 /* Storing function names. */
 
-void Expr::setName(Symbol name)
-{
-}
-
+void Expr::setName(Symbol name) {}
 
 void ExprLambda::setName(Symbol name)
 {
@@ -576,16 +585,14 @@ void ExprLambda::setName(Symbol name)
     body->setName(name);
 }
 
-
 std::string ExprLambda::showNamePos(const EvalState & state) const
 {
-    std::string id(name
-        ? concatStrings("'", state.symbols[name], "'")
-        : "anonymous function");
+    std::string id(name ? concatStrings("'", state.symbols[name], "'") : "anonymous function");
     return fmt("%1% at %2%", id, state.positions[pos]);
 }
 
-void ExprLambda::setDocComment(DocComment docComment) {
+void ExprLambda::setDocComment(DocComment docComment)
+{
     // RFC 145 specifies that the innermost doc comment wins.
     // See https://github.com/NixOS/rfcs/blob/master/rfcs/0145-doc-strings.md#ambiguous-placement
     if (!this->docComment) {
@@ -606,11 +613,12 @@ void ExprLambda::setDocComment(DocComment docComment) {
 size_t SymbolTable::totalSize() const
 {
     size_t n = 0;
-    dump([&] (SymbolStr s) { n += s.size(); });
+    dump([&](SymbolStr s) { n += s.size(); });
     return n;
 }
 
-std::string DocComment::getInnerText(const PosTable & positions) const {
+std::string DocComment::getInnerText(const PosTable & positions) const
+{
     auto beginPos = positions[begin];
     auto endPos = positions[end];
     auto docCommentStr = beginPos.getSnippetUpTo(endPos).value_or("");
@@ -627,8 +635,6 @@ std::string DocComment::getInnerText(const PosTable & positions) const {
     docStr = stripIndentation(docStr);
     return docStr;
 }
-
-
 
 /* ‘Cursed or’ handling.
  *
@@ -647,13 +653,16 @@ void ExprCall::warnIfCursedOr(const SymbolTable & symbols, const PosTable & posi
 {
     if (cursedOrEndPos.has_value()) {
         std::ostringstream out;
-        out << "at " << positions[pos] << ": "
+        out << "at " << positions[pos]
+            << ": "
                "This expression uses `or` as an identifier in a way that will change in a future Nix release.\n"
                "Wrap this entire expression in parentheses to preserve its current meaning:\n"
-               "    (" << positions[pos].getSnippetUpTo(positions[*cursedOrEndPos]).value_or("could not read expression") << ")\n"
+               "    ("
+            << positions[pos].getSnippetUpTo(positions[*cursedOrEndPos]).value_or("could not read expression")
+            << ")\n"
                "Give feedback at https://github.com/NixOS/nix/pull/11121";
         warn(out.str());
     }
 }
 
-}
+} // namespace nix

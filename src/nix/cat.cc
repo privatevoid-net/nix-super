@@ -1,6 +1,10 @@
 #include "nix/cmd/command.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/nar-accessor.hh"
+#include "nix/util/serialise.hh"
+#include "nix/util/source-accessor.hh"
+
+#include <nlohmann/json.hpp>
 
 using namespace nix;
 
@@ -23,11 +27,7 @@ struct CmdCatStore : StoreCommand, MixCat
 
     CmdCatStore()
     {
-        expectArgs({
-            .label = "path",
-            .handler = {&path},
-            .completer = completePath
-        });
+        expectArgs({.label = "path", .handler = {&path}, .completer = completePath});
     }
 
     std::string description() override
@@ -38,14 +38,14 @@ struct CmdCatStore : StoreCommand, MixCat
     std::string doc() override
     {
         return
-          #include "store-cat.md"
-          ;
+#include "store-cat.md"
+            ;
     }
 
     void run(ref<Store> store) override
     {
         auto [storePath, rest] = store->toStorePath(path);
-        cat(store->getFSAccessor(), CanonPath{storePath.to_string()} / CanonPath{rest});
+        cat(store->requireStoreObjectAccessor(storePath), CanonPath{rest});
     }
 };
 
@@ -57,11 +57,7 @@ struct CmdCatNar : StoreCommand, MixCat
 
     CmdCatNar()
     {
-        expectArgs({
-            .label = "nar",
-            .handler = {&narPath},
-            .completer = completePath
-        });
+        expectArgs({.label = "nar", .handler = {&narPath}, .completer = completePath});
         expectArg("path", &path);
     }
 
@@ -73,13 +69,19 @@ struct CmdCatNar : StoreCommand, MixCat
     std::string doc() override
     {
         return
-          #include "nar-cat.md"
-          ;
+#include "nar-cat.md"
+            ;
     }
 
     void run(ref<Store> store) override
     {
-        cat(makeNarAccessor(readFile(narPath)), CanonPath{path});
+        AutoCloseFD fd = open(narPath.c_str(), O_RDONLY);
+        if (!fd)
+            throw SysError("opening NAR file '%s'", narPath);
+        auto source = FdSource{fd.get()};
+        auto narAccessor = makeNarAccessor(source);
+        auto listing = listNar(narAccessor, CanonPath::root, true);
+        cat(makeLazyNarAccessor(listing, seekableGetNarBytes(narPath)), CanonPath{path});
     }
 };
 

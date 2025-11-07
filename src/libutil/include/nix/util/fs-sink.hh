@@ -14,14 +14,21 @@ namespace nix {
  */
 struct CreateRegularFileSink : Sink
 {
+    /**
+     * If set to true, the sink will not be called with the contents
+     * of the file. `preallocateContents()` will still be called to
+     * convey the file size. Useful for sinks that want to efficiently
+     * discard the contents of the file.
+     */
+    bool skipContents = false;
+
     virtual void isExecutable() = 0;
 
     /**
      * An optimization. By default, do nothing.
      */
-    virtual void preallocateContents(uint64_t size) { };
+    virtual void preallocateContents(uint64_t size) {};
 };
-
 
 struct FileSystemObjectSink
 {
@@ -33,9 +40,7 @@ struct FileSystemObjectSink
      * This function in general is no re-entrant. Only one file can be
      * written at a time.
      */
-    virtual void createRegularFile(
-        const CanonPath & path,
-        std::function<void(CreateRegularFileSink &)>) = 0;
+    virtual void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) = 0;
 
     virtual void createSymlink(const CanonPath & path, const std::string & target) = 0;
 };
@@ -57,19 +62,18 @@ struct ExtendedFileSystemObjectSink : virtual FileSystemObjectSink
  * Recursively copy file system objects from the source into the sink.
  */
 void copyRecursive(
-    SourceAccessor & accessor, const CanonPath & sourcePath,
-    FileSystemObjectSink & sink, const CanonPath & destPath);
+    SourceAccessor & accessor, const CanonPath & sourcePath, FileSystemObjectSink & sink, const CanonPath & destPath);
 
 /**
  * Ignore everything and do nothing
  */
 struct NullFileSystemObjectSink : FileSystemObjectSink
 {
-    void createDirectory(const CanonPath & path) override { }
-    void createSymlink(const CanonPath & path, const std::string & target) override { }
-    void createRegularFile(
-        const CanonPath & path,
-        std::function<void(CreateRegularFileSink &)>) override;
+    void createDirectory(const CanonPath & path) override {}
+
+    void createSymlink(const CanonPath & path, const std::string & target) override {}
+
+    void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) override;
 };
 
 /**
@@ -82,13 +86,12 @@ struct RestoreSink : FileSystemObjectSink
 
     explicit RestoreSink(bool startFsync)
         : startFsync{startFsync}
-    { }
+    {
+    }
 
     void createDirectory(const CanonPath & path) override;
 
-    void createRegularFile(
-        const CanonPath & path,
-        std::function<void(CreateRegularFileSink &)>) override;
+    void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) override;
 
     void createSymlink(const CanonPath & path, const std::string & target) override;
 };
@@ -103,7 +106,10 @@ struct RegularFileSink : FileSystemObjectSink
     bool regular = true;
     Sink & sink;
 
-    RegularFileSink(Sink & sink) : sink(sink) { }
+    RegularFileSink(Sink & sink)
+        : sink(sink)
+    {
+    }
 
     void createDirectory(const CanonPath & path) override
     {
@@ -115,9 +121,7 @@ struct RegularFileSink : FileSystemObjectSink
         regular = false;
     }
 
-    void createRegularFile(
-        const CanonPath & path,
-        std::function<void(CreateRegularFileSink &)>) override;
+    void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) override;
 };
 
-}
+} // namespace nix
