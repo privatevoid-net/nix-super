@@ -1,5 +1,6 @@
 #include "nix/cmd/command.hh"
 #include "nix/cmd/activatables.hh"
+#include "nix/store/globals.hh"
 #include "nix/util/current-process.hh"
 
 using namespace nix;
