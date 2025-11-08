@@ -510,7 +510,7 @@ static StorePath getDeriver(ref<Store> store, const Installable & i, const Store
 
 Bindings * SourceExprCommand::getOverrideArgs(EvalState & state, ref<Store> store)
 {
-    Bindings * res = state.allocBindings(overrideArgs.size());
+    Bindings * res = state.mem.allocBindings(overrideArgs.size());
     for (auto & i : overrideArgs) {
         Value * v = state.allocValue();
         if (i.second[0] == 'E') {
@@ -619,13 +619,10 @@ Installables SourceExprCommand::parseInstallables(
 
                 auto state = getEvalState();
 
-                auto installableFlake = make_ref<InstallableFlake>(
-                    
                 auto [flakeRef, fragment] =
                     parseFlakeRefWithFragment(fetchSettings, actualRef, absPath(getCommandBaseDir()));
                 
-                result.push_back(
-                    make_ref<InstallableFlake>(
+                auto installableFlake = make_ref<InstallableFlake>(
                     this,
                     state,
                     std::move(flakeRef),
@@ -633,7 +630,9 @@ Installables SourceExprCommand::parseInstallables(
                     std::move(extendedOutputsSpec),
                     getDefaultFlakeAttrPaths(),
                     getDefaultFlakeAttrPathPrefixes(),
-                    lockFlags);
+                    lockFlags
+                );
+                
                 if (doModifyInstallable) {
                     result.push_back(modifyInstallable(store, state, installableFlake, s, "", extendedOutputsSpec));
                 } else {
