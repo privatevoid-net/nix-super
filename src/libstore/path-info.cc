@@ -8,10 +8,28 @@
 
 namespace nix {
 
+PathInfoJsonFormat parsePathInfoJsonFormat(uint64_t version)
+{
+    switch (version) {
+    case 1:
+        return PathInfoJsonFormat::V1;
+    case 2:
+        return PathInfoJsonFormat::V2;
+    default:
+        throw Error("unsupported path info JSON format version %d; supported versions are 1 and 2", version);
+    }
+}
+
+UnkeyedValidPathInfo::UnkeyedValidPathInfo(const StoreDirConfig & store, Hash narHash)
+    : UnkeyedValidPathInfo{store.storeDir, narHash}
+{
+}
+
 GENERATE_CMP_EXT(
     ,
     std::weak_ordering,
     UnkeyedValidPathInfo,
+    me->storeDir,
     me->deriver,
     me->narHash,
     me->references,
@@ -129,7 +147,7 @@ ValidPathInfo ValidPathInfo::makeFromCA(
 {
     ValidPathInfo res{
         store.makeFixedOutputPathFromCA(name, ca),
-        narHash,
+        UnkeyedValidPathInfo(store, narHash),
     };
     res.ca = ContentAddress{
         .method = ca.getMethod(),
@@ -150,29 +168,46 @@ ValidPathInfo ValidPathInfo::makeFromCA(
 }
 
 nlohmann::json
-UnkeyedValidPathInfo::toJSON(const StoreDirConfig & store, bool includeImpureInfo, HashFormat hashFormat) const
+UnkeyedValidPathInfo::toJSON(const StoreDirConfig * store, bool includeImpureInfo, PathInfoJsonFormat format) const
 {
     using nlohmann::json;
 
+    if (format == PathInfoJsonFormat::V1)
+        assert(store);
+
     auto jsonObject = json::object();
 
-    jsonObject["version"] = 2;
+    jsonObject["version"] = format;
 
-    jsonObject["narHash"] = narHash.to_string(hashFormat, true);
+    jsonObject["storeDir"] = storeDir;
+
+    jsonObject["narHash"] = format == PathInfoJsonFormat::V1
+                                ? static_cast<json>(narHash.to_string(HashFormat::SRI, true))
+                                : static_cast<json>(narHash);
+
     jsonObject["narSize"] = narSize;
 
     {
         auto & jsonRefs = jsonObject["references"] = json::array();
         for (auto & ref : references)
-            jsonRefs.emplace_back(store.printStorePath(ref));
+            jsonRefs.emplace_back(
+                format == PathInfoJsonFormat::V1 ? static_cast<json>(store->printStorePath(ref))
+                                                 : static_cast<json>(ref));
     }
 
-    jsonObject["ca"] = ca;
+    if (format == PathInfoJsonFormat::V1)
+        jsonObject["ca"] = ca ? static_cast<json>(renderContentAddress(*ca)) : static_cast<json>(nullptr);
+    else
+        jsonObject["ca"] = ca;
 
     if (includeImpureInfo) {
-        jsonObject["deriver"] = deriver ? (std::optional{store.printStorePath(*deriver)}) : std::nullopt;
-
-        jsonObject["registrationTime"] = registrationTime ? (std::optional{registrationTime}) : std::nullopt;
+        if (format == PathInfoJsonFormat::V1) {
+            jsonObject["deriver"] =
+                deriver ? static_cast<json>(store->printStorePath(*deriver)) : static_cast<json>(nullptr);
+        } else {
+            jsonObject["deriver"] = deriver;
+        }
+        jsonObject["registrationTime"] = registrationTime ? std::optional{registrationTime} : std::nullopt;
 
         jsonObject["ultimate"] = ultimate;
 
@@ -184,52 +219,65 @@ UnkeyedValidPathInfo::toJSON(const StoreDirConfig & store, bool includeImpureInf
     return jsonObject;
 }
 
-UnkeyedValidPathInfo UnkeyedValidPathInfo::fromJSON(const StoreDirConfig & store, const nlohmann::json & _json)
+UnkeyedValidPathInfo UnkeyedValidPathInfo::fromJSON(const StoreDirConfig * store, const nlohmann::json & _json)
 {
-    UnkeyedValidPathInfo res{
-        Hash(Hash::dummy),
-    };
-
     auto & json = getObject(_json);
 
-    // Check version (optional for backward compatibility)
-    nlohmann::json::number_unsigned_t version = 1;
-    if (json.contains("version")) {
-        version = getUnsigned(valueAt(json, "version"));
-        if (version != 1 && version != 2) {
-            throw Error("Unsupported path info JSON format version %d, expected 1 through 2", version);
-        }
-    }
+    PathInfoJsonFormat format = PathInfoJsonFormat::V1;
+    if (auto * version = optionalValueAt(json, "version"))
+        format = *version;
 
-    res.narHash = Hash::parseAny(getString(valueAt(json, "narHash")), std::nullopt);
+    if (format == PathInfoJsonFormat::V1)
+        assert(store);
+
+    UnkeyedValidPathInfo res{
+        [&] {
+            if (auto * rawStoreDir = optionalValueAt(json, "storeDir"))
+                return getString(*rawStoreDir);
+            else if (format == PathInfoJsonFormat::V1)
+                return store->storeDir;
+            else
+                throw Error("'storeDir' field is required in path info JSON format version 2");
+        }(),
+        [&] {
+            return format == PathInfoJsonFormat::V1 ? Hash::parseSRI(getString(valueAt(json, "narHash")))
+                                                    : Hash(valueAt(json, "narHash"));
+        }(),
+    };
+
     res.narSize = getUnsigned(valueAt(json, "narSize"));
 
     try {
-        auto references = getStringList(valueAt(json, "references"));
+        auto & references = getArray(valueAt(json, "references"));
         for (auto & input : references)
-            res.references.insert(store.parseStorePath(static_cast<const std::string &>(input)));
+            res.references.insert(
+                format == PathInfoJsonFormat::V1 ? store->parseStorePath(getString(input))
+                                                 : static_cast<StorePath>(input));
     } catch (Error & e) {
         e.addTrace({}, "while reading key 'references'");
         throw;
     }
 
-    // New format as this as nullable but mandatory field; handling
-    // missing is for back-compat.
-    if (auto * rawCa0 = optionalValueAt(json, "ca"))
-        if (auto * rawCa = getNullable(*rawCa0))
-            switch (version) {
-            case 1:
-                // old string format also used in SQLite DB and .narinfo
+    try {
+        if (format == PathInfoJsonFormat::V1) {
+            if (auto * rawCa = getNullable(valueAt(json, "ca")))
                 res.ca = ContentAddress::parse(getString(*rawCa));
-                break;
-            case 2 ... std::numeric_limits<decltype(version)>::max():
-                res.ca = *rawCa;
-                break;
-            }
+        } else {
+            res.ca = ptrToOwned<ContentAddress>(getNullable(valueAt(json, "ca")));
+        }
+    } catch (Error & e) {
+        e.addTrace({}, "while reading key 'ca'");
+        throw;
+    }
 
-    if (auto * rawDeriver0 = optionalValueAt(json, "deriver"))
-        if (auto * rawDeriver = getNullable(*rawDeriver0))
-            res.deriver = store.parseStorePath(getString(*rawDeriver));
+    if (auto * rawDeriver0 = optionalValueAt(json, "deriver")) {
+        if (format == PathInfoJsonFormat::V1) {
+            if (auto * rawDeriver = getNullable(*rawDeriver0))
+                res.deriver = store->parseStorePath(getString(*rawDeriver));
+        } else {
+            res.deriver = ptrToOwned<StorePath>(getNullable(*rawDeriver0));
+        }
+    }
 
     if (auto * rawRegistrationTime0 = optionalValueAt(json, "registrationTime"))
         if (auto * rawRegistrationTime = getNullable(*rawRegistrationTime0))
@@ -245,3 +293,45 @@ UnkeyedValidPathInfo UnkeyedValidPathInfo::fromJSON(const StoreDirConfig & store
 }
 
 } // namespace nix
+
+namespace nlohmann {
+
+using namespace nix;
+
+PathInfoJsonFormat adl_serializer<PathInfoJsonFormat>::from_json(const json & json)
+{
+    return parsePathInfoJsonFormat(getUnsigned(json));
+}
+
+void adl_serializer<PathInfoJsonFormat>::to_json(json & json, const PathInfoJsonFormat & format)
+{
+    json = static_cast<int>(format);
+}
+
+UnkeyedValidPathInfo adl_serializer<UnkeyedValidPathInfo>::from_json(const json & json)
+{
+    return UnkeyedValidPathInfo::fromJSON(nullptr, json);
+}
+
+void adl_serializer<UnkeyedValidPathInfo>::to_json(json & json, const UnkeyedValidPathInfo & c)
+{
+    json = c.toJSON(nullptr, true, PathInfoJsonFormat::V2);
+}
+
+ValidPathInfo adl_serializer<ValidPathInfo>::from_json(const json & json0)
+{
+    auto json = getObject(json0);
+
+    return ValidPathInfo{
+        valueAt(json, "path"),
+        adl_serializer<UnkeyedValidPathInfo>::from_json(json0),
+    };
+}
+
+void adl_serializer<ValidPathInfo>::to_json(json & json, const ValidPathInfo & v)
+{
+    adl_serializer<UnkeyedValidPathInfo>::to_json(json, v);
+    json["path"] = v.path;
+}
+
+} // namespace nlohmann

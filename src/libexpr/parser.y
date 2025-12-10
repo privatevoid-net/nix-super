@@ -115,7 +115,7 @@ static void setDocPosition(const LexerState & lexerState, ExprLambda * lambda, P
 
 static Expr * makeCall(Exprs & exprs, PosIdx pos, Expr * fn, Expr * arg) {
     if (auto e2 = dynamic_cast<ExprCall *>(fn)) {
-        e2->args.push_back(arg);
+        e2->args->push_back(arg);
         return fn;
     }
     return exprs.add<ExprCall>(pos, fn, {arg});
@@ -126,26 +126,26 @@ static Expr * makeCall(Exprs & exprs, PosIdx pos, Expr * fn, Expr * arg) {
 
 %define api.value.type variant
 
-%type <nix::Expr *> start expr expr_function expr_if expr_op
-%type <nix::Expr *> expr_select expr_simple expr_app
-%type <nix::Expr *> expr_pipe_from expr_pipe_into
-%type <std::vector<Expr *>> list
-%type <nix::ExprAttrs *> binds binds1
-%type <nix::FormalsBuilder> formals formal_set
-%type <nix::Formal> formal
-%type <std::vector<nix::AttrName>> attrpath
-%type <std::vector<std::pair<nix::AttrName, nix::PosIdx>>> attrs
-%type <std::vector<std::pair<nix::PosIdx, nix::Expr *>>> string_parts_interpolated
-%type <std::vector<std::pair<nix::PosIdx, std::variant<nix::Expr *, nix::StringToken>>>> ind_string_parts
-%type <nix::Expr *> path_start
-%type <std::variant<nix::Expr *, std::string_view>> string_parts string_attr
-%type <nix::StringToken> attr
-%token <nix::StringToken> ID
-%token <nix::StringToken> STR IND_STR
-%token <nix::NixInt> INT_LIT
-%token <nix::NixFloat> FLOAT_LIT
-%token <nix::StringToken> PATH HPATH SPATH PATH_END
-%token <nix::StringToken> URI
+%type <Expr *> start expr expr_function expr_if expr_op
+%type <Expr *> expr_select expr_simple expr_app
+%type <Expr *> expr_pipe_from expr_pipe_into
+%type <std::pmr::vector<Expr *>> list
+%type <ExprAttrs *> binds binds1
+%type <FormalsBuilder> formals formal_set
+%type <Formal> formal
+%type <std::vector<AttrName>> attrpath
+%type <std::vector<std::pair<AttrName, PosIdx>>> attrs
+%type <std::vector<std::pair<PosIdx, Expr *>>> string_parts_interpolated
+%type <std::vector<std::pair<PosIdx, std::variant<Expr *, StringToken>>>> ind_string_parts
+%type <Expr *> path_start
+%type <ToBeStringyExpr> string_parts string_attr
+%type <StringToken> attr
+%token <StringToken> ID
+%token <StringToken> STR IND_STR
+%token <NixInt> INT_LIT
+%token <NixFloat> FLOAT_LIT
+%token <StringToken> PATH HPATH SPATH PATH_END
+%token <StringToken> URI
 %token IF THEN ELSE ASSERT WITH LET IN_KW REC INHERIT EQ NEQ AND OR IMPL OR_KW
 %token PIPE_FROM PIPE_INTO /* <| and |> */
 %token DOLLAR_CURLY /* == ${ */
@@ -186,7 +186,7 @@ expr_function
   | formal_set ':' expr_function[body]
     {
       state->validateFormals($formal_set);
-      auto me = state->exprs.add<ExprLambda>(state->positions, state->exprs.alloc, CUR_POS, std::move($formal_set), $body);
+      auto me = state->exprs.add<ExprLambda>(state->positions, state->exprs.alloc, CUR_POS, $formal_set, $body);
       $$ = me;
       SET_DOC_POS(me, @1);
     }
@@ -194,7 +194,7 @@ expr_function
     {
       auto arg = state->symbols.create($ID);
       state->validateFormals($formal_set, CUR_POS, arg);
-      auto me = state->exprs.add<ExprLambda>(state->positions, state->exprs.alloc, CUR_POS, arg, std::move($formal_set), $body);
+      auto me = state->exprs.add<ExprLambda>(state->positions, state->exprs.alloc, CUR_POS, arg, $formal_set, $body);
       $$ = me;
       SET_DOC_POS(me, @1);
     }
@@ -202,7 +202,7 @@ expr_function
     {
       auto arg = state->symbols.create($ID);
       state->validateFormals($formal_set, CUR_POS, arg);
-      auto me = state->exprs.add<ExprLambda>(state->positions, state->exprs.alloc, CUR_POS, arg, std::move($formal_set), $body);
+      auto me = state->exprs.add<ExprLambda>(state->positions, state->exprs.alloc, CUR_POS, arg, $formal_set, $body);
       $$ = me;
       SET_DOC_POS(me, @1);
     }
@@ -211,7 +211,7 @@ expr_function
   | WITH expr ';' expr_function
     { $$ = state->exprs.add<ExprWith>(CUR_POS, $2, $4); }
   | LET binds IN_KW expr_function
-    { if (!$2->dynamicAttrs.empty())
+    { if (!$2->dynamicAttrs->empty())
         throw ParseError({
             .msg = HintFmt("dynamic attributes not allowed in let"),
             .pos = state->positions[CUR_POS]
@@ -251,7 +251,7 @@ expr_op
   | expr_op OR expr_op { $$ = state->exprs.add<ExprOpOr>(state->at(@2), $1, $3); }
   | expr_op IMPL expr_op { $$ = state->exprs.add<ExprOpImpl>(state->at(@2), $1, $3); }
   | expr_op UPDATE expr_op { $$ = state->exprs.add<ExprOpUpdate>(state->at(@2), $1, $3); }
-  | expr_op '?' attrpath { $$ = state->exprs.add<ExprOpHasAttr>(state->exprs.alloc, $1, std::move($3)); }
+  | expr_op '?' attrpath { $$ = state->exprs.add<ExprOpHasAttr>(state->exprs.alloc, $1, $3); }
   | expr_op '+' expr_op
     { $$ = state->exprs.add<ExprConcatStrings>(state->exprs.alloc, state->at(@2), false, {{state->at(@1), $1}, {state->at(@3), $3}}); }
   | expr_op '-' expr_op { $$ = state->exprs.add<ExprCall>(state->at(@2), state->exprs.add<ExprVar>(state->s.sub), {$1, $3}); }
@@ -273,9 +273,9 @@ expr_app
 
 expr_select
   : expr_simple '.' attrpath
-    { $$ = state->exprs.add<ExprSelect>(state->exprs.alloc, CUR_POS, $1, std::move($3), nullptr); }
+    { $$ = state->exprs.add<ExprSelect>(state->exprs.alloc, CUR_POS, $1, $3, nullptr); }
   | expr_simple '.' attrpath OR_KW expr_select
-    { $$ = state->exprs.add<ExprSelect>(state->exprs.alloc, CUR_POS, $1, std::move($3), $5); $5->warnIfCursedOr(state->symbols, state->positions); }
+    { $$ = state->exprs.add<ExprSelect>(state->exprs.alloc, CUR_POS, $1, $3, $5); $5->warnIfCursedOr(state->symbols, state->positions); }
   | /* Backwards compatibility: because Nixpkgs has a function named ‘or’,
        allow stuff like ‘map or [...]’. This production is problematic (see
        https://github.com/NixOS/nix/issues/11118) and will be refactored in the
@@ -298,19 +298,14 @@ expr_simple
   }
   | INT_LIT { $$ = state->exprs.add<ExprInt>($1); }
   | FLOAT_LIT { $$ = state->exprs.add<ExprFloat>($1); }
-  | '"' string_parts '"' {
-      std::visit(overloaded{
-          [&](std::string_view str) { $$ = state->exprs.add<ExprString>(state->exprs.alloc, str); },
-          [&](Expr * expr) { $$ = expr; }},
-      $2);
-  }
+  | '"' string_parts '"' { $$ = $2.toExpr(state->exprs); }
   | IND_STRING_OPEN ind_string_parts IND_STRING_CLOSE {
-      $$ = state->stripIndentation(CUR_POS, std::move($2));
+      $$ = state->stripIndentation(CUR_POS, $2);
   }
   | path_start PATH_END
   | path_start string_parts_interpolated PATH_END {
       $2.insert($2.begin(), {state->at(@1), $1});
-      $$ = state->exprs.add<ExprConcatStrings>(state->exprs.alloc, CUR_POS, false, std::move($2));
+      $$ = state->exprs.add<ExprConcatStrings>(state->exprs.alloc, CUR_POS, false, $2);
   }
   | SPATH {
       std::string_view path($1.p + 1, $1.l - 2);
@@ -339,13 +334,13 @@ expr_simple
     { $2->pos = CUR_POS; $$ = $2; }
   | '{' '}'
     { $$ = state->exprs.add<ExprAttrs>(CUR_POS); }
-  | '[' list ']' { $$ = state->exprs.add<ExprList>(state->exprs.alloc, std::move($2)); }
+  | '[' list ']' { $$ = state->exprs.add<ExprList>(state->exprs.alloc, $2); }
   ;
 
 string_parts
-  : STR { $$ = $1; }
-  | string_parts_interpolated { $$ = state->exprs.add<ExprConcatStrings>(state->exprs.alloc, CUR_POS, true, std::move($1)); }
-  | { $$ = std::string_view(); }
+  : STR { $$ = {$1}; }
+  | string_parts_interpolated { $$ = {state->exprs.add<ExprConcatStrings>(state->exprs.alloc, CUR_POS, true, $1)}; }
+  | { $$ = {std::string_view()}; }
   ;
 
 string_parts_interpolated
@@ -390,7 +385,7 @@ path_start
             std::string_view($1.p, $1.l)
         );
     }
-    Path path(getHome() + std::string($1.p + 1, $1.l - 1));
+    Path path(getHome().string() + std::string($1.p + 1, $1.l - 1));
     $$ = state->exprs.add<ExprPath>(state->exprs.alloc, ref<SourceAccessor>(state->rootFS), path);
   }
   ;
@@ -414,9 +409,9 @@ binds1
   | binds[accum] INHERIT attrs ';'
     { $$ = $accum;
       for (auto & [i, iPos] : $attrs) {
-          if ($accum->attrs.find(i.symbol) != $accum->attrs.end())
-              state->dupAttr(i.symbol, iPos, $accum->attrs[i.symbol].pos);
-          $accum->attrs.emplace(
+          if ($accum->attrs->find(i.symbol) != $accum->attrs->end())
+              state->dupAttr(i.symbol, iPos, (*$accum->attrs)[i.symbol].pos);
+          $accum->attrs->emplace(
               i.symbol,
               ExprAttrs::AttrDef(state->exprs.add<ExprVar>(iPos, i.symbol), iPos, ExprAttrs::AttrDef::Kind::Inherited));
       }
@@ -424,13 +419,13 @@ binds1
   | binds[accum] INHERIT '(' expr ')' attrs ';'
     { $$ = $accum;
       if (!$accum->inheritFromExprs)
-          $accum->inheritFromExprs = std::make_unique<std::vector<Expr *>>();
+          $accum->inheritFromExprs = std::make_unique<std::pmr::vector<Expr *>>();
       $accum->inheritFromExprs->push_back($expr);
-      auto from = new nix::ExprInheritFrom(state->at(@expr), $accum->inheritFromExprs->size() - 1);
+      auto from = state->exprs.add<ExprInheritFrom>(state->at(@expr), $accum->inheritFromExprs->size() - 1);
       for (auto & [i, iPos] : $attrs) {
-          if ($accum->attrs.find(i.symbol) != $accum->attrs.end())
-              state->dupAttr(i.symbol, iPos, $accum->attrs[i.symbol].pos);
-          $accum->attrs.emplace(
+          if ($accum->attrs->find(i.symbol) != $accum->attrs->end())
+              state->dupAttr(i.symbol, iPos, (*$accum->attrs)[i.symbol].pos);
+          $accum->attrs->emplace(
               i.symbol,
               ExprAttrs::AttrDef(
                   state->exprs.add<ExprSelect>(state->exprs.alloc, iPos, from, i.symbol),
@@ -448,15 +443,15 @@ attrs
   : attrs attr { $$ = std::move($1); $$.emplace_back(state->symbols.create($2), state->at(@2)); }
   | attrs string_attr
     { $$ = std::move($1);
-      std::visit(overloaded {
+      $2.visit(overloaded{
           [&](std::string_view str) { $$.emplace_back(state->symbols.create(str), state->at(@2)); },
           [&](Expr * expr) {
-              throw ParseError({
-                  .msg = HintFmt("dynamic attributes not allowed in inherit"),
-                  .pos = state->positions[state->at(@2)]
-              });
-          }
-      }, $2);
+                throw ParseError({
+                    .msg = HintFmt("dynamic attributes not allowed in inherit"),
+                    .pos = state->positions[state->at(@2)]
+                });
+          }}
+      );
     }
   | { }
   ;
@@ -465,17 +460,17 @@ attrpath
   : attrpath '.' attr { $$ = std::move($1); $$.emplace_back(state->symbols.create($3)); }
   | attrpath '.' string_attr
     { $$ = std::move($1);
-      std::visit(overloaded {
+      $3.visit(overloaded{
           [&](std::string_view str) { $$.emplace_back(state->symbols.create(str)); },
-          [&](Expr * expr) { $$.emplace_back(expr); }
-      }, std::move($3));
+          [&](Expr * expr) { $$.emplace_back(expr); }}
+      );
     }
   | attr { $$.emplace_back(state->symbols.create($1)); }
   | string_attr
-    { std::visit(overloaded {
+    { $1.visit(overloaded{
           [&](std::string_view str) { $$.emplace_back(state->symbols.create(str)); },
-          [&](Expr * expr) { $$.emplace_back(expr); }
-      }, std::move($1));
+          [&](Expr * expr) { $$.emplace_back(expr); }}
+      );
     }
   ;
 
@@ -486,7 +481,7 @@ attr
 
 string_attr
   : '"' string_parts '"' { $$ = std::move($2); }
-  | DOLLAR_CURLY expr '}' { $$ = $2; }
+  | DOLLAR_CURLY expr '}' { $$ = {$2}; }
   ;
 
 list

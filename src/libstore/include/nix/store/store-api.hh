@@ -310,7 +310,7 @@ protected:
 
     // Note: this is a `ref` to avoid false sharing with immutable
     // bits of `Store`.
-    ref<SharedSync<LRUCache<std::string, PathInfoCacheValue>>> pathInfoCache;
+    ref<SharedSync<LRUCache<StorePath, PathInfoCacheValue>>> pathInfoCache;
 
     std::shared_ptr<NarInfoDiskCache> diskCache;
 
@@ -996,6 +996,12 @@ OutputPathMap resolveDerivedPath(Store &, const DerivedPath::Built &, Store * ev
  */
 std::string showPaths(const PathSet & paths);
 
+/**
+ * Display a set of paths in human-readable form (i.e., between quotes
+ * and separated by commas).
+ */
+std::string showPaths(const std::set<std::filesystem::path> paths);
+
 std::optional<ValidPathInfo>
 decodeValidPathInfo(const Store & store, std::istream & str, std::optional<HashResult> hashGiven = std::nullopt);
 
@@ -1004,4 +1010,10 @@ const ContentAddress * getDerivationCA(const BasicDerivation & drv);
 std::map<DrvOutput, StorePath>
 drvOutputReferences(Store & store, const Derivation & drv, const StorePath & outputPath, Store * evalStore = nullptr);
 
+template<>
+struct json_avoids_null<TrustedFlag> : std::true_type
+{};
+
 } // namespace nix
+
+JSON_IMPL(nix::TrustedFlag)

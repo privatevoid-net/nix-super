@@ -47,6 +47,7 @@
     { nodes }: # python
     ''
       import json
+      import os
 
       start_all()
 
@@ -117,10 +118,10 @@
       tarball_store_path = json.loads(tarball_store_path_json)
 
       # Get the NAR hash of the unpacked tarball in SRI format
-      path_info_json = substituter.succeed(f"nix path-info --json {tarball_store_path}").strip()
-      path_info_dict = json.loads(path_info_json)
-      # nix path-info returns a dict with store paths as keys
-      tarball_hash_sri = path_info_dict[tarball_store_path]["narHash"]
+      path_info_json = substituter.succeed(f"nix path-info --json-format 2 --json {tarball_store_path}").strip()
+      path_info_dict = json.loads(path_info_json)["info"]
+      # narHash is already in SRI format
+      tarball_hash_sri = path_info_dict[os.path.basename(tarball_store_path)]["narHash"]
       print(f"Tarball NAR hash (SRI): {tarball_hash_sri}")
 
       # Also get the old format hash for fetchTarball (which uses sha256 parameter)

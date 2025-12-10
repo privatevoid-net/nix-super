@@ -134,10 +134,14 @@ void S3BinaryCacheStore::upsertFile(
     const std::string & path, RestartableSource & source, const std::string & mimeType, uint64_t sizeHint)
 {
     auto doUpload = [&](RestartableSource & src, uint64_t size, std::optional<Headers> headers) {
+        Headers uploadHeaders = headers.value_or(Headers());
+        if (auto storageClass = s3Config->storageClass.get()) {
+            uploadHeaders.emplace_back("x-amz-storage-class", *storageClass);
+        }
         if (s3Config->multipartUpload && size > s3Config->multipartThreshold) {
-            uploadMultipart(path, src, size, mimeType, std::move(headers));
+            uploadMultipart(path, src, size, mimeType, std::move(uploadHeaders));
         } else {
-            upload(path, src, size, mimeType, std::move(headers));
+            upload(path, src, size, mimeType, std::move(uploadHeaders));
         }
     };
 
@@ -291,7 +295,7 @@ std::string S3BinaryCacheStore::createMultipartUpload(
     url.query["uploads"] = "";
     req.uri = VerbatimURL(url);
 
-    req.method = HttpMethod::POST;
+    req.method = HttpMethod::Post;
     StringSource payload{std::string_view("")};
     req.data = {payload};
     req.mimeType = mimeType;
@@ -321,7 +325,7 @@ S3BinaryCacheStore::uploadPart(std::string_view key, std::string_view uploadId, 
     }
 
     auto req = makeRequest(key);
-    req.method = HttpMethod::PUT;
+    req.method = HttpMethod::Put;
     req.setupForS3();
 
     auto url = req.uri.parsed();
@@ -351,7 +355,7 @@ void S3BinaryCacheStore::abortMultipartUpload(std::string_view key, std::string_
         auto url = req.uri.parsed();
         url.query["uploadId"] = uploadId;
         req.uri = VerbatimURL(url);
-        req.method = HttpMethod::DELETE;
+        req.method = HttpMethod::Delete;
 
         getFileTransfer()->enqueueFileTransfer(req).get();
     } catch (...) {
@@ -368,7 +372,7 @@ void S3BinaryCacheStore::completeMultipartUpload(
     auto url = req.uri.parsed();
     url.query["uploadId"] = uploadId;
     req.uri = VerbatimURL(url);
-    req.method = HttpMethod::POST;
+    req.method = HttpMethod::Post;
 
     std::string xml = "<CompleteMultipartUpload>";
     for (const auto & [idx, etag] : enumerate(partEtags)) {
@@ -450,11 +454,9 @@ std::string S3BinaryCacheStoreConfig::getHumanReadableURI() const
 
 std::string S3BinaryCacheStoreConfig::doc()
 {
-    return R"(
-        **Store URL format**: `s3://bucket-name`
-
-        This store allows reading and writing a binary cache stored in an AWS S3 bucket.
-    )";
+    return
+#include "s3-binary-cache-store.md"
+        ;
 }
 
 ref<Store> S3BinaryCacheStoreConfig::openStore() const

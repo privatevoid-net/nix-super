@@ -493,7 +493,7 @@ void RemoteStore::registerDrvOutput(const Realisation & info)
     auto conn(getConnection());
     conn->to << WorkerProto::Op::RegisterDrvOutput;
     if (GET_PROTOCOL_MINOR(conn->protoVersion) < 31) {
-        conn->to << info.id.to_string();
+        WorkerProto::write(*this, *conn, info.id);
         conn->to << std::string(info.outPath.to_string());
     } else {
         WorkerProto::write(*this, *conn, info);
@@ -513,7 +513,7 @@ void RemoteStore::queryRealisationUncached(
         }
 
         conn->to << WorkerProto::Op::QueryRealisation;
-        conn->to << id.to_string();
+        WorkerProto::write(*this, *conn, id);
         conn.processStderr();
 
         auto real = [&]() -> std::shared_ptr<const UnkeyedRealisation> {
@@ -694,7 +694,8 @@ void RemoteStore::collectGarbage(const GCOptions & options, GCResults & results)
 {
     auto conn(getConnection());
 
-    conn->to << WorkerProto::Op::CollectGarbage << options.action;
+    conn->to << WorkerProto::Op::CollectGarbage;
+    WorkerProto::write(*this, *conn, options.action);
     WorkerProto::write(*this, *conn, options.pathsToDelete);
     conn->to << options.ignoreLiveness
              << options.maxFreed

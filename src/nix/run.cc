@@ -161,7 +161,7 @@ struct CmdRun : InstallableValueCommand, MixEnvironment
         lockFlags.applyNixConfig = true;
         auto app = installable->toApp(*state).resolve(getEvalStore(), store);
 
-        Strings allArgs{app.program};
+        Strings allArgs{app.program.string()};
         for (auto & i : args)
             allArgs.push_back(i);
 
@@ -171,7 +171,7 @@ struct CmdRun : InstallableValueCommand, MixEnvironment
 
         setEnviron();
 
-        execProgramInStore(store, UseLookupPath::DontUse, app.program, allArgs);
+        execProgramInStore(store, UseLookupPath::DontUse, app.program.string(), allArgs);
     }
 };
 

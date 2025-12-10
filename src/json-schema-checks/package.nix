@@ -20,6 +20,7 @@ mkMesonDerivation (finalAttrs: {
   fileset = lib.fileset.unions [
     ../../.version
     ../../doc/manual/source/protocols/json/schema
+    ../../src/libutil-tests/data/memory-source-accessor
     ../../src/libutil-tests/data/hash
     ../../src/libstore-tests/data/content-address
     ../../src/libstore-tests/data/store-path
@@ -29,20 +30,17 @@ mkMesonDerivation (finalAttrs: {
     ../../src/libstore-tests/data/path-info
     ../../src/libstore-tests/data/nar-info
     ../../src/libstore-tests/data/build-result
+    ../../src/libstore-tests/data/dummy-store
     ./.
   ];
 
   outputs = [ "out" ];
 
-  passthru.externalNativeBuildInputs = [
-    jsonschema
-  ];
-
   nativeBuildInputs = [
     meson
     ninja
-  ]
-  ++ finalAttrs.passthru.externalNativeBuildInputs;
+    jsonschema
+  ];
 
   doCheck = true;
 

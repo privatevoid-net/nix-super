@@ -10,6 +10,7 @@
 #include "nix/util/closure.hh"
 #include "nix/store/filetransfer.hh"
 #include "nix/util/strings.hh"
+#include "nix/util/json-utils.hh"
 
 #include <boost/unordered/unordered_flat_set.hpp>
 
@@ -224,11 +225,12 @@ MissingPaths Store::queryMissing(const std::vector<DerivedPath> & targets)
                         return;
 
                     auto drv = make_ref<Derivation>(derivationFromPath(drvPath));
-                    DerivationOptions drvOptions;
+                    DerivationOptions<SingleDerivedPath> drvOptions;
                     try {
                         // FIXME: this is a lot of work just to get the value
                         // of `allowSubstitutes`.
-                        drvOptions = DerivationOptions::fromStructuredAttrs(drv->env, drv->structuredAttrs);
+                        drvOptions = derivationOptionsFromStructuredAttrs(
+                            *this, drv->inputDrvs, drv->env, get(drv->structuredAttrs));
                     } catch (Error & e) {
                         e.addTrace({}, "while parsing derivation '%s'", printStorePath(drvPath));
                         throw;
@@ -311,22 +313,25 @@ MissingPaths Store::queryMissing(const std::vector<DerivedPath> & targets)
 
 StorePaths Store::topoSortPaths(const StorePathSet & paths)
 {
-    return topoSort(
-        paths,
-        {[&](const StorePath & path) {
-            try {
-                return queryPathInfo(path)->references;
-            } catch (InvalidPath &) {
-                return StorePathSet();
-            }
-        }},
-        {[&](const StorePath & path, const StorePath & parent) {
-            return BuildError(
-                BuildResult::Failure::OutputRejected,
-                "cycle detected in the references of '%s' from '%s'",
-                printStorePath(path),
-                printStorePath(parent));
-        }});
+    auto result = topoSort(paths, [&](const StorePath & path) {
+        try {
+            return queryPathInfo(path)->references;
+        } catch (InvalidPath &) {
+            return StorePathSet();
+        }
+    });
+
+    return std::visit(
+        overloaded{
+            [&](const Cycle<StorePath> & cycle) -> StorePaths {
+                throw BuildError(
+                    BuildResult::Failure::OutputRejected,
+                    "cycle detected in the references of '%s' from '%s'",
+                    printStorePath(cycle.path),
+                    printStorePath(cycle.parent));
+            },
+            [](const auto & sorted) { return sorted; }},
+        result);
 }
 
 std::map<DrvOutput, StorePath>
@@ -479,3 +484,19 @@ OutputPathMap resolveDerivedPath(Store & store, const DerivedPath::Built & bfd)
 }
 
 } // namespace nix
+
+namespace nlohmann {
+
+using namespace nix;
+
+TrustedFlag adl_serializer<TrustedFlag>::from_json(const json & json)
+{
+    return getBoolean(json) ? TrustedFlag::Trusted : TrustedFlag::NotTrusted;
+}
+
+void adl_serializer<TrustedFlag>::to_json(json & json, const TrustedFlag & trustedFlag)
+{
+    json = static_cast<bool>(trustedFlag);
+}
+
+} // namespace nlohmann

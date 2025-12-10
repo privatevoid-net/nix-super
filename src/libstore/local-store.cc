@@ -722,8 +722,7 @@ uint64_t LocalStore::addValidPath(State & state, const ValidPathInfo & info, boo
         }
     }
 
-    pathInfoCache->lock()->upsert(
-        std::string(info.path.to_string()), PathInfoCacheValue{.value = std::make_shared<const ValidPathInfo>(info)});
+    pathInfoCache->lock()->upsert(info.path, PathInfoCacheValue{.value = std::make_shared<const ValidPathInfo>(info)});
 
     return id;
 }
@@ -758,7 +757,7 @@ std::shared_ptr<const ValidPathInfo> LocalStore::queryPathInfoInternal(State & s
         throw Error("invalid-path entry for '%s': %s", printStorePath(path), e.what());
     }
 
-    auto info = std::make_shared<ValidPathInfo>(path, narHash);
+    auto info = std::make_shared<ValidPathInfo>(path, UnkeyedValidPathInfo(*this, narHash));
 
     info->id = id;
 
@@ -989,19 +988,22 @@ void LocalStore::registerValidPaths(const ValidPathInfos & infos)
            error if a cycle is detected and roll back the
            transaction.  Cycles can only occur when a derivation
            has multiple outputs. */
-        topoSort(
-            paths,
-            {[&](const StorePath & path) {
-                auto i = infos.find(path);
-                return i == infos.end() ? StorePathSet() : i->second.references;
-            }},
-            {[&](const StorePath & path, const StorePath & parent) {
-                return BuildError(
-                    BuildResult::Failure::OutputRejected,
-                    "cycle detected in the references of '%s' from '%s'",
-                    printStorePath(path),
-                    printStorePath(parent));
-            }});
+        auto topoSortResult = topoSort(paths, [&](const StorePath & path) {
+            auto i = infos.find(path);
+            return i == infos.end() ? StorePathSet() : i->second.references;
+        });
+
+        std::visit(
+            overloaded{
+                [&](const Cycle<StorePath> & cycle) {
+                    throw BuildError(
+                        BuildResult::Failure::OutputRejected,
+                        "cycle detected in the references of '%s' from '%s'",
+                        printStorePath(cycle.path),
+                        printStorePath(cycle.parent));
+                },
+                [](auto &) { /* Success, continue */ }},
+            topoSortResult);
 
         txn.commit();
     });
@@ -1018,7 +1020,7 @@ void LocalStore::invalidatePath(State & state, const StorePath & path)
     /* Note that the foreign key constraints on the Refs table take
        care of deleting the references entries for `path'. */
 
-    pathInfoCache->lock()->erase(std::string(path.to_string()));
+    pathInfoCache->lock()->erase(path);
 }
 
 const PublicKeys & LocalStore::getPublicKeys()
@@ -1243,10 +1245,8 @@ StorePath LocalStore::addToStoreFromDump(
 
     auto desc = ContentAddressWithReferences::fromParts(
         hashMethod,
-        methodsMatch
-            ? dumpHash
-            : hashPath(PosixSourceAccessor::createAtRoot(tempPath), hashMethod.getFileIngestionMethod(), hashAlgo)
-                  .first,
+        methodsMatch ? dumpHash
+                     : hashPath(makeFSSourceAccessor(tempPath), hashMethod.getFileIngestionMethod(), hashAlgo).first,
         {
             .others = references,
             // caller is not capable of creating a self-reference, because this is content-addressed without modulus
@@ -1331,7 +1331,7 @@ std::pair<std::filesystem::path, AutoCloseFD> LocalStore::createTempDirInStore()
         /* There is a slight possibility that `tmpDir' gets deleted by
            the GC between createTempDir() and when we acquire a lock on it.
            We'll repeat until 'tmpDir' exists and we've locked it. */
-        tmpDirFn = createTempDir(config->realStoreDir, "tmp");
+        tmpDirFn = createTempDir(std::filesystem::path{config->realStoreDir.get()}, "tmp");
         tmpDirFd = openDirectory(tmpDirFn);
         if (!tmpDirFd) {
             continue;
@@ -1382,12 +1382,9 @@ bool LocalStore::verifyStore(bool checkContents, RepairFlag repair)
             checkInterrupt();
             auto name = link.path().filename();
             printMsg(lvlTalkative, "checking contents of %s", name);
-            PosixSourceAccessor accessor;
-            std::string hash = hashPath(
-                                   PosixSourceAccessor::createAtRoot(link.path()),
-                                   FileIngestionMethod::NixArchive,
-                                   HashAlgorithm::SHA256)
-                                   .first.to_string(HashFormat::Nix32, false);
+            std::string hash =
+                hashPath(makeFSSourceAccessor(link.path()), FileIngestionMethod::NixArchive, HashAlgorithm::SHA256)
+                    .first.to_string(HashFormat::Nix32, false);
             if (hash != name.string()) {
                 printError("link %s was modified! expected hash %s, got '%s'", link.path(), name, hash);
                 if (repair) {
@@ -1631,6 +1628,10 @@ void LocalStore::queryRealisationUncached(
     const DrvOutput & id, Callback<std::shared_ptr<const UnkeyedRealisation>> callback) noexcept
 {
     try {
+        if (!experimentalFeatureSettings.isEnabled(Xp::CaDerivations)) {
+            callback(nullptr);
+            return;
+        }
         auto maybeRealisation = retrySQLite<std::optional<const UnkeyedRealisation>>(
             [&]() { return queryRealisation_(*_state->lock(), id); });
         if (maybeRealisation)

@@ -13,7 +13,11 @@ extern "C" {
 
 nix_c_context * nix_c_context_create()
 {
-    return new nix_c_context();
+    try {
+        return new nix_c_context();
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 void nix_c_context_free(nix_c_context * context)
@@ -36,7 +40,7 @@ nix_err nix_context_error(nix_c_context * context)
         const char * demangled = abi::__cxa_demangle(typeid(e).name(), 0, 0, &status);
         if (demangled) {
             context->name = demangled;
-            // todo: free(demangled);
+            free((void *) demangled);
         } else {
             context->name = typeid(e).name();
         }

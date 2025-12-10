@@ -201,6 +201,17 @@ bool FdSource::hasData()
     }
 }
 
+void FdSource::restart()
+{
+    if (!isSeekable)
+        throw Error("can't seek to the start of a file");
+    buffer.reset();
+    read = bufPosIn = bufPosOut = 0;
+    int fd_ = fromDescriptorReadOnly(fd);
+    if (lseek(fd_, 0, SEEK_SET) == -1)
+        throw SysError("seeking to the start of a file");
+}
+
 void FdSource::skip(size_t len)
 {
     /* Discard data in the buffer. */
@@ -525,43 +536,6 @@ size_t ChainSource::read(char * data, size_t len)
             return this->read(data, len);
         }
     }
-}
-
-std::unique_ptr<RestartableSource> restartableSourceFromFactory(std::function<std::unique_ptr<Source>()> factory)
-{
-    struct RestartableSourceImpl : RestartableSource
-    {
-        RestartableSourceImpl(decltype(factory) factory_)
-            : factory_(std::move(factory_))
-            , impl(this->factory_())
-        {
-        }
-
-        decltype(factory) factory_;
-        std::unique_ptr<Source> impl = factory_();
-
-        size_t read(char * data, size_t len) override
-        {
-            return impl->read(data, len);
-        }
-
-        bool good() override
-        {
-            return impl->good();
-        }
-
-        void skip(size_t len) override
-        {
-            return impl->skip(len);
-        }
-
-        void restart() override
-        {
-            impl = factory_();
-        }
-    };
-
-    return std::make_unique<RestartableSourceImpl>(std::move(factory));
 }
 
 } // namespace nix

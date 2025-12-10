@@ -5,6 +5,7 @@
 #include "nix/expr/eval-settings.hh"
 #include "nix/expr/gc-small-vector.hh"
 #include "nix/expr/json-to-value.hh"
+#include "nix/expr/static-string-data.hh"
 #include "nix/store/globals.hh"
 #include "nix/store/names.hh"
 #include "nix/store/path-references.hh"
@@ -39,6 +40,12 @@
 
 namespace nix {
 
+RegisterPrimOp::PrimOps & RegisterPrimOp::primOps()
+{
+    static RegisterPrimOp::PrimOps primOps;
+    return primOps;
+}
+
 /*************************************************************
  * Miscellaneous
  *************************************************************/
@@ -46,7 +53,7 @@ namespace nix {
 static inline Value * mkString(EvalState & state, const std::csub_match & match)
 {
     Value * v = state.allocValue();
-    v->mkString({match.first, match.second});
+    v->mkString({match.first, match.second}, state.mem);
     return v;
 }
 
@@ -221,13 +228,14 @@ void derivationToValue(
             path2,
             {
                 NixStringContextElem::DrvDeep{.drvPath = storePath},
-            });
-    attrs.alloc(state.s.name).mkString(drv.env["name"]);
+            },
+            state.mem);
+    attrs.alloc(state.s.name).mkString(drv.env["name"], state.mem);
 
     auto list = state.buildList(drv.outputs.size());
     for (const auto & [i, o] : enumerate(drv.outputs)) {
         mkOutputString(state, attrs, storePath, o);
-        (list[i] = state.allocValue())->mkString(o.first);
+        (list[i] = state.allocValue())->mkString(o.first, state.mem);
     }
     attrs.alloc(state.s.outputs).mkList(list);
 
@@ -309,10 +317,51 @@ static void import(EvalState & state, const PosIdx pos, Value & vPath, Value * v
 }
 
 static RegisterPrimOp primop_scopedImport(
-    PrimOp{
-        .name = "scopedImport", .arity = 2, .fun = [](EvalState & state, const PosIdx pos, Value ** args, Value & v) {
-            import(state, pos, *args[1], args[0], v);
-        }});
+    {.name = "scopedImport",
+     .args = {"scope", "path"},
+     .doc = R"(
+      Load, parse, and return the Nix expression in the file *path*, with the attributes from *scope* available as variables in the lexical scope of the imported file.
+
+      This function is similar to [`import`](#builtins-import), but allows you to provide additional variables that will be available in the scope of the imported expression.
+      The *scope* argument must be an attribute set; each attribute becomes a variable available in the imported file.
+      Built-in functions and values remain accessible unless shadowed by *scope* attributes.
+
+      > **Note**
+      >
+      > Variables from *scope* shadow built-ins with the same name, allowing you to override built-ins for the imported expression.
+
+      > **Note**
+      >
+      > Unlike [`import`](#builtins-import), `scopedImport` does not memoize evaluation results.
+      > While the parsing result may be reused, each call produces a distinct value.
+      > This is observable through performance and side effects such as [`builtins.trace`](#builtins-trace).
+
+      The *path* argument must meet the same criteria as an [interpolated expression](@docroot@/language/string-interpolation.md#interpolated-expression).
+
+      If *path* is a directory, the file `default.nix` in that directory is used if it exists.
+
+      > **Example**
+      >
+      > Create a file `greet.nix`:
+      >
+      > ```nix
+      > # greet.nix
+      > "${greeting}, ${name}!"
+      > ```
+      >
+      > Import it with additional variables in scope:
+      >
+      > ```nix
+      > scopedImport { greeting = "Hello"; name = "World"; } ./greet.nix
+      > ```
+      >
+      >     "Hello, World!"
+
+      Evaluation aborts if the file doesn't exist or contains an invalid Nix expression.
+    )",
+     .fun = [](EvalState & state, const PosIdx pos, Value ** args, Value & v) {
+         import(state, pos, *args[1], args[0], v);
+     }});
 
 static RegisterPrimOp primop_import(
     {.name = "import",
@@ -487,34 +536,34 @@ static void prim_typeOf(EvalState & state, const PosIdx pos, Value ** args, Valu
     state.forceValue(*args[0], pos);
     switch (args[0]->type()) {
     case nInt:
-        v.mkStringNoCopy("int");
+        v.mkStringNoCopy("int"_sds);
         break;
     case nBool:
-        v.mkStringNoCopy("bool");
+        v.mkStringNoCopy("bool"_sds);
         break;
     case nString:
-        v.mkStringNoCopy("string");
+        v.mkStringNoCopy("string"_sds);
         break;
     case nPath:
-        v.mkStringNoCopy("path");
+        v.mkStringNoCopy("path"_sds);
         break;
     case nNull:
-        v.mkStringNoCopy("null");
+        v.mkStringNoCopy("null"_sds);
         break;
     case nAttrs:
-        v.mkStringNoCopy("set");
+        v.mkStringNoCopy("set"_sds);
         break;
     case nList:
-        v.mkStringNoCopy("list");
+        v.mkStringNoCopy("list"_sds);
         break;
     case nFunction:
-        v.mkStringNoCopy("lambda");
+        v.mkStringNoCopy("lambda"_sds);
         break;
     case nExternal:
-        v.mkString(args[0]->external()->typeOf());
+        v.mkString(args[0]->external()->typeOf(), state.mem);
         break;
     case nFloat:
-        v.mkStringNoCopy("float");
+        v.mkStringNoCopy("float"_sds);
         break;
     case nThunk:
         unreachable();
@@ -1168,7 +1217,7 @@ static void prim_getEnv(EvalState & state, const PosIdx pos, Value ** args, Valu
 {
     std::string name(
         state.forceStringNoCtx(*args[0], pos, "while evaluating the first argument passed to builtins.getEnv"));
-    v.mkString(state.settings.restrictEval || state.settings.pureEval ? "" : getEnv(name).value_or(""));
+    v.mkString(state.settings.restrictEval || state.settings.pureEval ? "" : getEnv(name).value_or(""), state.mem);
 }
 
 static RegisterPrimOp primop_getEnv({
@@ -1766,28 +1815,7 @@ static void derivationStrictInternal(EvalState & state, std::string_view drvName
             drv.outputs.insert_or_assign(i, DerivationOutput::Deferred{});
         }
 
-        auto hashModulo = hashDerivationModulo(*state.store, Derivation(drv), true);
-        switch (hashModulo.kind) {
-        case DrvHash::Kind::Regular:
-            for (auto & i : outputs) {
-                auto h = get(hashModulo.hashes, i);
-                if (!h)
-                    state.error<AssertionError>("derivation produced no hash for output '%s'", i).atPos(v).debugThrow();
-                auto outPath = state.store->makeOutputPath(i, *h, drvName);
-                drv.env[i] = state.store->printStorePath(outPath);
-                drv.outputs.insert_or_assign(
-                    i,
-                    DerivationOutput::InputAddressed{
-                        .path = std::move(outPath),
-                    });
-            }
-            break;
-            ;
-        case DrvHash::Kind::Deferred:
-            for (auto & i : outputs) {
-                drv.outputs.insert_or_assign(i, DerivationOutput::Deferred{});
-            }
-        }
+        drv.fillInOutputPaths(*state.store);
     }
 
     /* Write the resulting term into the Nix store directory. */
@@ -1810,7 +1838,8 @@ static void derivationStrictInternal(EvalState & state, std::string_view drvName
             drvPathS,
             {
                 NixStringContextElem::DrvDeep{.drvPath = drvPath},
-            });
+            },
+            state.mem);
     for (auto & i : drv.outputs)
         mkOutputString(state, result, drvPath, i);
 
@@ -1833,8 +1862,10 @@ static RegisterPrimOp primop_derivationStrict(
    ‘out’. */
 static void prim_placeholder(EvalState & state, const PosIdx pos, Value ** args, Value & v)
 {
-    v.mkString(hashPlaceholder(
-        state.forceStringNoCtx(*args[0], pos, "while evaluating the first argument passed to builtins.placeholder")));
+    v.mkString(
+        hashPlaceholder(state.forceStringNoCtx(
+            *args[0], pos, "while evaluating the first argument passed to builtins.placeholder")),
+        state.mem);
 }
 
 static RegisterPrimOp primop_placeholder({
@@ -1863,7 +1894,7 @@ static void prim_toPath(EvalState & state, const PosIdx pos, Value ** args, Valu
     NixStringContext context;
     auto path =
         state.coerceToPath(pos, *args[0], context, "while evaluating the first argument passed to builtins.toPath");
-    v.mkString(path.path.abs(), context);
+    v.mkString(path.path.abs(), context, state.mem);
 }
 
 static RegisterPrimOp primop_toPath({
@@ -1906,7 +1937,7 @@ static void prim_storePath(EvalState & state, const PosIdx pos, Value ** args, V
     if (!settings.readOnlyMode)
         state.store->ensurePath(path2);
     context.insert(NixStringContextElem::Opaque{.path = path2});
-    v.mkString(path.abs(), context);
+    v.mkString(path.abs(), context, state.mem);
 }
 
 static RegisterPrimOp primop_storePath({
@@ -1988,7 +2019,8 @@ static void prim_baseNameOf(EvalState & state, const PosIdx pos, Value ** args, 
     v.mkString(
         legacyBaseNameOf(*state.coerceToString(
             pos, *args[0], context, "while evaluating the first argument passed to builtins.baseNameOf", false, false)),
-        context);
+        context,
+        state.mem);
 }
 
 static RegisterPrimOp primop_baseNameOf({
@@ -2017,13 +2049,18 @@ static void prim_dirOf(EvalState & state, const PosIdx pos, Value ** args, Value
     state.forceValue(*args[0], pos);
     if (args[0]->type() == nPath) {
         auto path = args[0]->path();
-        v.mkPath(path.path.isRoot() ? path : path.parent());
+        v.mkPath(path.path.isRoot() ? path : path.parent(), state.mem);
     } else {
         NixStringContext context;
         auto path = state.coerceToString(
             pos, *args[0], context, "while evaluating the first argument passed to 'builtins.dirOf'", false, false);
-        auto dir = dirOf(*path);
-        v.mkString(dir, context);
+        auto pos = path->rfind('/');
+        if (pos == path->npos)
+            v.mkStringMove("."_sds, context, state.mem);
+        else if (pos == 0)
+            v.mkStringMove("/"_sds, context, state.mem);
+        else
+            v.mkString(path->substr(0, pos), context, state.mem);
     }
 }
 
@@ -2065,7 +2102,7 @@ static void prim_readFile(EvalState & state, const PosIdx pos, Value ** args, Va
                 .path = std::move((StorePath &&) p),
             });
     }
-    v.mkString(s, context);
+    v.mkString(s, context, state.mem);
 }
 
 static RegisterPrimOp primop_readFile({
@@ -2129,7 +2166,7 @@ static void prim_findFile(EvalState & state, const PosIdx pos, Value ** args, Va
     auto path =
         state.forceStringNoCtx(*args[1], pos, "while evaluating the second argument passed to builtins.findFile");
 
-    v.mkPath(state.findFile(lookupPath, path, pos));
+    v.mkPath(state.findFile(lookupPath, path, pos), state.mem);
 }
 
 static RegisterPrimOp primop_findFile(
@@ -2234,7 +2271,7 @@ static RegisterPrimOp primop_findFile(
       > - ```
       >   {
       >     prefix = "nixpkgs";
-      >     path = "https://nixos.org/channels/nixos-unstable/nixexprs.tar.xz";
+      >     path = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
       >   }
       >   ```
 
@@ -2278,7 +2315,7 @@ static void prim_hashFile(EvalState & state, const PosIdx pos, Value ** args, Va
 
     auto path = realisePath(state, pos, *args[1]);
 
-    v.mkString(hashString(*ha, path.readFile()).to_string(HashFormat::Base16, false));
+    v.mkString(hashString(*ha, path.readFile()).to_string(HashFormat::Base16, false), state.mem);
 }
 
 static RegisterPrimOp primop_hashFile({
@@ -2304,10 +2341,10 @@ static const Value & fileTypeToString(EvalState & state, SourceAccessor::Type ty
 
     static const Constants stringValues = []() {
         Constants res;
-        res.regular.mkStringNoCopy("regular");
-        res.directory.mkStringNoCopy("directory");
-        res.symlink.mkStringNoCopy("symlink");
-        res.unknown.mkStringNoCopy("unknown");
+        res.regular.mkStringNoCopy("regular"_sds);
+        res.directory.mkStringNoCopy("directory"_sds);
+        res.symlink.mkStringNoCopy("symlink"_sds);
+        res.unknown.mkStringNoCopy("unknown"_sds);
         return res;
     }();
 
@@ -2367,7 +2404,7 @@ static void prim_readDir(EvalState & state, const PosIdx pos, Value ** args, Val
             // detailed node info quickly in this case we produce a thunk to
             // query the file type lazily.
             auto epath = state.allocValue();
-            epath->mkPath(path / name);
+            epath->mkPath(path / name, state.mem);
             if (!readFileType)
                 readFileType = &state.getBuiltin("readFileType");
             attr.mkApp(readFileType, epath);
@@ -2461,7 +2498,7 @@ static void prim_toXML(EvalState & state, const PosIdx pos, Value ** args, Value
     std::ostringstream out;
     NixStringContext context;
     printValueAsXML(state, true, false, *args[0], out, context, pos);
-    v.mkString(out.view(), context);
+    v.mkString(out.view(), context, state.mem);
 }
 
 static RegisterPrimOp primop_toXML({
@@ -2569,7 +2606,7 @@ static void prim_toJSON(EvalState & state, const PosIdx pos, Value ** args, Valu
     std::ostringstream out;
     NixStringContext context;
     printValueAsJSON(state, true, *args[0], pos, out, context);
-    v.mkString(out.view(), context);
+    v.mkString(out.view(), context, state.mem);
 }
 
 static RegisterPrimOp primop_toJSON({
@@ -2748,7 +2785,7 @@ bool EvalState::callPathFilter(Value * filterFun, const SourcePath & path, PosId
     /* Call the filter function.  The first argument is the path, the
        second is a string indicating the type of the file. */
     Value arg1;
-    arg1.mkString(path.path.abs());
+    arg1.mkString(path.path.abs(), mem);
 
     // assert that type is not "unknown"
     Value * args[]{&arg1, const_cast<Value *>(&fileTypeToString(*this, st.type))};
@@ -2770,11 +2807,18 @@ static void addPath(
     const NixStringContext & context)
 {
     try {
-        if (path.accessor == state.rootFS && state.store->isInStore(path.path.abs())) {
+        StorePathSet refs;
+
+        if (path.accessor == state.rootFS && state.store->isInStore(path.path.abs()) && !context.empty()) {
             // FIXME: handle CA derivation outputs (where path needs to
             // be rewritten to the actual output).
             auto rewrites = state.realiseContext(context);
             path = {path.accessor, CanonPath(rewriteStrings(path.path.abs(), rewrites))};
+            auto [storePath, subPath] = state.store->toStorePath(path.path.abs());
+            try {
+                refs = state.store->queryPathInfo(storePath)->references;
+            } catch (Error &) { // FIXME: should be InvalidPathError
+            }
         }
 
         std::unique_ptr<PathFilter> filter;
@@ -2787,18 +2831,27 @@ static void addPath(
         std::optional<StorePath> expectedStorePath;
         if (expectedHash)
             expectedStorePath = state.store->makeFixedOutputPathFromCA(
-                name, ContentAddressWithReferences::fromParts(method, *expectedHash, {}));
+                name, ContentAddressWithReferences::fromParts(method, *expectedHash, {refs}));
 
         if (!expectedHash || !state.store->isValidPath(*expectedStorePath)) {
-            auto dstPath = fetchToStore(
-                state.fetchSettings,
-                *state.store,
-                path.resolveSymlinks(),
-                settings.readOnlyMode ? FetchMode::DryRun : FetchMode::Copy,
-                name,
-                method,
-                filter.get(),
-                state.repair);
+            // FIXME: support refs in fetchToStore()?
+            auto dstPath = refs.empty() ? fetchToStore(
+                                              state.fetchSettings,
+                                              *state.store,
+                                              path.resolveSymlinks(),
+                                              settings.readOnlyMode ? FetchMode::DryRun : FetchMode::Copy,
+                                              name,
+                                              method,
+                                              filter.get(),
+                                              state.repair)
+                                        : state.store->addToStore(
+                                              name,
+                                              path.resolveSymlinks(),
+                                              method,
+                                              HashAlgorithm::SHA256,
+                                              refs,
+                                              filter ? *filter.get() : defaultPathFilter,
+                                              state.repair);
             if (expectedHash && expectedStorePath != dstPath)
                 state.error<EvalError>("store path mismatch in (possibly filtered) path added from '%s'", path)
                     .atPos(pos)
@@ -4398,7 +4451,7 @@ static void prim_toString(EvalState & state, const PosIdx pos, Value ** args, Va
     NixStringContext context;
     auto s = state.coerceToString(
         pos, *args[0], context, "while evaluating the first argument passed to builtins.toString", true, false);
-    v.mkString(*s, context);
+    v.mkString(*s, context, state.mem);
 }
 
 static RegisterPrimOp primop_toString({
@@ -4458,7 +4511,7 @@ static void prim_substring(EvalState & state, const PosIdx pos, Value ** args, V
     if (len == 0) {
         state.forceValue(*args[2], pos);
         if (args[2]->type() == nString) {
-            v.mkStringNoCopy("", args[2]->context());
+            v.mkStringNoCopy(""_sds, args[2]->context());
             return;
         }
     }
@@ -4471,7 +4524,7 @@ static void prim_substring(EvalState & state, const PosIdx pos, Value ** args, V
     auto s = state.coerceToString(
         pos, *args[2], context, "while evaluating the third argument (the string) passed to builtins.substring");
 
-    v.mkString(NixUInt(start) >= s->size() ? "" : s->substr(start, _len), context);
+    v.mkString(NixUInt(start) >= s->size() ? "" : s->substr(start, _len), context, state.mem);
 }
 
 static RegisterPrimOp primop_substring({
@@ -4526,7 +4579,7 @@ static void prim_hashString(EvalState & state, const PosIdx pos, Value ** args, 
     auto s =
         state.forceString(*args[1], context, pos, "while evaluating the second argument passed to builtins.hashString");
 
-    v.mkString(hashString(*ha, s).to_string(HashFormat::Base16, false));
+    v.mkString(hashString(*ha, s).to_string(HashFormat::Base16, false), state.mem);
 }
 
 static RegisterPrimOp primop_hashString({
@@ -4559,7 +4612,7 @@ static void prim_convertHash(EvalState & state, const PosIdx pos, Value ** args,
     HashFormat hf = parseHashFormat(
         state.forceStringNoCtx(*iteratorToHashFormat->value, pos, "while evaluating the attribute 'toHashFormat'"));
 
-    v.mkString(Hash::parseAny(hash, ha).to_string(hf, hf == HashFormat::SRI));
+    v.mkString(Hash::parseAny(hash, ha).to_string(hf, hf == HashFormat::SRI), state.mem);
 }
 
 static RegisterPrimOp primop_convertHash({
@@ -4869,7 +4922,7 @@ static void prim_concatStringsSep(EvalState & state, const PosIdx pos, Value ** 
             "while evaluating one element of the list of strings to concat passed to builtins.concatStringsSep");
     }
 
-    v.mkString(res, context);
+    v.mkString(res, context, state.mem);
 }
 
 static RegisterPrimOp primop_concatStringsSep({
@@ -4944,7 +4997,7 @@ static void prim_replaceStrings(EvalState & state, const PosIdx pos, Value ** ar
         }
     }
 
-    v.mkString(res, context);
+    v.mkString(res, context, state.mem);
 }
 
 static RegisterPrimOp primop_replaceStrings({
@@ -4977,8 +5030,8 @@ static void prim_parseDrvName(EvalState & state, const PosIdx pos, Value ** args
         state.forceStringNoCtx(*args[0], pos, "while evaluating the first argument passed to builtins.parseDrvName");
     DrvName parsed(name);
     auto attrs = state.buildBindings(2);
-    attrs.alloc(state.s.name).mkString(parsed.name);
-    attrs.alloc("version").mkString(parsed.version);
+    attrs.alloc(state.s.name).mkString(parsed.name, state.mem);
+    attrs.alloc("version").mkString(parsed.version, state.mem);
     v.mkAttrs(attrs);
 }
 
@@ -5033,7 +5086,7 @@ static void prim_splitVersion(EvalState & state, const PosIdx pos, Value ** args
     }
     auto list = state.buildList(components.size());
     for (const auto & [n, component] : enumerate(components))
-        (list[n] = state.allocValue())->mkString(std::move(component));
+        (list[n] = state.allocValue())->mkString(std::move(component), state.mem);
     v.mkList(list);
 }
 
@@ -5177,7 +5230,7 @@ void EvalState::createBaseEnv(const EvalSettings & evalSettings)
         });
 
     if (!settings.pureEval)
-        v.mkString(settings.getCurrentSystem());
+        v.mkString(settings.getCurrentSystem(), mem);
     addConstant(
         "__currentSystem",
         v,
@@ -5209,7 +5262,7 @@ void EvalState::createBaseEnv(const EvalSettings & evalSettings)
             .impureOnly = true,
         });
 
-    v.mkString(nixVersion);
+    v.mkString(nixVersion, mem);
     addConstant(
         "__nixVersion",
         v,
@@ -5234,7 +5287,7 @@ void EvalState::createBaseEnv(const EvalSettings & evalSettings)
         )",
         });
 
-    v.mkString(store->storeDir);
+    v.mkString(store->storeDir, mem);
     addConstant(
         "__storeDir",
         v,
@@ -5307,8 +5360,8 @@ void EvalState::createBaseEnv(const EvalSettings & evalSettings)
     auto list = buildList(lookupPath.elements.size());
     for (const auto & [n, i] : enumerate(lookupPath.elements)) {
         auto attrs = buildBindings(2);
-        attrs.alloc("path").mkString(i.path.s);
-        attrs.alloc("prefix").mkString(i.prefix.s);
+        attrs.alloc("path").mkString(i.path.s, mem);
+        attrs.alloc("prefix").mkString(i.prefix.s, mem);
         (list[n] = allocValue())->mkAttrs(attrs);
     }
     v.mkList(list);

@@ -8,7 +8,7 @@
 #include "nix/util/sync.hh"
 #include "nix/store/remote-fs-accessor.hh"
 #include "nix/store/nar-info-disk-cache.hh"
-#include "nix/store/nar-accessor.hh"
+#include "nix/util/nar-accessor.hh"
 #include "nix/util/thread-pool.hh"
 #include "nix/util/callback.hh"
 #include "nix/util/signals.hh"
@@ -79,8 +79,8 @@ std::optional<std::string> BinaryCacheStore::getNixCacheInfo()
 void BinaryCacheStore::upsertFile(
     const std::string & path, std::string && data, const std::string & mimeType, uint64_t sizeHint)
 {
-    auto source = restartableSourceFromFactory([data = std::move(data)]() { return make_unique<StringSource>(data); });
-    upsertFile(path, *source, mimeType, sizeHint);
+    StringSource source{data};
+    upsertFile(path, source, mimeType, sizeHint);
 }
 
 void BinaryCacheStore::getFile(const std::string & path, Callback<std::optional<std::string>> callback) noexcept
@@ -127,8 +127,7 @@ void BinaryCacheStore::writeNarInfo(ref<NarInfo> narInfo)
 
     upsertFile(narInfoFile, narInfo->to_string(*this), "text/x-nix-narinfo");
 
-    pathInfoCache->lock()->upsert(
-        std::string(narInfo->path.to_string()), PathInfoCacheValue{.value = std::shared_ptr<NarInfo>(narInfo)});
+    pathInfoCache->lock()->upsert(narInfo->path, PathInfoCacheValue{.value = std::shared_ptr<NarInfo>(narInfo)});
 
     if (diskCache)
         diskCache->upsertNarInfo(
@@ -140,9 +139,7 @@ void BinaryCacheStore::writeNarInfo(ref<NarInfo> narInfo)
 ref<const ValidPathInfo> BinaryCacheStore::addToStoreCommon(
     Source & narSource, RepairFlag repair, CheckSigsFlag checkSigs, std::function<ValidPathInfo(HashResult)> mkInfo)
 {
-    auto [fdTemp, fnTemp] = createTempFile();
-
-    AutoDelete autoDelete(fnTemp);
+    auto fdTemp = createAnonymousTempFile();
 
     auto now1 = std::chrono::steady_clock::now();
 
@@ -208,7 +205,7 @@ ref<const ValidPathInfo> BinaryCacheStore::addToStoreCommon(
     if (config.writeNARListing) {
         nlohmann::json j = {
             {"version", 1},
-            {"root", listNar(ref<SourceAccessor>(narAccessor), CanonPath::root, true)},
+            {"root", listNarDeep(*narAccessor, CanonPath::root)},
         };
 
         upsertFile(std::string(info.path.hashPart()) + ".ls", j.dump(), "application/json");
@@ -272,19 +269,10 @@ ref<const ValidPathInfo> BinaryCacheStore::addToStoreCommon(
 
     /* Atomically write the NAR file. */
     if (repair || !fileExists(narInfo->url)) {
-        auto source = restartableSourceFromFactory([fnTemp]() {
-            struct AutoCloseFDSource : AutoCloseFD, FdSource
-            {
-                AutoCloseFDSource(AutoCloseFD fd)
-                    : AutoCloseFD(std::move(fd))
-                    , FdSource(get())
-                {
-                }
-            };
-            return std::make_unique<AutoCloseFDSource>(toDescriptor(open(fnTemp.c_str(), O_RDONLY)));
-        });
+        FdSource source{fdTemp.get()};
+        source.restart(); /* Seek back to the start of the file. */
         stats.narWrite++;
-        upsertFile(narInfo->url, *source, "application/x-nix-nar", narInfo->fileSize);
+        upsertFile(narInfo->url, source, "application/x-nix-nar", narInfo->fileSize);
     } else
         stats.narWriteAverted++;
 
@@ -418,10 +406,20 @@ void BinaryCacheStore::narFromPath(const StorePath & storePath, Sink & sink)
 {
     auto info = queryPathInfo(storePath).cast<const NarInfo>();
 
-    LengthSink narSize;
-    TeeSink tee{sink, narSize};
+    uint64_t narSize = 0;
 
-    auto decompressor = makeDecompressionSink(info->compression, tee);
+    LambdaSink uncompressedSink{
+        [&](std::string_view data) {
+            narSize += data.size();
+            sink(data);
+        },
+        [&]() {
+            stats.narRead++;
+            // stats.narReadCompressedBytes += nar->size(); // FIXME
+            stats.narReadBytes += narSize;
+        }};
+
+    auto decompressor = makeDecompressionSink(info->compression, uncompressedSink);
 
     try {
         getFile(info->url, *decompressor);
@@ -431,9 +429,7 @@ void BinaryCacheStore::narFromPath(const StorePath & storePath, Sink & sink)
 
     decompressor->finish();
 
-    stats.narRead++;
-    // stats.narReadCompressedBytes += nar->size(); // FIXME
-    stats.narReadBytes += narSize.length;
+    // Note: don't do anything here because it's never reached if we're called as a coroutine.
 }
 
 void BinaryCacheStore::queryPathInfoUncached(

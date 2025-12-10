@@ -111,13 +111,13 @@ struct CmdSearch : SourceExprCommand, MixJSON
 
         uint64_t results = 0;
 
-        std::function<void(eval_cache::AttrCursor & cursor, const std::vector<Symbol> & attrPath, bool initialRecurse)>
-            visit;
+        std::function<void(eval_cache::AttrCursor & cursor, const AttrPath & attrPath, bool initialRecurse)> visit;
 
-        visit = [&](eval_cache::AttrCursor & cursor, const std::vector<Symbol> & attrPath, bool initialRecurse) {
-            auto attrPathS = state->symbols.resolve(attrPath);
+        visit = [&](eval_cache::AttrCursor & cursor, const AttrPath & attrPath, bool initialRecurse) {
+            auto attrPathS = state->symbols.resolve({attrPath});
+            auto attrPathStr = attrPath.to_string(*state);
 
-            Activity act(*logger, lvlInfo, actUnknown, fmt("evaluating '%s'", concatStringsSep(".", attrPathS)));
+            Activity act(*logger, lvlInfo, actUnknown, fmt("evaluating '%s'", attrPathStr));
             try {
                 auto recurse = [&]() {
                     for (const auto & attr : cursor.getAttrs()) {
@@ -135,7 +135,6 @@ struct CmdSearch : SourceExprCommand, MixJSON
                     auto aDescription = aMeta ? aMeta->maybeGetAttr(state->s.description) : nullptr;
                     auto description = aDescription ? aDescription->getString() : "";
                     std::replace(description.begin(), description.end(), '\n', ' ');
-                    auto attrPath2 = concatStringsSep(".", attrPathS);
 
                     std::vector<std::smatch> attrPathMatches;
                     std::vector<std::smatch> descriptionMatches;
@@ -143,7 +142,7 @@ struct CmdSearch : SourceExprCommand, MixJSON
                     bool found = false;
 
                     for (auto & regex : excludeRegexes) {
-                        if (std::regex_search(attrPath2, regex) || std::regex_search(name.name, regex)
+                        if (std::regex_search(attrPathStr, regex) || std::regex_search(name.name, regex)
                             || std::regex_search(description, regex))
                             return;
                     }
@@ -158,7 +157,7 @@ struct CmdSearch : SourceExprCommand, MixJSON
                             }
                         };
 
-                        addAll(std::sregex_iterator(attrPath2.begin(), attrPath2.end(), regex), attrPathMatches);
+                        addAll(std::sregex_iterator(attrPathStr.begin(), attrPathStr.end(), regex), attrPathMatches);
                         addAll(std::sregex_iterator(name.name.begin(), name.name.end(), regex), nameMatches);
                         addAll(std::sregex_iterator(description.begin(), description.end(), regex), descriptionMatches);
 
@@ -169,7 +168,7 @@ struct CmdSearch : SourceExprCommand, MixJSON
                     if (found) {
                         results++;
                         if (json) {
-                            (*jsonOut)[attrPath2] = {
+                            (*jsonOut)[attrPathStr] = {
                                 {"pname", name.name},
                                 {"version", name.version},
                                 {"description", description},
@@ -179,7 +178,7 @@ struct CmdSearch : SourceExprCommand, MixJSON
                                 logger->cout("");
                             logger->cout(
                                 "* %s%s",
-                                wrap("\e[0;1m", hiliteMatches(attrPath2, attrPathMatches, ANSI_GREEN, "\e[0;1m")),
+                                wrap("\e[0;1m", hiliteMatches(attrPathStr, attrPathMatches, ANSI_GREEN, "\e[0;1m")),
                                 optionalBracket(" (", name.version, ")"));
                             if (description != "")
                                 logger->cout(

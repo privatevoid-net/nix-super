@@ -46,6 +46,7 @@ $defs:
       - narSize
       - references
       - ca
+      - storeDir
     properties:
       version:
         type: integer
@@ -63,7 +64,7 @@ $defs:
           - Version 2: Use structured JSON type for `ca`
 
       path:
-        type: string
+        "$ref": "./store-path-v1.yaml"
         title: Store Path
         description: |
           [Store path](@docroot@/store/store-path.md) to the given store object.
@@ -71,7 +72,7 @@ $defs:
           Note: This field may not be present in all contexts, such as when the path is used as the key and the the store object info the value in map.
 
       narHash:
-        type: string
+        "$ref": "./hash-v1.yaml"
         title: NAR Hash
         description: |
           Hash of the [file system object](@docroot@/store/file-system-object.md) part of the store object when serialized as a [Nix Archive](@docroot@/store/file-system-object/content-address.md#serial-nix-archive).
@@ -89,7 +90,7 @@ $defs:
         description: |
           An array of [store paths](@docroot@/store/store-path.md), possibly including this one.
         items:
-          type: string
+          "$ref": "./store-path-v1.yaml"
 
       ca:
         oneOf:
@@ -101,6 +102,12 @@ $defs:
           If the store object is [content-addressed](@docroot@/store/store-object/content-address.md),
           this is the content address of this store object's file system object, used to compute its store path.
           Otherwise (i.e. if it is [input-addressed](@docroot@/glossary.md#gloss-input-addressed-store-object)), this is `null`.
+
+      storeDir:
+        type: string
+        title: Store Directory
+        description: |
+          The [store directory](@docroot@/store/store-path.md#store-directory) this store object belongs to (e.g. `/nix/store`).
     additionalProperties: false
 
   impure:
@@ -115,6 +122,7 @@ $defs:
       - narSize
       - references
       - ca
+      - storeDir
       # impure
       - deriver
       - registrationTime
@@ -127,8 +135,11 @@ $defs:
       narSize: { $ref: "#/$defs/base/properties/narSize" }
       references: { $ref: "#/$defs/base/properties/references" }
       ca: { $ref: "#/$defs/base/properties/ca" }
+      storeDir: { $ref: "#/$defs/base/properties/storeDir" }
       deriver:
-        type: ["string", "null"]
+        oneOf:
+          - "$ref": "./store-path-v1.yaml"
+          - type: "null"
         title: Deriver
         description: |
           If known, the path to the [store derivation](@docroot@/glossary.md#gloss-store-derivation) from which this store object was produced.
@@ -190,6 +201,7 @@ $defs:
       - narSize
       - references
       - ca
+      - storeDir
       # impure
       - deriver
       - registrationTime
@@ -207,6 +219,7 @@ $defs:
       narSize: { $ref: "#/$defs/base/properties/narSize" }
       references: { $ref: "#/$defs/base/properties/references" }
       ca: { $ref: "#/$defs/base/properties/ca" }
+      storeDir: { $ref: "#/$defs/base/properties/storeDir" }
       deriver: { $ref: "#/$defs/impure/properties/deriver" }
       registrationTime: { $ref: "#/$defs/impure/properties/registrationTime" }
       ultimate: { $ref: "#/$defs/impure/properties/ultimate" }
@@ -229,7 +242,7 @@ $defs:
           > This is an impure "`.narinfo`" field that may not be included in certain contexts.
 
       downloadHash:
-        type: string
+        "$ref": "./hash-v1.yaml"
         title: Download Hash
         description: |
           A digest for the compressed archive itself, as opposed to the data contained within.

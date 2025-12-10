@@ -37,7 +37,15 @@ mkMesonDerivation (finalAttrs: {
 
   outputs = [ "out" ];
 
-  passthru.externalNativeBuildInputs = [
+  buildInputs = [
+    gtest
+    kaitai-struct-cpp-stl-runtime
+  ];
+
+  nativeBuildInputs = [
+    meson
+    ninja
+    pkg-config
     # This can go away when we bump up to 25.11
     (kaitai-struct-compiler.overrideAttrs (finalAttrs: {
       version = "0.11";
@@ -48,20 +56,6 @@ mkMesonDerivation (finalAttrs: {
     }))
   ];
 
-  passthru.externalBuildInputs = [
-    gtest
-    kaitai-struct-cpp-stl-runtime
-  ];
-
-  buildInputs = finalAttrs.passthru.externalBuildInputs;
-
-  nativeBuildInputs = [
-    meson
-    ninja
-    pkg-config
-  ]
-  ++ finalAttrs.passthru.externalNativeBuildInputs;
-
   doCheck = true;
 
   mesonCheckFlags = [ "--print-errorlogs" ];
@@ -71,6 +65,6 @@ mkMesonDerivation (finalAttrs: {
   '';
 
   meta = {
-    platforms = lib.platforms.all;
+    platforms = lib.platforms.unix;
   };
 })

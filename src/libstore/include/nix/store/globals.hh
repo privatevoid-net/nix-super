@@ -101,7 +101,7 @@ public:
     /**
      * The directory where system configuration files are stored.
      */
-    Path nixConfDir;
+    std::filesystem::path nixConfDir;
 
     /**
      * A list of user configuration files to load.
@@ -292,7 +292,7 @@ public:
 
     Setting<std::string> builders{
         this,
-        "@" + nixConfDir + "/machines",
+        "@" + nixConfDir.string() + "/machines",
         "builders",
         R"(
           A semicolon- or newline-separated list of build machines.
@@ -794,6 +794,8 @@ public:
         "build-dir",
         R"(
             Override the `build-dir` store setting for all stores that have this setting.
+
+            See also the per-store [`build-dir`](@docroot@/store/types/local-store.md#store-local-store-build-dir) setting.
         )"};
 
     Setting<PathSet> allowedImpureHostPrefixes{
@@ -1141,7 +1143,7 @@ public:
 
     Setting<std::string> netrcFile{
         this,
-        fmt("%s/%s", nixConfDir, "netrc"),
+        (nixConfDir / "netrc").string(),
         "netrc-file",
         R"(
           If set to an absolute path to a `netrc` file, Nix uses the HTTP
