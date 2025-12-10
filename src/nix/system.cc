@@ -81,7 +81,7 @@ struct SystemActivationCommand : ActivationCommand<SystemCommand>, MixProfile
                 if (!pathExists(systemProfileBase)) {
                     createDirs(systemProfileBase);
                 }
-                profile = systemProfileBase + "/" + profile.value();
+                profile = systemProfileBase + "/" + profile.value().string();
             }
             updateProfile(out);
             executePrivileged(profile.value() + "/bin/switch-to-configuration", Strings{activationType});
