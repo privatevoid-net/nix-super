@@ -89,5 +89,4 @@ nix run --no-write-lock-file . -- myarg1 myarg2 2>&1 | grepQuiet "ARGS: myarg1 m
 nix run --no-write-lock-file -- . myarg1 myarg2 2>&1 | grepQuiet "ARGS: myarg1 myarg2"
 
 # And verify that a non-installable first argument causes an error
-expectStderr 1 nix run --no-write-lock-file -- myarg1 myarg2 | grepQuiet "error.*myarg1"
-
+expectStderr 1 nix run --no-write-lock-file -- myarg1# myarg2 | grepQuiet "error.*myarg1"
