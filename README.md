@@ -54,16 +54,6 @@ Two new subcommands are implemented to make use of activatables:
 - [nix system](https://cache.privatevoid.net/nix/store/6wq71q0lwgkr4l900flf26cn0lk79miw-nix-super-2.16.0pre20230504_3822d33-doc/share/doc/nix/manual/command-ref/new-cli/nix3-system.html) for managing NixOS, as a replacement for `nixos-rebuild`
 - [nix home](https://cache.privatevoid.net/nix/store/6wq71q0lwgkr4l900flf26cn0lk79miw-nix-super-2.16.0pre20230504_3822d33-doc/share/doc/nix/manual/command-ref/new-cli/nix3-home.html) for managing home-manager configurations, as a replacement for the `home-manager` CLI tool
 
-
-### [The `$` operator](https://github.com/NixOS/nix/pull/5577)
-
-The `$` operator or function application operator can be used to reduce parentheses hell in some situations,
-though its semantics are slightly different from the Haskell variant, making this one less useful.
-
-```nix
-builtins.trace "asdf" $ map toString [ 1 2 3 ]
-```
-
 ### Easy use of `callPackage` from the CLI
 
 The flag `-C`/`--call-package` allows you to directly build *callPackageable expressions* from the CLI.
