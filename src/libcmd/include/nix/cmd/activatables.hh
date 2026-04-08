@@ -1,3 +1,4 @@
+#pragma once
 #include "nix/cmd/command.hh"
 #include "nix/cmd/installable-flake.hh"
 #include "nix/store/local-fs-store.hh"
