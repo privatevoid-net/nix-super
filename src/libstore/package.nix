@@ -91,7 +91,6 @@ mkMesonLibrary (finalAttrs: {
     (lib.mesonBool "embedded-sandbox-shell" embeddedSandboxShell)
     (lib.mesonEnable "s3-aws-auth" withAWS)
   ]
-  ++ lib.optionals stdenv.hostPlatform.isLinux [
   ++ lib.optionals withSandboxShell [
     (lib.mesonOption "sandbox-shell" sandboxShell)
     (lib.mesonOption "external-helper-shell" "${busybox-sandbox-shell}/bin/sh")
