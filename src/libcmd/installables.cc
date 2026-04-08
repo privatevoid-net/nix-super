@@ -574,10 +574,12 @@ Installables SourceExprCommand::parseInstallables(
             auto dir = absPath(getCommandBaseDir());
             state->evalFile(lookupFileArg(*state, file->string(), &dir), *vFile);
         } else if (callPackageFile) {
-            auto fileLoc = absPath(*callPackageFile);
-            auto e = state->parseExprFromString(
-                fmt("(import <nixpkgs> {}).callPackage %s {}", fileLoc), state->rootPath("."));
-            state->eval(e, *vFile);
+            auto dir = absPath(getCommandBaseDir());
+            auto vFileArg = state->allocValue();
+            auto vCallPackage = state->allocValue();
+            state->evalFile(lookupFileArg(*state, callPackageFile->string(), &dir), *vFileArg);
+            state->eval(state->parseExprFromString("f: (import <nixpkgs> {}).callPackage f {}", state->rootPath(".")), *vCallPackage);
+            state->callFunction(*vCallPackage, *vFileArg, *vFile, noPos);
         } else {
             auto dir = absPath(getCommandBaseDir());
             auto e = state->parseExprFromString(*expr, state->rootPath(dir.string()));
