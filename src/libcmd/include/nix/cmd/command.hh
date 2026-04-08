@@ -153,7 +153,7 @@ struct SourceExprCommand : virtual Args, MixFlakeOptions
 {
     std::optional<std::filesystem::path> file;
     std::optional<std::string> expr;
-    std::optional<Path> callPackageFile;
+    std::optional<std::filesystem::path> callPackageFile;
     std::optional<std::string> applyToInstallable;
     std::optional<std::string> installableOverrideAttrs;
     std::optional<std::string> installableWithPackages;
@@ -412,7 +412,7 @@ template<class ActivatableCommand>
 struct ActivatableBuildCommand : public ActivatableCommand, public MixDryRun
 {
     ActivatableBuildCommand();
-    Path outLink = "result";
+    std::filesystem::path outLink = "result";
     bool printOutputPaths = false;
     void runActivatable(nix::ref<Store>, ref<Installable> installable) override;
 };

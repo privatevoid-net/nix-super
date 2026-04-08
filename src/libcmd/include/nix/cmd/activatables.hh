@@ -21,7 +21,7 @@ ActivatableBuildCommand<ActivatableCommand>::ActivatableBuildCommand()
     addFlag({
         .longName = "no-link",
         .description = "Do not create symlinks to the build results.",
-        .handler = {&outLink, Path("")},
+        .handler = {&outLink, std::filesystem::path("")},
     });
 
     addFlag({
