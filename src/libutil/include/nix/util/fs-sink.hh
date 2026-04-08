@@ -36,7 +36,7 @@ struct FileSystemObjectSink
 
     virtual void createDirectory(const CanonPath & path) = 0;
 
-    using DirectoryCreatedCallback = std::function<void(FileSystemObjectSink & dirSink, const CanonPath & dirRelPath)>;
+    using DirectoryCreatedCallback = fun<void(FileSystemObjectSink & dirSink, const CanonPath & dirRelPath)>;
 
     /**
      * Create a directory and invoke a callback with a pair of sink + CanonPath
@@ -57,7 +57,7 @@ struct FileSystemObjectSink
      * This function in general is no re-entrant. Only one file can be
      * written at a time.
      */
-    virtual void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) = 0;
+    virtual void createRegularFile(const CanonPath & path, fun<void(CreateRegularFileSink &)>) = 0;
 
     virtual void createSymlink(const CanonPath & path, const std::string & target) = 0;
 };
@@ -90,7 +90,7 @@ struct NullFileSystemObjectSink : FileSystemObjectSink
 
     void createSymlink(const CanonPath & path, const std::string & target) override {}
 
-    void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) override;
+    void createRegularFile(const CanonPath & path, fun<void(CreateRegularFileSink &)>) override;
 };
 
 /**
@@ -99,7 +99,6 @@ struct NullFileSystemObjectSink : FileSystemObjectSink
 struct RestoreSink : FileSystemObjectSink
 {
     std::filesystem::path dstPath;
-#ifndef _WIN32
     /**
      * File descriptor for the directory located at dstPath. Used for *at
      * operations relative to this file descriptor. This sink must *never*
@@ -110,7 +109,6 @@ struct RestoreSink : FileSystemObjectSink
      * is not susceptible to symlink replacement.
      */
     AutoCloseFD dirFd;
-#endif
     bool startFsync = false;
 
     explicit RestoreSink(bool startFsync)
@@ -120,11 +118,9 @@ struct RestoreSink : FileSystemObjectSink
 
     void createDirectory(const CanonPath & path) override;
 
-#ifndef _WIN32
     void createDirectory(const CanonPath & path, DirectoryCreatedCallback callback) override;
-#endif
 
-    void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) override;
+    void createRegularFile(const CanonPath & path, fun<void(CreateRegularFileSink &)>) override;
 
     void createSymlink(const CanonPath & path, const std::string & target) override;
 };
@@ -154,7 +150,7 @@ struct RegularFileSink : FileSystemObjectSink
         regular = false;
     }
 
-    void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) override;
+    void createRegularFile(const CanonPath & path, fun<void(CreateRegularFileSink &)>) override;
 };
 
 } // namespace nix

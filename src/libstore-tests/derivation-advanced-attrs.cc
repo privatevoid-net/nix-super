@@ -5,6 +5,7 @@
 #include "nix/store/derivations.hh"
 #include "nix/store/derived-path.hh"
 #include "nix/store/derivation-options.hh"
+#include "nix/store/globals.hh"
 #include "nix/store/parsed-derivations.hh"
 #include "nix/util/types.hh"
 #include "nix/util/json-utils.hh"
@@ -192,9 +193,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes_defaults)
 
         EXPECT_EQ(options, advancedAttributes_defaults);
 
-        EXPECT_EQ(options.canBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.willBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.substitutesAllowed(), true);
+        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), true);
         EXPECT_EQ(options.useUidRange(got), false);
     });
 };
@@ -242,7 +241,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes)
 
         EXPECT_EQ(options, expected);
 
-        EXPECT_EQ(options.substitutesAllowed(), false);
+        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), false);
         EXPECT_EQ(options.useUidRange(got), true);
     });
 };
@@ -334,9 +333,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes_structuredAttrs_d
 
         EXPECT_EQ(options, advancedAttributes_structuredAttrs_defaults);
 
-        EXPECT_EQ(options.canBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.willBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.substitutesAllowed(), true);
+        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), true);
         EXPECT_EQ(options.useUidRange(got), false);
     });
 };
@@ -401,9 +398,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes_structuredAttrs)
 
         EXPECT_EQ(options, expected);
 
-        EXPECT_EQ(options.canBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.willBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.substitutesAllowed(), false);
+        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), false);
         EXPECT_EQ(options.useUidRange(got), true);
     });
 };

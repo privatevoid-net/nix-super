@@ -11,7 +11,7 @@
 namespace nix::eval_cache {
 
 CachedEvalError::CachedEvalError(ref<AttrCursor> cursor, Symbol attr)
-    : EvalError(cursor->root->state, "cached failure of attribute '%s'", cursor->getAttrPathStr(attr))
+    : CloneableError(cursor->root->state, "cached failure of attribute '%s'", cursor->getAttrPathStr(attr))
     , cursor(cursor)
     , attr(attr)
 {
@@ -70,12 +70,12 @@ struct AttrDb
     {
         auto state(_state->lock());
 
-        auto cacheDir = std::filesystem::path(getCacheDir()) / "eval-cache-v6";
+        auto cacheDir = getCacheDir() / "eval-cache-v6";
         createDirs(cacheDir);
 
         auto dbPath = cacheDir / (fingerprint.to_string(HashFormat::Base16, false) + ".sqlite");
 
-        state->db = SQLite(dbPath);
+        state->db = SQLite(dbPath, {.useWAL = settings.useSQLiteWAL});
         state->db.isCache();
         state->db.exec(schema);
 
@@ -265,7 +265,7 @@ struct AttrDb
         case AttrType::String: {
             NixStringContext context;
             if (!queryAttribute.isNull(3))
-                for (auto & s : tokenizeString<std::vector<std::string>>(queryAttribute.getStr(3), ";"))
+                for (auto & s : tokenizeString<std::vector<std::string>>(queryAttribute.getStr(3), " "))
                     context.insert(NixStringContextElem::parse(s));
             return {{rowId, string_t{queryAttribute.getStr(2), context}}};
         }

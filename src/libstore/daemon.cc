@@ -6,9 +6,11 @@
 #include "nix/store/build-result.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-cast.hh"
+#include "nix/store/filetransfer.hh"
 #include "nix/store/gc-store.hh"
 #include "nix/store/log-store.hh"
 #include "nix/store/indirect-root-store.hh"
+#include "nix/store/remote-store.hh"
 #include "nix/store/path-with-outputs.hh"
 #include "nix/util/finally.hh"
 #include "nix/util/archive.hh"
@@ -132,7 +134,7 @@ struct TunnelLogger : public Logger
         if (!ex)
             to << STDERR_LAST;
         else {
-            if (GET_PROTOCOL_MINOR(clientVersion) >= 26) {
+            if (clientVersion >= WorkerProto::Version{.number = {1, 26}}) {
                 to << STDERR_ERROR << *ex;
             } else {
                 to << STDERR_ERROR << ex->what() << ex->info().status;
@@ -148,7 +150,7 @@ struct TunnelLogger : public Logger
         const Fields & fields,
         ActivityId parent) override
     {
-        if (GET_PROTOCOL_MINOR(clientVersion) < 20) {
+        if (clientVersion.number < WorkerProto::Version::Number{1, 20}) {
             if (!s.empty())
                 log(lvl, s + "...");
             return;
@@ -161,7 +163,7 @@ struct TunnelLogger : public Logger
 
     void stopActivity(ActivityId act) override
     {
-        if (GET_PROTOCOL_MINOR(clientVersion) < 20)
+        if (clientVersion.number < WorkerProto::Version::Number{1, 20})
             return;
         StringSink buf;
         buf << STDERR_STOP_ACTIVITY << act;
@@ -170,7 +172,7 @@ struct TunnelLogger : public Logger
 
     void result(ActivityId act, ResultType type, const Fields & fields) override
     {
-        if (GET_PROTOCOL_MINOR(clientVersion) < 20)
+        if (clientVersion.number < WorkerProto::Version::Number{1, 20})
             return;
         StringSink buf;
         buf << STDERR_RESULT << act << type << fields;
@@ -232,38 +234,49 @@ struct ClientSettings
     void apply(TrustedFlag trusted)
     {
         settings.keepFailed = keepFailed;
-        settings.keepGoing = keepGoing;
-        settings.tryFallback = tryFallback;
+        settings.getWorkerSettings().keepGoing = keepGoing;
+        settings.getWorkerSettings().tryFallback = tryFallback;
         nix::verbosity = verbosity;
-        settings.maxBuildJobs.assign(maxBuildJobs);
-        settings.maxSilentTime = maxSilentTime;
+        settings.getWorkerSettings().maxBuildJobs.assign(maxBuildJobs);
+        settings.getWorkerSettings().maxSilentTime = maxSilentTime;
         settings.verboseBuild = verboseBuild;
-        settings.buildCores = buildCores;
-        settings.useSubstitutes = useSubstitutes;
+        settings.getLocalSettings().buildCores = buildCores;
+        settings.getWorkerSettings().useSubstitutes = useSubstitutes;
 
         for (auto & i : overrides) {
             auto & name(i.first);
             auto & value(i.second);
 
-            auto setSubstituters = [&](Setting<Strings> & res) {
+            auto setSubstituters = [&](Setting<std::vector<StoreReference>> & res) {
                 if (name != res.name && res.aliases.count(name) == 0)
                     return false;
-                StringSet trusted = settings.trustedSubstituters;
-                for (auto & s : settings.substituters.get())
-                    trusted.insert(s);
-                Strings subs;
+                std::set<StoreReference> trusted = settings.trustedSubstituters;
+                for (auto & ref : settings.getWorkerSettings().substituters.get())
+                    trusted.insert(ref);
+                std::vector<StoreReference> subs;
                 auto ss = tokenizeString<Strings>(value);
-                for (auto & s : ss)
-                    if (trusted.count(s))
-                        subs.push_back(s);
-                    else if (!hasSuffix(s, "/") && trusted.count(s + "/"))
-                        subs.push_back(s + "/");
+                for (auto & s : ss) {
+                    auto ref = StoreReference::parse(s);
+                    auto tryTrust = [&] {
+                        if (trusted.count(ref))
+                            return true;
+                        if (auto * specified = std::get_if<StoreReference::Specified>(&ref.variant);
+                            specified && !hasSuffix(specified->authority, "/")) {
+                            specified->authority += "/";
+                            if (trusted.count(ref))
+                                return true;
+                        }
+                        return false;
+                    };
+                    if (tryTrust())
+                        subs.push_back(std::move(ref));
                     else
                         warn(
                             "ignoring untrusted substituter '%s', you are not a trusted user.\n"
                             "Run `man nix.conf` for more information on the `substituters` configuration option.",
                             s);
-                res = subs;
+                }
+                res = std::move(subs);
                 return true;
             };
 
@@ -281,18 +294,20 @@ struct ClientSettings
                         "Ignoring the client-specified plugin-files.\n"
                         "The client specifying plugins to the daemon never made sense, and was removed in Nix >=2.14.");
                 } else if (
-                    trusted || name == settings.buildTimeout.name || name == settings.maxSilentTime.name
-                    || name == settings.pollInterval.name || name == "connect-timeout"
-                    || (name == "builders" && value == ""))
+                    trusted || name == settings.getWorkerSettings().buildTimeout.name
+                    || name == settings.getWorkerSettings().maxSilentTime.name
+                    || name == settings.getWorkerSettings().pollInterval.name || name == "connect-timeout"
+                    || (name == "builders" && value == "")) {
                     settings.set(name, value);
-                else if (setSubstituters(settings.substituters))
+                    fileTransferSettings.set(name, value);
+                } else if (setSubstituters(settings.getWorkerSettings().substituters))
                     ;
                 else
                     warn(
                         "ignoring the client-specified setting '%s', because it is a restricted setting and you are not a trusted user",
                         name);
             } catch (UsageError & e) {
-                warn(e.what());
+                logWarning(e.info());
             }
         }
     }
@@ -324,7 +339,7 @@ static void performOp(
         auto paths = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
 
         SubstituteFlag substitute = NoSubstitute;
-        if (GET_PROTOCOL_MINOR(conn.protoVersion) >= 27) {
+        if (conn.protoVersion >= WorkerProto::Version{.number = {1, 27}}) {
             substitute = readInt(conn.from) ? Substitute : NoSubstitute;
         }
 
@@ -338,17 +353,6 @@ static void performOp(
         break;
     }
 
-    case WorkerProto::Op::HasSubstitutes: {
-        auto path = WorkerProto::Serialise<StorePath>::read(*store, rconn);
-        logger->startWork();
-        StorePathSet paths; // FIXME
-        paths.insert(path);
-        auto res = store->querySubstitutablePaths(paths);
-        logger->stopWork();
-        conn.to << (res.count(path) != 0);
-        break;
-    }
-
     case WorkerProto::Op::QuerySubstitutablePaths: {
         auto paths = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
         logger->startWork();
@@ -358,26 +362,13 @@ static void performOp(
         break;
     }
 
-    case WorkerProto::Op::QueryPathHash: {
-        auto path = WorkerProto::Serialise<StorePath>::read(*store, rconn);
-        logger->startWork();
-        auto hash = store->queryPathInfo(path)->narHash;
-        logger->stopWork();
-        conn.to << hash.to_string(HashFormat::Base16, false);
-        break;
-    }
-
-    case WorkerProto::Op::QueryReferences:
     case WorkerProto::Op::QueryReferrers:
     case WorkerProto::Op::QueryValidDerivers:
     case WorkerProto::Op::QueryDerivationOutputs: {
         auto path = WorkerProto::Serialise<StorePath>::read(*store, rconn);
         logger->startWork();
         StorePathSet paths;
-        if (op == WorkerProto::Op::QueryReferences)
-            for (auto & i : store->queryPathInfo(path)->references)
-                paths.insert(i);
-        else if (op == WorkerProto::Op::QueryReferrers)
+        if (op == WorkerProto::Op::QueryReferrers)
             store->queryReferrers(path, paths);
         else if (op == WorkerProto::Op::QueryValidDerivers)
             paths = store->queryValidDerivers(path);
@@ -425,7 +416,7 @@ static void performOp(
     }
 
     case WorkerProto::Op::AddToStore: {
-        if (GET_PROTOCOL_MINOR(conn.protoVersion) >= 25) {
+        if (conn.protoVersion >= WorkerProto::Version{.number = {1, 25}}) {
             auto name = readString(conn.from);
             auto camStr = readString(conn.from);
             auto refs = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
@@ -519,7 +510,19 @@ static void performOp(
         logger->startWork();
         {
             FramedSource source(conn.from);
-            store->addMultipleToStore(source, RepairFlag{repair}, dontCheckSigs ? NoCheckSigs : CheckSigs);
+            auto expected = readNum<uint64_t>(source);
+            for (uint64_t i = 0; i < expected; ++i) {
+                auto info = WorkerProto::Serialise<ValidPathInfo>::read(
+                    *store,
+                    WorkerProto::ReadConn{
+                        .from = source,
+                        .version = {.number = {.major = 1, .minor = 16}},
+                    });
+                info.ultimate = false;
+                EnsureRead wrapper{source, info.narSize};
+                store->addToStore(info, wrapper, RepairFlag{repair}, dontCheckSigs ? NoCheckSigs : CheckSigs);
+                wrapper.finish();
+            }
         }
         logger->stopWork();
         break;
@@ -658,7 +661,7 @@ static void performOp(
 
             Derivation drv2;
             static_cast<BasicDerivation &>(drv2) = drv;
-            drvPath = writeDerivation(*store, Derivation{drv2});
+            drvPath = store->writeDerivation(Derivation{drv2});
         }
 
         auto res = store->buildDerivation(drvPath, drv, buildMode);
@@ -691,17 +694,17 @@ static void performOp(
                 "you are not privileged to create perm roots\n\n"
                 "hint: you can just do this client-side without special privileges, and probably want to do that instead.");
         auto storePath = WorkerProto::Serialise<StorePath>::read(*store, rconn);
-        Path gcRoot = absPath(readString(conn.from));
+        std::filesystem::path gcRoot = absPath(readString(conn.from));
         logger->startWork();
         auto & localFSStore = require<LocalFSStore>(*store);
         localFSStore.addPermRoot(storePath, gcRoot);
         logger->stopWork();
-        conn.to << gcRoot;
+        conn.to << gcRoot.string();
         break;
     }
 
     case WorkerProto::Op::AddIndirectRoot: {
-        Path path = absPath(readString(conn.from));
+        std::filesystem::path path = absPath(readString(conn.from));
 
         logger->startWork();
         auto & indirectRootStore = require<IndirectRootStore>(*store);
@@ -821,7 +824,7 @@ static void performOp(
     case WorkerProto::Op::QuerySubstitutablePathInfos: {
         SubstitutablePathInfos infos;
         StorePathCAMap pathsMap = {};
-        if (GET_PROTOCOL_MINOR(conn.protoVersion) < 22) {
+        if (conn.protoVersion.number < WorkerProto::Version::Number{1, 22}) {
             auto paths = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
             for (auto & path : paths)
                 pathsMap.emplace(path, std::nullopt);
@@ -852,7 +855,10 @@ static void performOp(
         auto path = WorkerProto::Serialise<StorePath>::read(*store, rconn);
         std::shared_ptr<const ValidPathInfo> info;
         logger->startWork();
-        info = store->queryPathInfo(path);
+        try {
+            info = store->queryPathInfo(path);
+        } catch (InvalidPath &) {
+        }
         logger->stopWork();
         if (info) {
             conn.to << 1;
@@ -884,7 +890,7 @@ static void performOp(
 
     case WorkerProto::Op::AddSignatures: {
         auto path = WorkerProto::Serialise<StorePath>::read(*store, rconn);
-        StringSet sigs = readStrings<StringSet>(conn.from);
+        auto sigs = WorkerProto::Serialise<std::set<Signature>>::read(*store, rconn);
         logger->startWork();
         store->addSignatures(path, sigs);
         logger->stopWork();
@@ -909,7 +915,7 @@ static void performOp(
         info.deriver = std::move(deriver);
         info.references = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
         conn.from >> info.registrationTime >> info.narSize >> info.ultimate;
-        info.sigs = readStrings<StringSet>(conn.from);
+        info.sigs = WorkerProto::Serialise<std::set<Signature>>::read(*store, rconn);
         info.ca = ContentAddress::parseOpt(readString(conn.from));
         conn.from >> repair >> dontCheckSigs;
         if (!trusted && dontCheckSigs)
@@ -917,7 +923,7 @@ static void performOp(
         if (!trusted)
             info.ultimate = false;
 
-        if (GET_PROTOCOL_MINOR(conn.protoVersion) >= 23) {
+        if (conn.protoVersion >= WorkerProto::Version{.number = {1, 23}}) {
             logger->startWork();
             {
                 FramedSource source(conn.from);
@@ -929,7 +935,7 @@ static void performOp(
         else {
             std::unique_ptr<Source> source;
             StringSink saved;
-            if (GET_PROTOCOL_MINOR(conn.protoVersion) >= 21)
+            if (conn.protoVersion >= WorkerProto::Version{.number = {1, 21}})
                 source = std::make_unique<TunnelSource>(conn.from, conn.to);
             else {
                 TeeSource tee{conn.from, saved};
@@ -940,8 +946,9 @@ static void performOp(
 
             logger->startWork();
 
-            // FIXME: race if addToStore doesn't read source?
-            store->addToStore(info, *source, (RepairFlag) repair, dontCheckSigs ? NoCheckSigs : CheckSigs);
+            EnsureRead wrapper{*source, info.narSize};
+            store->addToStore(info, wrapper, (RepairFlag) repair, dontCheckSigs ? NoCheckSigs : CheckSigs);
+            wrapper.finish();
 
             logger->stopWork();
         }
@@ -963,14 +970,8 @@ static void performOp(
 
     case WorkerProto::Op::RegisterDrvOutput: {
         logger->startWork();
-        if (GET_PROTOCOL_MINOR(conn.protoVersion) < 31) {
-            auto outputId = WorkerProto::Serialise<DrvOutput>::read(*store, rconn);
-            auto outputPath = StorePath(readString(conn.from));
-            store->registerDrvOutput(Realisation{{.outPath = outputPath}, outputId});
-        } else {
-            auto realisation = WorkerProto::Serialise<Realisation>::read(*store, rconn);
-            store->registerDrvOutput(realisation);
-        }
+        auto realisation = WorkerProto::Serialise<Realisation>::read(*store, rconn);
+        store->registerDrvOutput(realisation);
         logger->stopWork();
         break;
     }
@@ -978,19 +979,16 @@ static void performOp(
     case WorkerProto::Op::QueryRealisation: {
         logger->startWork();
         auto outputId = WorkerProto::Serialise<DrvOutput>::read(*store, rconn);
-        auto info = store->queryRealisation(outputId);
+        auto ptr = store->queryRealisation(outputId);
+        std::optional<UnkeyedRealisation> info;
+        if (ptr)
+            info = *ptr;
         logger->stopWork();
-        if (GET_PROTOCOL_MINOR(conn.protoVersion) < 31) {
-            std::set<StorePath> outPaths;
-            if (info)
-                outPaths.insert(info->outPath);
-            WorkerProto::write(*store, wconn, outPaths);
-        } else {
-            std::set<Realisation> realisations;
-            if (info)
-                realisations.insert({*info, outputId});
-            WorkerProto::write(*store, wconn, realisations);
-        }
+        /* Only return the new format because if we got past
+           `DrvOutput` serialization, we know that is what we're using.
+           */
+        assert(conn.protoVersion.features.contains(WorkerProto::featureRealisationWithPath));
+        WorkerProto::write(*store, wconn, info);
         break;
     }
 
@@ -1011,10 +1009,6 @@ static void performOp(
         break;
     }
 
-    case WorkerProto::Op::QueryFailedPaths:
-    case WorkerProto::Op::ClearFailedPaths:
-        throw Error("Removed operation %1%", op);
-
     default:
         throw Error("invalid operation %1%", op);
     }
@@ -1026,22 +1020,29 @@ void processConnection(ref<Store> store, FdSource && from, FdSink && to, Trusted
     auto monitor = !recursive ? std::make_unique<MonitorFdHup>(from.fd) : nullptr;
     (void) monitor; // suppress warning
     ReceiveInterrupts receiveInterrupts;
+
+    /* When interrupted (e.g., SSH client disconnects), shutdown any downstream
+       store connections to break circular waits. This fixes deadlocks where the
+       daemon is waiting for a response from a downstream store while the downstream
+       is waiting for more data from this daemon. */
+    auto shutdownStoreOnInterrupt = createInterruptCallback([&store]() {
+        if (auto remoteStore = dynamic_cast<RemoteStore *>(&*store)) {
+            remoteStore->shutdownConnections();
+        }
+    });
 #endif
 
     /* Exchange the greeting. */
-    auto [protoVersion, features] =
-        WorkerProto::BasicServerConnection::handshake(to, from, PROTOCOL_VERSION, WorkerProto::allFeatures);
+    WorkerProto::BasicServerConnection conn;
+    conn.protoVersion = WorkerProto::BasicServerConnection::handshake(to, from, WorkerProto::latest);
 
-    if (protoVersion < MINIMUM_PROTOCOL_VERSION)
+    if (conn.protoVersion.number < WorkerProto::minimum.number)
         throw Error("the Nix client version is too old");
 
-    WorkerProto::BasicServerConnection conn;
     conn.to = std::move(to);
     conn.from = std::move(from);
-    conn.protoVersion = protoVersion;
-    conn.features = features;
 
-    auto tunnelLogger_ = std::make_unique<TunnelLogger>(conn.to, protoVersion);
+    auto tunnelLogger_ = std::make_unique<TunnelLogger>(conn.to, conn.protoVersion);
     auto tunnelLogger = tunnelLogger_.get();
     std::unique_ptr<Logger> prevLogger_;
     auto prevLogger = logger.get();

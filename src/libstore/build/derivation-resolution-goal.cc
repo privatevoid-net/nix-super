@@ -90,7 +90,12 @@ Goal::Co DerivationResolutionGoal::resolveDerivation()
                 nrFailed,
                 nrFailed == 1 ? "dependency" : "dependencies");
         msg += showKnownOutputs(worker.store, *drv);
-        co_return amDone(ecFailed, {BuildError(BuildResult::Failure::DependencyFailed, msg)});
+        co_return doneFailure(
+            ecFailed,
+            BuildResult::Failure{{
+                .status = BuildResult::Failure::DependencyFailed,
+                .msg = HintFmt(msg),
+            }});
     }
 
     /* Gather information necessary for computing the closure and/or
@@ -102,32 +107,7 @@ Goal::Co DerivationResolutionGoal::resolveDerivation()
     {
         auto & fullDrv = *drv;
 
-        auto drvType = fullDrv.type();
-        bool resolveDrv =
-            std::visit(
-                overloaded{
-                    [&](const DerivationType::InputAddressed & ia) {
-                        /* must resolve if deferred. */
-                        return ia.deferred;
-                    },
-                    [&](const DerivationType::ContentAddressed & ca) {
-                        return !fullDrv.inputDrvs.map.empty()
-                               && (ca.fixed
-                                       /* Can optionally resolve if fixed, which is good
-                                          for avoiding unnecessary rebuilds. */
-                                       ? experimentalFeatureSettings.isEnabled(Xp::CaDerivations)
-                                       /* Must resolve if floating and there are any inputs
-                                          drvs. */
-                                       : true);
-                    },
-                    [&](const DerivationType::Impure &) { return true; }},
-                drvType.raw)
-            /* no inputs are outputs of dynamic derivations */
-            || std::ranges::any_of(fullDrv.inputDrvs.map.begin(), fullDrv.inputDrvs.map.end(), [](auto & pair) {
-                   return !pair.second.childMap.empty();
-               });
-
-        if (resolveDrv && !fullDrv.inputDrvs.map.empty()) {
+        if (fullDrv.shouldResolve()) {
             experimentalFeatureSettings.require(Xp::CaDerivations);
 
             /* We are be able to resolve this derivation based on the
@@ -164,7 +144,7 @@ Goal::Co DerivationResolutionGoal::resolveDerivation()
             }
             assert(attempt);
 
-            auto pathResolved = writeDerivation(worker.store, *attempt, NoRepair, /*readOnly =*/true);
+            auto pathResolved = computeStorePath(worker.store, Derivation{*attempt});
 
             auto msg =
                 fmt("resolved derivation: '%s' -> '%s'",
@@ -185,7 +165,7 @@ Goal::Co DerivationResolutionGoal::resolveDerivation()
         }
     }
 
-    co_return amDone(ecSuccess, std::nullopt);
+    co_return amDone(ecSuccess);
 }
 
 } // namespace nix

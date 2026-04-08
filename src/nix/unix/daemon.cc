@@ -4,7 +4,9 @@
 #include "nix/util/unix-domain-socket.hh"
 #include "nix/cmd/command.hh"
 #include "nix/main/shared.hh"
+#include "nix/store/local-fs-store.hh"
 #include "nix/store/local-store.hh"
+#include "nix/store/uds-remote-store.hh"
 #include "nix/store/remote-store.hh"
 #include "nix/store/remote-store-connection.hh"
 #include "nix/store/store-open.hh"
@@ -15,20 +17,20 @@
 #include "nix/store/derivations.hh"
 #include "nix/util/finally.hh"
 #include "nix/cmd/legacy.hh"
+#include "nix/cmd/unix-socket-server.hh"
 #include "nix/store/daemon.hh"
 #include "man-pages.hh"
 
 #include <algorithm>
 #include <climits>
 #include <cstring>
+#include <variant>
 
 #include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <sys/select.h>
 #include <errno.h>
 #include <pwd.h>
@@ -37,10 +39,6 @@
 
 #ifdef __linux__
 #  include "nix/util/cgroup.hh"
-#endif
-
-#if defined(__APPLE__) || defined(__FreeBSD__)
-#  include <sys/ucred.h>
 #endif
 
 using namespace nix;
@@ -102,7 +100,7 @@ struct AuthorizationSettings : Config
 
 AuthorizationSettings authorizationSettings;
 
-static GlobalConfig::Register rSettings(&authorizationSettings);
+static GlobalConfig::Register rAuthorizationSettings(&authorizationSettings);
 
 #ifndef __linux__
 #  define SPLICE_F_MOVE 0
@@ -125,13 +123,20 @@ static ssize_t splice(int fd_in, void * off_in, int fd_out, void * off_out, size
 }
 #endif
 
+static unix::SelfPipe sigChldPipe;
+
 static void sigChldHandler(int sigNo)
 {
     // Ensure we don't modify errno of whatever we've interrupted
     auto saved_errno = errno;
-    //  Reap all dead children.
-    while (waitpid(-1, 0, WNOHANG) > 0)
-        ;
+    /* Write to the self-pipe that gets polled in the accept loop. Pipe
+       is non-blocking. https://man7.org/tlpi/code/online/dist/altio/self_pipe.c.html */
+    auto res = ::write(sigChldPipe.pipe.writeSide.get(), "x", 1);
+    if (res == -1 && errno != EAGAIN) {
+        /* Something is deeply wrong. Can't call std::terminate here because our terminate
+           handler is not safe for that. */
+        abort();
+    }
     errno = saved_errno;
 }
 
@@ -197,63 +202,6 @@ matchUser(const std::optional<std::string> & user, const std::optional<std::stri
     return false;
 }
 
-struct PeerInfo
-{
-    std::optional<pid_t> pid;
-    std::optional<uid_t> uid;
-    std::optional<gid_t> gid;
-};
-
-/**
- * Get the identity of the caller, if possible.
- */
-static PeerInfo getPeerInfo(int remote)
-{
-    PeerInfo peer;
-
-#if defined(SO_PEERCRED)
-
-#  if defined(__OpenBSD__)
-    struct sockpeercred cred;
-#  else
-    ucred cred;
-#  endif
-    socklen_t credLen = sizeof(cred);
-    if (getsockopt(remote, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) == 0) {
-        peer.pid = cred.pid;
-        peer.uid = cred.uid;
-        peer.gid = cred.gid;
-    }
-
-#elif defined(LOCAL_PEERCRED)
-
-#  if !defined(SOL_LOCAL)
-#    define SOL_LOCAL 0
-#  endif
-
-    xucred cred;
-    socklen_t credLen = sizeof(cred);
-    if (getsockopt(remote, SOL_LOCAL, LOCAL_PEERCRED, &cred, &credLen) == 0)
-        peer.uid = cred.cr_uid;
-
-#endif
-
-    return peer;
-}
-
-#define SD_LISTEN_FDS_START 3
-
-/**
- * Open a store without a path info cache.
- */
-static ref<Store> openUncachedStore()
-{
-    Store::Config::Params params; // FIXME: get params from somewhere
-    // Disable caching since the client already does that.
-    params["path-info-cache-size"] = "0";
-    return openStore(settings.storeUri, params);
-}
-
 /**
  * Authenticate a potential client
  *
@@ -265,7 +213,7 @@ static ref<Store> openUncachedStore()
  *
  * If the potential client is not allowed to talk to us, we throw an `Error`.
  */
-static std::pair<TrustedFlag, std::optional<std::string>> authPeer(const PeerInfo & peer)
+static std::pair<TrustedFlag, std::optional<std::string>> authPeer(const unix::PeerInfo & peer)
 {
     TrustedFlag trusted = NotTrusted;
 
@@ -285,7 +233,7 @@ static std::pair<TrustedFlag, std::optional<std::string>> authPeer(const PeerInf
     if (matchUser(user, group, trustedUsers))
         trusted = Trusted;
 
-    if ((!trusted && !matchUser(user, group, allowedUsers)) || group == settings.buildUsersGroup)
+    if ((!trusted && !matchUser(user, group, allowedUsers)) || group == settings.getLocalSettings().buildUsersGroup)
         throw Error("user '%1%' is not allowed to connect to the Nix daemon", user.value_or("<unknown>"));
 
     return {trusted, std::move(user)};
@@ -295,47 +243,36 @@ static std::pair<TrustedFlag, std::optional<std::string>> authPeer(const PeerInf
  * Run a server. The loop opens a socket and accepts new connections from that
  * socket.
  *
+ * @param storeConfig The store configuration to use for opening stores.
  * @param forceTrustClientOpt If present, force trusting or not trusted
  * the client. Otherwise, decide based on the authentication settings
  * and user credentials (from the unix domain socket).
  */
-static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
+static void daemonLoop(
+    ref<const StoreConfig> storeConfig,
+    std::optional<TrustedFlag> forceTrustClientOpt,
+    std::filesystem::path socketPath)
 {
     if (chdir("/") == -1)
         throw SysError("cannot change current directory");
 
-    AutoCloseFD fdSocket;
+    sigChldPipe.create();
 
-    //  Handle socket-based activation by systemd.
-    auto listenFds = getEnv("LISTEN_FDS");
-    if (listenFds) {
-        if (getEnv("LISTEN_PID") != std::to_string(getpid()) || listenFds != "1")
-            throw Error("unexpected systemd environment variables");
-        fdSocket = SD_LISTEN_FDS_START;
-        unix::closeOnExec(fdSocket.get());
-    }
-
-    //  Otherwise, create and bind to a Unix domain socket.
-    else {
-        createDirs(dirOf(settings.nixDaemonSocketFile));
-        fdSocket = createUnixDomainSocket(settings.nixDaemonSocketFile, 0666);
-    }
-
-    //  Get rid of children automatically; don't let them become zombies.
+    // Get rid of children automatically; don't let them become zombies.
     setSigChldAction(true);
 
 #ifdef __linux__
-    if (settings.useCgroups) {
+    if (settings.getLocalSettings().useCgroups) {
         experimentalFeatureSettings.require(Xp::Cgroups);
 
         //  This also sets the root cgroup to the current one.
-        auto rootCgroup = getRootCgroup();
-        auto cgroupFS = getCgroupFS();
+        auto rootCgroup = linux::getRootCgroup();
+        auto cgroupFS = linux::getCgroupFS();
         if (!cgroupFS)
             throw Error("cannot determine the cgroups file system");
-        auto rootCgroupPath = canonPath(*cgroupFS + "/" + rootCgroup);
+        auto rootCgroupPath = *cgroupFS / rootCgroup.rel();
         if (!pathExists(rootCgroupPath))
-            throw Error("expected cgroup directory '%s'", rootCgroupPath);
+            throw Error("expected cgroup directory %s", PathFmt(rootCgroupPath));
         auto daemonCgroupPath = rootCgroupPath + "/nix-daemon";
         //  Create new sub-cgroup for the daemon.
         if (mkdir(daemonCgroupPath.c_str(), 0755) != 0 && errno != EEXIST)
@@ -345,81 +282,77 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
     }
 #endif
 
-    //  Loop accepting connections.
-    while (1) {
+    try {
+        unix::serveUnixSocket(
+            {
+                .socketPath = std::move(socketPath),
+                .socketMode = 0666,
+                .auxiliaryFd = sigChldPipe.pipe.readSide.get(),
+                .onAuxiliaryFdPollin =
+                    []() {
+                        sigChldPipe.drain();
+                        /* Reap all dead children. */
+                        pid_t pid = -1;
+                        int status;
+                        while (pid = ::waitpid(/*pid (any child process)=*/-1, &status, WNOHANG), pid > 0)
+                            printInfo("reaped child process %1%, status = %2%", pid, statusToString(status));
+                    },
+            },
+            [&](AutoCloseFD remote, std::function<void()> closeListeners) {
+                unix::closeOnExec(remote.get());
 
-        try {
-            //  Accept a connection.
-            struct sockaddr_un remoteAddr;
-            socklen_t remoteAddrLen = sizeof(remoteAddr);
+                unix::PeerInfo peer;
+                TrustedFlag trusted;
+                std::optional<std::string> userName;
 
-            AutoCloseFD remote = accept(fdSocket.get(), (struct sockaddr *) &remoteAddr, &remoteAddrLen);
-            checkInterrupt();
-            if (!remote) {
-                if (errno == EINTR)
-                    continue;
-                throw SysError("accepting connection");
-            }
+                if (forceTrustClientOpt)
+                    trusted = *forceTrustClientOpt;
+                else {
+                    peer = unix::getPeerInfo(remote.get());
+                    auto [_trusted, _userName] = authPeer(peer);
+                    trusted = _trusted;
+                    userName = _userName;
+                };
 
-            unix::closeOnExec(remote.get());
+                printInfo(
+                    (std::string) "accepted connection from pid %1%, user %2%" + (trusted ? " (trusted)" : ""),
+                    peer.pid ? std::to_string(*peer.pid) : "<unknown>",
+                    userName.value_or("<unknown>"));
 
-            PeerInfo peer;
-            TrustedFlag trusted;
-            std::optional<std::string> userName;
+                // Fork a child to handle the connection.
+                ProcessOptions options;
+                options.errorPrefix = "unexpected Nix daemon error: ";
+                options.dieWithParent = false;
+                options.runExitHandlers = true;
+                options.allowVfork = false;
+                startProcess(
+                    [&, storeConfig, closeListeners = std::move(closeListeners)]() {
+                        closeListeners();
 
-            if (forceTrustClientOpt)
-                trusted = *forceTrustClientOpt;
-            else {
-                peer = getPeerInfo(remote.get());
-                auto [_trusted, _userName] = authPeer(peer);
-                trusted = _trusted;
-                userName = _userName;
-            };
+                        // Background the daemon.
+                        if (setsid() == -1)
+                            throw SysError("creating a new session");
 
-            printInfo(
-                (std::string) "accepted connection from pid %1%, user %2%" + (trusted ? " (trusted)" : ""),
-                peer.pid ? std::to_string(*peer.pid) : "<unknown>",
-                userName.value_or("<unknown>"));
+                        // Restore normal handling of SIGCHLD.
+                        setSigChldAction(false);
 
-            //  Fork a child to handle the connection.
-            ProcessOptions options;
-            options.errorPrefix = "unexpected Nix daemon error: ";
-            options.dieWithParent = false;
-            options.runExitHandlers = true;
-            options.allowVfork = false;
-            startProcess(
-                [&]() {
-                    fdSocket = -1;
+                        // For debugging, stuff the pid into argv[1].
+                        if (peer.pid && savedArgv[1]) {
+                            auto processName = std::to_string(*peer.pid);
+                            strncpy(savedArgv[1], processName.c_str(), strlen(savedArgv[1]));
+                        }
 
-                    //  Background the daemon.
-                    if (setsid() == -1)
-                        throw SysError("creating a new session");
+                        // Handle the connection.
+                        auto store = storeConfig->openStore();
+                        store->init();
+                        processConnection(store, FdSource(remote.get()), FdSink(remote.get()), trusted, NotRecursive);
 
-                    //  Restore normal handling of SIGCHLD.
-                    setSigChldAction(false);
-
-                    //  For debugging, stuff the pid into argv[1].
-                    if (peer.pid && savedArgv[1]) {
-                        auto processName = std::to_string(*peer.pid);
-                        strncpy(savedArgv[1], processName.c_str(), strlen(savedArgv[1]));
-                    }
-
-                    //  Handle the connection.
-                    processConnection(
-                        openUncachedStore(), FdSource(remote.get()), FdSink(remote.get()), trusted, NotRecursive);
-
-                    exit(0);
-                },
-                options);
-
-        } catch (Interrupted & e) {
-            return;
-        } catch (Error & error) {
-            auto ei = error.info();
-            // FIXME: add to trace?
-            ei.msg = HintFmt("while processing connection: %1%", ei.msg.str());
-            logError(ei);
-        }
+                        exit(0);
+                    },
+                    options);
+            });
+    } catch (Interrupted & e) {
+        return;
     }
 }
 
@@ -437,22 +370,23 @@ static void forwardStdioConnection(RemoteStore & store)
     int from = conn->from.fd;
     int to = conn->to.fd;
 
-    auto nfds = std::max(from, STDIN_FILENO) + 1;
+    Socket fromSock = toSocket(from), stdinSock = toSocket(getStandardInput());
+    auto nfds = std::max(fromSock, stdinSock) + 1;
     while (true) {
         fd_set fds;
         FD_ZERO(&fds);
-        FD_SET(from, &fds);
-        FD_SET(STDIN_FILENO, &fds);
+        FD_SET(fromSock, &fds);
+        FD_SET(stdinSock, &fds);
         if (select(nfds, &fds, nullptr, nullptr, nullptr) == -1)
             throw SysError("waiting for data from client or server");
-        if (FD_ISSET(from, &fds)) {
+        if (FD_ISSET(fromSock, &fds)) {
             auto res = splice(from, nullptr, STDOUT_FILENO, nullptr, SSIZE_MAX, SPLICE_F_MOVE);
             if (res == -1)
                 throw SysError("splicing data from daemon socket to stdout");
             else if (res == 0)
                 throw EndOfFile("unexpected EOF from daemon socket");
         }
-        if (FD_ISSET(STDIN_FILENO, &fds)) {
+        if (FD_ISSET(stdinSock, &fds)) {
             auto res = splice(STDIN_FILENO, nullptr, to, nullptr, SSIZE_MAX, SPLICE_F_MOVE);
             if (res == -1)
                 throw SysError("splicing data from stdin to daemon socket");
@@ -477,36 +411,81 @@ static void processStdioConnection(ref<Store> store, TrustedFlag trustClient)
 }
 
 /**
+ * Tag indicating the daemon should communicate via standard I/O.
+ */
+struct StdIO
+{};
+
+/**
+ * Tag indicating the daemon should listen on a UNIX socket.
+ *
+ * Use the the given path if defined, or at the default path for the given
+ * store (configuration) if `std::nullopt`.
+ */
+using UnixSocket = std::optional<std::filesystem::path>;
+
+/**
+ * How the daemon should accept connections. See the underlying types for
+ * details on each choice.
+ */
+using DaemonMode = std::variant<StdIO, UnixSocket>;
+
+/**
  * Entry point shared between the new CLI `nix daemon` and old CLI
  * `nix-daemon`.
  *
+ * @param storeConfig The store configuration to use for opening stores.
+ * @param mode How the daemon accepts connections; stdio or UNIX socket.
  * @param forceTrustClientOpt See `daemonLoop()` and the parameter with
  * the same name over there for details.
  *
  * @param processOps Whether to force processing ops even if the next
  * store also is a remote store and could process it directly.
  */
-static void runDaemon(bool stdio, std::optional<TrustedFlag> forceTrustClientOpt, bool processOps)
+static void runDaemon(
+    ref<StoreConfig> storeConfig, DaemonMode mode, std::optional<TrustedFlag> forceTrustClientOpt, bool processOps)
 {
-    if (stdio) {
-        auto store = openUncachedStore();
+    // Disable caching since the client already does that.
+    storeConfig->pathInfoCacheSize = 0;
 
-        std::shared_ptr<RemoteStore> remoteStore;
+    std::visit(
+        overloaded{
+            [&](StdIO) {
+                auto store = storeConfig->openStore();
+                store->init();
 
-        // If --force-untrusted is passed, we cannot forward the connection and
-        // must process it ourselves (before delegating to the next store) to
-        // force untrusting the client.
-        processOps |= !forceTrustClientOpt || *forceTrustClientOpt != NotTrusted;
+                std::shared_ptr<RemoteStore> remoteStore;
 
-        if (!processOps && (remoteStore = store.dynamic_pointer_cast<RemoteStore>()))
-            forwardStdioConnection(*remoteStore);
-        else
-            // `Trusted` is passed in the auto (no override case) because we
-            // cannot see who is on the other side of a plain pipe. Limiting
-            // access to those is explicitly not `nix-daemon`'s responsibility.
-            processStdioConnection(store, forceTrustClientOpt.value_or(Trusted));
-    } else
-        daemonLoop(forceTrustClientOpt);
+                // If --force-untrusted is passed, we cannot forward the connection and
+                // must process it ourselves (before delegating to the next store) to
+                // force untrusting the client.
+                processOps |= !forceTrustClientOpt || *forceTrustClientOpt != NotTrusted;
+
+                if (!processOps && (remoteStore = store.dynamic_pointer_cast<RemoteStore>()))
+                    forwardStdioConnection(*remoteStore);
+                else
+                    // `Trusted` is passed in the auto (no override case) because we
+                    // cannot see who is on the other side of a plain pipe. Limiting
+                    // access to those is explicitly not `nix-daemon`'s responsibility.
+                    processStdioConnection(store, forceTrustClientOpt.value_or(Trusted));
+            },
+            [&](UnixSocket socketPathOverride) {
+                auto socketPath = std::move(socketPathOverride)
+                                      .or_else([&]() -> std::optional<std::filesystem::path> {
+                                          return getDaemonSocketPath(*storeConfig);
+                                      })
+                                      .value();
+
+                if (auto * udsConfig = dynamic_cast<const UDSRemoteStoreConfig *>(storeConfig.get());
+                    udsConfig && udsConfig->path == socketPath)
+                    warn(
+                        "daemon socket path %s is the same as the store's socket path; this will fail",
+                        PathFmt(socketPath));
+
+                daemonLoop(storeConfig, forceTrustClientOpt, std::move(socketPath));
+            },
+        },
+        mode);
 }
 
 static int main_nix_daemon(int argc, char ** argv)
@@ -542,7 +521,11 @@ static int main_nix_daemon(int argc, char ** argv)
             return true;
         });
 
-        runDaemon(stdio, isTrustedOpt, processOps);
+        runDaemon(
+            resolveStoreConfig(StoreReference{settings.storeUri.get()}),
+            stdio ? DaemonMode{StdIO{}} : DaemonMode{UnixSocket{}},
+            isTrustedOpt,
+            processOps);
 
         return 0;
     }
@@ -550,17 +533,18 @@ static int main_nix_daemon(int argc, char ** argv)
 
 static RegisterLegacyCommand r_nix_daemon("nix-daemon", main_nix_daemon);
 
-struct CmdDaemon : Command
+struct CmdDaemon : StoreConfigCommand
 {
     bool stdio = false;
     std::optional<TrustedFlag> isTrustedOpt = std::nullopt;
     bool processOps = false;
+    std::optional<std::filesystem::path> socketPath;
 
     CmdDaemon()
     {
         addFlag({
             .longName = "stdio",
-            .description = "Attach to standard I/O, instead of trying to bind to a UNIX socket.",
+            .description = "Attach to standard I/O, instead of using UNIX socket(s).",
             .handler = {&stdio, true},
         });
 
@@ -573,8 +557,10 @@ struct CmdDaemon : Command
 
         addFlag({
             .longName = "force-untrusted",
-            .description =
-                "Force the daemon to not trust connecting clients. The connection is processed by the receiving daemon before forwarding commands.",
+            .description = R"(
+              Force the daemon to not trust connecting clients.
+              The connection is processed by the receiving daemon before forwarding commands.
+            )",
             .handler = {[&]() { isTrustedOpt = NotTrusted; }},
             .experimentalFeature = Xp::DaemonTrustOverride,
         });
@@ -584,6 +570,17 @@ struct CmdDaemon : Command
             .description = "Use Nix's default trust.",
             .handler = {[&]() { isTrustedOpt = std::nullopt; }},
             .experimentalFeature = Xp::DaemonTrustOverride,
+        });
+
+        addFlag({
+            .longName = "socket-path",
+            .description = R"(
+              Path to the daemon's UNIX socket.
+              Overrides `NIX_DAEMON_SOCKET_PATH` and the default.
+              Incompatible with `--stdio`.
+            )",
+            .labels = {"path"},
+            .handler = {[&](std::filesystem::path s) { socketPath = std::move(s); }},
         });
 
         addFlag({
@@ -615,9 +612,15 @@ struct CmdDaemon : Command
             ;
     }
 
-    void run() override
+    void run(ref<StoreConfig> storeConfig) override
     {
-        runDaemon(stdio, isTrustedOpt, processOps);
+        if (stdio && socketPath)
+            throw UsageError("'--stdio' and '--socket-path' are incompatible");
+        runDaemon(
+            std::move(storeConfig),
+            stdio ? DaemonMode{StdIO{}} : DaemonMode{std::move(socketPath)},
+            isTrustedOpt,
+            processOps);
     }
 };
 

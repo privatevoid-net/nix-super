@@ -10,7 +10,7 @@
 
 namespace nix {
 
-StorePathSet scanForReferences(Sink & toTee, const Path & path, const StorePathSet & refs);
+StorePathSet scanForReferences(Sink & toTee, const std::filesystem::path & path, const StorePathSet & refs);
 
 class PathRefScanSink : public RefScanSink
 {
@@ -59,7 +59,7 @@ void scanForReferencesDeep(
     SourceAccessor & accessor,
     const CanonPath & rootPath,
     const StorePathSet & refs,
-    std::function<void(FileRefScanResult)> callback);
+    fun<void(FileRefScanResult)> callback);
 
 /**
  * Scan a store path tree and return which references appear in which files.

@@ -31,11 +31,11 @@ unsigned int getMaxCPU()
 {
 #ifdef __linux__
     try {
-        auto cgroupFS = getCgroupFS();
+        auto cgroupFS = linux::getCgroupFS();
         if (!cgroupFS)
             return 0;
 
-        auto cpuFile = *cgroupFS + "/" + getCurrentCgroup() + "/cpu.max";
+        auto cpuFile = *cgroupFS / linux::getCurrentCgroup().rel() / "cpu.max";
 
         auto cpuMax = readFile(cpuFile);
         auto cpuMaxParts = tokenizeString<std::vector<std::string>>(cpuMax, " \n");
@@ -120,9 +120,9 @@ void restoreProcessContext(bool restoreMounts)
 
 //////////////////////////////////////////////////////////////////////
 
-std::optional<Path> getSelfExe()
+std::optional<std::filesystem::path> getSelfExe()
 {
-    static auto cached = []() -> std::optional<Path> {
+    static auto cached = []() -> std::optional<std::filesystem::path> {
 #if defined(__linux__) || defined(__GNU__)
         return readLink(std::filesystem::path{"/proc/self/exe"});
 #elif defined(__APPLE__)
@@ -154,7 +154,7 @@ std::optional<Path> getSelfExe()
         // serialized to JSON and evaluated as a Nix string.
         path.pop_back();
 
-        return Path(path.begin(), path.end());
+        return std::string(path.begin(), path.end());
 #else
         return std::nullopt;
 #endif

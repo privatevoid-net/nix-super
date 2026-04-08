@@ -43,7 +43,7 @@ struct SourcePath
      */
     std::string readFile() const;
 
-    void readFile(Sink & sink, std::function<void(uint64_t)> sizeCallback = [](uint64_t size) {}) const
+    void readFile(Sink & sink, fun<void(uint64_t)> sizeCallback = [](uint64_t size) {}) const
     {
         return accessor->readFile(path, sink, sizeCallback);
     }
@@ -112,6 +112,11 @@ struct SourcePath
     SourcePath resolveSymlinks(SymlinkResolution mode = SymlinkResolution::Full) const
     {
         return {accessor, accessor->resolveSymlinks(path, mode)};
+    }
+
+    void invalidateCache() const
+    {
+        accessor->invalidateCache(path);
     }
 
     friend class std::hash<nix::SourcePath>;

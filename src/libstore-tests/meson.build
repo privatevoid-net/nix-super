@@ -60,12 +60,15 @@ sources = files(
   'derivation-advanced-attrs.cc',
   'derivation/external-formats.cc',
   'derivation/invariants.cc',
+  'derivations.cc',
   'derived-path.cc',
   'downstream-placeholder.cc',
   'dummy-store.cc',
+  'filetransfer-retry.cc',
   'http-binary-cache-store.cc',
   'legacy-ssh-store.cc',
   'local-binary-cache-store.cc',
+  'local-fs-store.cc',
   'local-overlay-store.cc',
   'local-store.cc',
   'machines.cc',
@@ -82,9 +85,11 @@ sources = files(
   's3-url.cc',
   'serve-protocol.cc',
   'ssh-store.cc',
+  'store-open.cc',
   'store-reference.cc',
   'uds-remote-store.cc',
   'worker-protocol.cc',
+  'worker-substitution.cc',
   'write-derivation.cc',
 )
 
@@ -104,14 +109,19 @@ this_exe = executable(
   cpp_pch : do_pch ? [ 'pch/precompiled-headers.hh' ] : [],
 )
 
+test_env = {
+  '_NIX_TEST_UNIT_DATA' : meson.current_source_dir() / 'data',
+  'HOME' : meson.current_build_dir() / 'test-home',
+}
+
+if host_machine.system() != 'windows'
+  test_env += {'NIX_REMOTE' : meson.current_build_dir() / 'test-home' / 'store'}
+endif
+
 test(
   meson.project_name(),
   this_exe,
-  env : {
-    '_NIX_TEST_UNIT_DATA' : meson.current_source_dir() / 'data',
-    'HOME' : meson.current_build_dir() / 'test-home',
-    'NIX_REMOTE' : meson.current_build_dir() / 'test-home' / 'store',
-  },
+  env : test_env,
   protocol : 'gtest',
 )
 
@@ -123,6 +133,7 @@ if get_option('benchmarks')
     'bench-main.cc',
     'derivation-parser-bench.cc',
     'ref-scan-bench.cc',
+    'register-valid-paths-bench.cc',
   )
 
   benchmark_exe = executable(

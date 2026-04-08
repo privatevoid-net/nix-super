@@ -1,6 +1,7 @@
 #include "nix/store/s3-binary-cache-store.hh"
 #include "nix/store/http-binary-cache-store.hh"
 #include "nix/store/store-registration.hh"
+#include "nix/util/compression.hh"
 #include "nix/util/error.hh"
 #include "nix/util/logging.hh"
 #include "nix/util/serialise.hh"
@@ -138,6 +139,20 @@ void S3BinaryCacheStore::upsertFile(
         if (auto storageClass = s3Config->storageClass.get()) {
             uploadHeaders.emplace_back("x-amz-storage-class", *storageClass);
         }
+
+        {
+            HashSink hashSink(HashAlgorithm::MD5);
+            src.drainInto(hashSink);
+            auto [hash, gotLength] = hashSink.finish();
+            /* Use this opportunity to check that the upload size matches what we expect. */
+            if (gotLength != size)
+                throw Error("unexpected size for upload '%s', expected %d, got: %d", path, size, gotLength);
+            /* The Base64 encoded 128-bit MD5 digest of the message (without the headers) according to RFC 1864:
+               https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html */
+            uploadHeaders.push_back({"Content-MD5", hash.to_string(HashFormat::Base64, /*includeAlgo=*/false)});
+            src.restart(); /* Seek to the beginning. */
+        }
+
         if (s3Config->multipartUpload && size > s3Config->multipartThreshold) {
             uploadMultipart(path, src, size, mimeType, std::move(uploadHeaders));
         } else {
@@ -147,9 +162,11 @@ void S3BinaryCacheStore::upsertFile(
 
     try {
         if (auto compressionMethod = getCompressionMethod(path)) {
-            CompressedSource compressed(source, *compressionMethod);
-            Headers headers = {{"Content-Encoding", *compressionMethod}};
-            doUpload(compressed, compressed.size(), std::move(headers));
+            StringSource compressed(compress(*compressionMethod, source));
+            /* TODO: Validate that this is a valid content encoding. We probably shouldn't set non-standard values here.
+             */
+            Headers headers = {{"Content-Encoding", showCompressionAlgo(*compressionMethod)}};
+            doUpload(compressed, compressed.s.size(), std::move(headers));
         } else {
             doUpload(source, sizeHint, std::nullopt);
         }
@@ -400,10 +417,9 @@ StringSet S3BinaryCacheStoreConfig::uriSchemes()
     return {"s3"};
 }
 
-S3BinaryCacheStoreConfig::S3BinaryCacheStoreConfig(
-    std::string_view scheme, std::string_view _cacheUri, const Params & params)
-    : StoreConfig(params)
-    , HttpBinaryCacheStoreConfig(scheme, _cacheUri, params)
+S3BinaryCacheStoreConfig::S3BinaryCacheStoreConfig(ParsedURL cacheUri_, const Params & params)
+    : StoreConfig(params, FilePathType::Unix)
+    , HttpBinaryCacheStoreConfig(std::move(cacheUri_), params)
 {
     assert(cacheUri.query.empty());
     assert(cacheUri.scheme == "s3");
@@ -437,6 +453,12 @@ S3BinaryCacheStoreConfig::S3BinaryCacheStoreConfig(
             renderSize(multipartThreshold.get()),
             renderSize(multipartChunkSize.get()));
     }
+}
+
+S3BinaryCacheStoreConfig::S3BinaryCacheStoreConfig(std::string_view bucketName, const Params & params)
+    : S3BinaryCacheStoreConfig(
+          ParsedURL{.scheme = "s3", .authority = ParsedURL::Authority{.host = std::string(bucketName)}}, params)
+{
 }
 
 std::string S3BinaryCacheStoreConfig::getHumanReadableURI() const

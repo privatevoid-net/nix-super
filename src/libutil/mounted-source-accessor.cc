@@ -21,10 +21,10 @@ struct MountedSourceAccessorImpl : MountedSourceAccessor
         // FIXME: return dummy parent directories automatically?
     }
 
-    std::string readFile(const CanonPath & path) override
+    void readFile(const CanonPath & path, Sink & sink, fun<void(uint64_t)> sizeCallback) override
     {
         auto [accessor, subpath] = resolve(path);
-        return accessor->readFile(subpath);
+        return accessor->readFile(subpath, sink, sizeCallback);
     }
 
     Stat lstat(const CanonPath & path) override
@@ -98,6 +98,12 @@ struct MountedSourceAccessorImpl : MountedSourceAccessor
             return {path, fingerprint};
         auto [accessor, subpath] = resolve(path);
         return accessor->getFingerprint(subpath);
+    }
+
+    void invalidateCache(const CanonPath & path) override
+    {
+        auto [accessor, subpath] = resolve(path);
+        accessor->invalidateCache(subpath);
     }
 };
 

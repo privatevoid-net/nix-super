@@ -31,6 +31,11 @@ deps_private_maybe_subproject = [
 deps_public_maybe_subproject = []
 subdir('nix-meson-build-support/subprojects')
 
+mimalloc = dependency('mimalloc', required : get_option('mimalloc'))
+if mimalloc.found()
+  deps_private += mimalloc
+endif
+
 subdir('nix-meson-build-support/export-all-symbols')
 subdir('nix-meson-build-support/windows-version')
 
@@ -115,6 +120,7 @@ nix_sources = [ config_priv_h ] + files(
 if host_machine.system() != 'windows'
   nix_sources += files(
     'unix/daemon.cc',
+    'unix/store-roots-daemon.cc',
   )
 endif
 

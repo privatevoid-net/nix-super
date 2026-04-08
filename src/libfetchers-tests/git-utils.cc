@@ -15,7 +15,7 @@
 #include <git2/blob.h>
 #include <git2/tree.h>
 
-namespace nix {
+namespace nix::fetchers {
 
 class GitUtilsTest : public ::testing::Test
 {
@@ -48,7 +48,7 @@ public:
 
     ref<GitRepo> openRepo()
     {
-        return GitRepo::openRepo(tmpDir, true, false);
+        return GitRepo::openRepo(tmpDir, {.create = true});
     }
 
     std::string getRepoName() const
@@ -115,9 +115,10 @@ TEST_F(GitUtilsTest, sink_hardlink)
 
     try {
         sink->createHardlink(CanonPath("foo-1.1/link"), CanonPath("hello"));
+        sink->flush();
         FAIL() << "Expected an exception";
     } catch (const nix::Error & e) {
-        ASSERT_THAT(e.msg(), testing::HasSubstr("cannot find hard link target"));
+        ASSERT_THAT(e.msg(), testing::HasSubstr("does not exist"));
         ASSERT_THAT(e.msg(), testing::HasSubstr("/hello"));
         ASSERT_THAT(e.msg(), testing::HasSubstr("foo-1.1/link"));
     }
@@ -233,4 +234,4 @@ TEST(GitUtils, isLegalRefName)
     ASSERT_FALSE(isLegalRefName(""));
 }
 
-} // namespace nix
+} // namespace nix::fetchers

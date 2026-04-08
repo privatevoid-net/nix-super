@@ -222,6 +222,12 @@ nix store gc
 nix registry list --flake-registry "file://$registry" --refresh | grepQuiet flake3
 mv "$registry.tmp" "$registry"
 
+# A symlinked registry file should work even when the symlink target is
+# an absolute path. The source accessor needs to be rooted at `/` for this.
+ln -sfn "$registry" "$TEST_ROOT/registry-symlink.json"
+nix registry list --flake-registry "$TEST_ROOT/registry-symlink.json" | grepQuiet flake1
+rm "$TEST_ROOT/registry-symlink.json"
+
 # Ensure that locking ignores the user registry.
 mkdir -p "$TEST_HOME/.config/nix"
 ln -sfn "$registry" "$TEST_HOME/.config/nix/registry.json"
@@ -330,7 +336,7 @@ cat > "$flake3Dir/flake.nix" <<EOF
 {
   inputs.flake2.inputs.flake1 = {
     type = "git";
-    url = file://$flake7Dir;
+    url = "file://$flake7Dir";
   };
 
   outputs = { self, flake2 }: {
@@ -344,7 +350,7 @@ nix flake lock "$flake3Dir"
 cat > "$flake3Dir/flake.nix" <<EOF
 {
   inputs.flake2.inputs.flake1.follows = "foo";
-  inputs.foo.url = git+file://$flake7Dir;
+  inputs.foo.url = "git+file://$flake7Dir";
 
   outputs = { self, flake2 }: {
   };
@@ -395,12 +401,21 @@ nix flake lock "$flake3Dir" --override-input flake2/flake1 flake1
 nix flake lock "$flake3Dir" --override-input flake2/flake1 flake1/master/"$hash1"
 [[ $(jq -r .nodes.flake1_2.locked.rev "$flake3Dir/flake.lock") =~ $hash1 ]]
 
+# Test that --override-input with empty input path is rejected (issue #14816).
+expectStderr 1 nix flake lock "$flake3Dir" --override-input '' . | grepQuiet -- "--override-input was passed a zero-length input path, which would refer to the flake itself, not an input"
+
+# Test that deprecated --update-input with empty input path is rejected.
+expectStderr 1 nix flake lock "$flake3Dir" --update-input '' | grepQuiet -- "--update-input was passed a zero-length input path, which would refer to the flake itself, not an input"
+
 # Test --update-input.
 nix flake lock "$flake3Dir"
 [[ $(jq -r .nodes.flake1_2.locked.rev "$flake3Dir/flake.lock") = "$hash1" ]]
 
 nix flake update flake2/flake1 --flake "$flake3Dir"
 [[ $(jq -r .nodes.flake1_2.locked.rev "$flake3Dir/flake.lock") =~ $hash2 ]]
+
+# Test that 'nix flake update' with empty input path is rejected.
+expectStderr 1 nix flake update '' --flake "$flake3Dir" | grepQuiet -- "input path to be updated cannot be zero-length; it would refer to the flake itself, not an input"
 
 # Test updating multiple inputs.
 nix flake lock "$flake3Dir" --override-input flake1 flake1/master/"$hash1"

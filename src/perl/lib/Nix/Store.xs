@@ -156,17 +156,20 @@ StoreWrapper::queryPathInfo(char * path, int base32)
             XPUSHs(sv_2mortal(newRV((SV *) refs)));
             AV * sigs = newAV();
             for (auto & i : info->sigs)
-                av_push(sigs, newSVpv(i.c_str(), 0));
+                av_push(sigs, newSVpv(i.to_string().c_str(), 0));
             XPUSHs(sv_2mortal(newRV((SV *) sigs)));
         } catch (Error & e) {
             croak("%s", e.what());
         }
 
 SV *
-StoreWrapper::queryRawRealisation(char * outputId)
+StoreWrapper::queryRawRealisation(char * drvPath, char * outputName)
     PPCODE:
       try {
-        auto realisation = THIS->store->queryRealisation(DrvOutput::parse(outputId));
+        auto realisation = THIS->store->queryRealisation(DrvOutput{
+            .drvPath = THIS->store->parseStorePath(drvPath),
+            .outputName = outputName,
+        });
         if (realisation)
             XPUSHs(sv_2mortal(newSVpv(static_cast<nlohmann::json>(*realisation).dump().c_str(), 0)));
         else
@@ -301,7 +304,7 @@ SV * convertHash(char * algo, char * s, int toBase32)
 SV * signString(char * secretKey_, char * msg)
     PPCODE:
         try {
-            auto sig = SecretKey(secretKey_).signDetached(msg);
+            auto sig = SecretKey(secretKey_).signDetached(msg).to_string();
             XPUSHs(sv_2mortal(newSVpv(sig.c_str(), sig.size())));
         } catch (Error & e) {
             croak("%s", e.what());
@@ -424,4 +427,4 @@ StoreWrapper::addTempRoot(char * storePath)
 
 SV * getStoreDir()
     PPCODE:
-        XPUSHs(sv_2mortal(newSVpv(settings.nixStore.c_str(), 0)));
+        XPUSHs(sv_2mortal(newSVpv(resolveStoreConfig(StoreReference{settings.storeUri.get()})->storeDir.c_str(), 0)));

@@ -1,5 +1,6 @@
 {
   lib,
+  stdenv,
   callPackage,
   mkMesonDerivation,
   runCommand,
@@ -10,7 +11,6 @@
   mdbook,
   jq,
   python3,
-  rsync,
   nix-cli,
   changelog-d,
   json-schema-for-humans,
@@ -54,6 +54,8 @@ mkMesonDerivation (finalAttrs: {
         ../../src/libstore-tests/data/nar-info
         ../../src/libstore-tests/data/build-result
         ../../src/libstore-tests/data/dummy-store
+        # For derivation examples referenced by symlinks in doc/manual/source/protocols/json/schema/
+        ../../tests/functional/derivation
         # Too many different types of files to filter for now
         ../../doc/manual
         ./.
@@ -90,13 +92,13 @@ mkMesonDerivation (finalAttrs: {
   ]
   ++ lib.optionals buildHtmlManual [
     mdbook
-    rsync
     json-schema-for-humans
   ]
-  ++ lib.optionals (!officialRelease && buildHtmlManual) [
+  ++ lib.optionals (!officialRelease && buildHtmlManual && !stdenv.hostPlatform.isi686) [
     # When not an official release, we likely have changelog entries that have
     # yet to be rendered.
     # When released, these are rendered into a committed file to save a dependency.
+    # Broken on i686.
     changelog-d
   ];
 

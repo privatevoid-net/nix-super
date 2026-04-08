@@ -33,6 +33,12 @@ enum class SQLiteOpenMode {
     Immutable,
 };
 
+struct SQLiteSettings
+{
+    SQLiteOpenMode mode = SQLiteOpenMode::Normal;
+    bool useWAL;
+};
+
 /**
  * RAII wrapper to close a SQLite database automatically.
  */
@@ -42,7 +48,9 @@ struct SQLite
 
     SQLite() {}
 
-    SQLite(const std::filesystem::path & path, SQLiteOpenMode mode = SQLiteOpenMode::Normal);
+    using Settings = SQLiteSettings;
+
+    SQLite(const std::filesystem::path & path, Settings && settings);
     SQLite(const SQLite & from) = delete;
     SQLite & operator=(const SQLite & from) = delete;
 
@@ -158,7 +166,7 @@ struct SQLiteTxn
     ~SQLiteTxn();
 };
 
-struct SQLiteError : Error
+struct SQLiteError : CloneableError<SQLiteError, Error>
 {
     std::string path;
     std::string errMsg;
@@ -201,7 +209,7 @@ void handleSQLiteBusy(const SQLiteBusy & e, time_t & nextWarning);
 template<typename T, typename F>
 T retrySQLite(F && fun)
 {
-    time_t nextWarning = time(0) + 1;
+    time_t nextWarning = time(nullptr) + 1;
 
     while (true) {
         try {

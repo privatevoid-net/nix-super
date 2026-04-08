@@ -1,5 +1,6 @@
 #include "nix/main/shared.hh"
 #include "nix/store/realisation.hh"
+#include "nix/store/legacy-ssh-store.hh"
 #include "nix/store/store-open.hh"
 #include "nix/cmd/legacy.hh"
 #include "man-pages.hh"
@@ -15,7 +16,7 @@ static int main_nix_copy_closure(int argc, char ** argv)
         auto dryRun = false;
         auto useSubstitutes = NoSubstitute;
         std::string sshHost;
-        PathSet storePaths;
+        StringSet storePaths;
 
         parseCmdLine(argc, argv, [&](Strings::iterator & arg, const Strings::iterator & end) {
             if (*arg == "--help")
@@ -48,9 +49,14 @@ static int main_nix_copy_closure(int argc, char ** argv)
         if (sshHost.empty())
             throw UsageError("no host name specified");
 
-        auto remoteUri = "ssh://" + sshHost + (gzip ? "?compress=true" : "");
-        auto to = toMode ? openStore(remoteUri) : openStore();
-        auto from = toMode ? openStore() : openStore(remoteUri);
+        auto remoteConfig =
+            /* FIXME: This doesn't go through the back-compat machinery for IPv6 unbracketed URLs that
+               is in StoreReference::parse. TODO: Maybe add a authority parsing function specifically
+               for SSH reference parsing? */
+            make_ref<LegacySSHStoreConfig>(ParsedURL::Authority::parse(sshHost), LegacySSHStoreConfig::Params{});
+        remoteConfig->compress |= gzip;
+        auto to = toMode ? remoteConfig->openStore() : openStore();
+        auto from = toMode ? openStore() : remoteConfig->openStore();
 
         RealisedPath::Set storePaths2;
         for (auto & path : storePaths)

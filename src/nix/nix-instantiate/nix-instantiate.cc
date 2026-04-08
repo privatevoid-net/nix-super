@@ -19,7 +19,7 @@
 
 using namespace nix;
 
-static Path gcRoot;
+std::filesystem::path gcRoot;
 static int rootNr = 0;
 
 enum OutputKind { okPlain, okRaw, okXML, okJSON };
@@ -68,7 +68,7 @@ void processExpr(
                 if (strict)
                     state.forceValueDeep(vRes);
                 std::set<const void *> seen;
-                printAmbiguous(vRes, state.symbols, std::cout, &seen, std::numeric_limits<int>::max());
+                printAmbiguous(state, vRes, std::cout, &seen);
                 std::cout << std::endl;
             }
         } else {
@@ -83,15 +83,15 @@ void processExpr(
                 if (outputName == "")
                     throw Error("derivation '%1%' lacks an 'outputName' attribute", drvPathS);
 
-                if (gcRoot == "")
+                if (gcRoot.empty())
                     printGCWarning();
                 else {
-                    Path rootName = absPath(gcRoot);
+                    auto rootName = absPath(gcRoot);
                     if (++rootNr > 1)
                         rootName += "-" + std::to_string(rootNr);
                     auto store2 = state.store.dynamic_pointer_cast<LocalFSStore>();
                     if (store2)
-                        drvPathS = store2->addPermRoot(drvPath, rootName);
+                        drvPathS = store2->addPermRoot(drvPath, rootName).string();
                 }
                 std::cout << fmt("%s%s\n", drvPathS, (outputName != "out" ? "!" + outputName : ""));
             }
@@ -167,9 +167,9 @@ static int main_nix_instantiate(int argc, char ** argv)
             settings.readOnlyMode = true;
 
         auto store = openStore();
-        auto evalStore = myArgs.evalStoreUrl ? openStore(*myArgs.evalStoreUrl) : store;
+        auto evalStore = myArgs.evalStoreUrl ? openStore(StoreReference{*myArgs.evalStoreUrl}) : store;
 
-        auto state = std::make_unique<EvalState>(myArgs.lookupPath, evalStore, fetchSettings, evalSettings, store);
+        auto state = std::make_shared<EvalState>(myArgs.lookupPath, evalStore, fetchSettings, evalSettings, store);
         state->repair = myArgs.repair;
 
         Bindings & autoArgs = *myArgs.getAutoArgs(*state);

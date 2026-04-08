@@ -119,7 +119,9 @@ struct MemorySourceAccessor : virtual SourceAccessor
         return root < other.root;
     }
 
-    std::string readFile(const CanonPath & path) override;
+    void readFile(const CanonPath & path, Sink & sink, fun<void(uint64_t)> sizeCallback) override;
+    using SourceAccessor::readFile;
+
     bool pathExists(const CanonPath & path) override;
     std::optional<Stat> maybeLstat(const CanonPath & path) override;
     DirEntries readDirectory(const CanonPath & path) override;
@@ -155,7 +157,7 @@ struct MemorySink : FileSystemObjectSink
 
     void createDirectory(const CanonPath & path) override;
 
-    void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)>) override;
+    void createRegularFile(const CanonPath & path, fun<void(CreateRegularFileSink &)>) override;
 
     void createSymlink(const CanonPath & path, const std::string & target) override;
 };

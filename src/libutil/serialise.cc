@@ -1,18 +1,18 @@
 #include "nix/util/serialise.hh"
-#include "nix/util/compression.hh"
+#include "nix/util/file-descriptor.hh"
 #include "nix/util/signals.hh"
+#include "nix/util/socket.hh"
 #include "nix/util/util.hh"
 
 #include <cstring>
 #include <cerrno>
+#include <limits>
 #include <memory>
 
 #include <boost/coroutine2/coroutine.hpp>
 
 #ifdef _WIN32
 #  include <fileapi.h>
-#  include <winsock2.h>
-#  include "nix/util/windows-error.hh"
 #else
 #  include <poll.h>
 #endif
@@ -104,6 +104,20 @@ void Source::drainInto(Sink & sink)
     }
 }
 
+void Source::drainInto(Sink & sink, uint64_t len)
+{
+    std::array<char, 65536> buf;
+    while (len) {
+        checkInterrupt();
+        // Until std::saturate_cast is available (C++26)
+        auto lenTrunc = static_cast<size_t>(std::min<uint64_t>(len, std::numeric_limits<size_t>::max()));
+        auto n = read(buf.data(), std::min(lenTrunc, buf.size()));
+        sink({buf.data(), n});
+        assert(n <= len);
+        len -= n;
+    }
+}
+
 std::string Source::drain()
 {
     StringSink s;
@@ -124,7 +138,7 @@ void Source::skip(size_t len)
 size_t BufferedSource::read(char * data, size_t len)
 {
     if (!buffer)
-        buffer = decltype(buffer)(new char[bufSize]);
+        buffer = std::make_unique_for_overwrite<char[]>(bufSize);
 
     if (!bufPosIn)
         bufPosIn = readUnbuffered(buffer.get(), bufSize);
@@ -138,6 +152,51 @@ size_t BufferedSource::read(char * data, size_t len)
     return n;
 }
 
+std::string BufferedSource::readLine(bool eofOk, char terminator)
+{
+    if (!buffer)
+        buffer = std::make_unique_for_overwrite<char[]>(bufSize);
+
+    std::string line;
+    while (true) {
+        if (bufPosOut < bufPosIn) {
+            auto * start = buffer.get() + bufPosOut;
+            auto * end = buffer.get() + bufPosIn;
+            if (auto * newline = static_cast<char *>(memchr(start, terminator, end - start))) {
+                line.append(start, newline - start);
+                bufPosOut = (newline - buffer.get()) + 1;
+                if (bufPosOut == bufPosIn)
+                    bufPosOut = bufPosIn = 0;
+                return line;
+            }
+
+            line.append(start, end - start);
+            bufPosOut = bufPosIn = 0;
+        }
+
+        auto handleEof = [&]() -> std::string {
+            bufPosOut = bufPosIn = 0;
+            if (eofOk)
+                return line;
+            throw EndOfFile("unexpected EOF reading a line");
+        };
+
+        size_t n = 0;
+        try {
+            n = readUnbuffered(buffer.get(), bufSize);
+        } catch (EndOfFile & e) {
+            return handleEof();
+        }
+
+        if (n == 0) {
+            return handleEof();
+        }
+
+        bufPosIn = n;
+        bufPosOut = 0;
+    }
+}
+
 bool BufferedSource::hasData()
 {
     return bufPosOut < bufPosIn;
@@ -145,28 +204,11 @@ bool BufferedSource::hasData()
 
 size_t FdSource::readUnbuffered(char * data, size_t len)
 {
-#ifdef _WIN32
-    DWORD n;
-    checkInterrupt();
-    if (!::ReadFile(fd, data, len, &n, NULL)) {
-        _good = false;
-        throw windows::WinError("ReadFile when FdSource::readUnbuffered");
-    }
-#else
-    ssize_t n;
-    do {
-        checkInterrupt();
-        n = ::read(fd, data, len);
-    } while (n == -1 && errno == EINTR);
-    if (n == -1) {
-        _good = false;
-        throw SysError("reading from file");
-    }
+    auto n = nix::read(fd, {reinterpret_cast<std::byte *>(data), len});
     if (n == 0) {
         _good = false;
         throw EndOfFile(std::string(*endOfFileError));
     }
-#endif
     read += n;
     return n;
 }
@@ -184,20 +226,20 @@ bool FdSource::hasData()
     while (true) {
         fd_set fds;
         FD_ZERO(&fds);
-        int fd_ = fromDescriptorReadOnly(fd);
-        FD_SET(fd_, &fds);
+        Socket sock = toSocket(fd);
+        FD_SET(sock, &fds);
 
         struct timeval timeout;
         timeout.tv_sec = 0;
         timeout.tv_usec = 0;
 
-        auto n = select(fd_ + 1, &fds, nullptr, nullptr, &timeout);
+        auto n = select(sock + 1, &fds, nullptr, nullptr, &timeout);
         if (n < 0) {
             if (errno == EINTR)
                 continue;
             throw SysError("polling file descriptor");
         }
-        return FD_ISSET(fd, &fds);
+        return FD_ISSET(sock, &fds);
     }
 }
 
@@ -207,8 +249,7 @@ void FdSource::restart()
         throw Error("can't seek to the start of a file");
     buffer.reset();
     read = bufPosIn = bufPosOut = 0;
-    int fd_ = fromDescriptorReadOnly(fd);
-    if (lseek(fd_, 0, SEEK_SET) == -1)
+    if (lseek(fd, 0, SEEK_SET) == -1)
         throw SysError("seeking to the start of a file");
 }
 
@@ -264,30 +305,17 @@ void StringSource::skip(size_t len)
     pos += len;
 }
 
-CompressedSource::CompressedSource(RestartableSource & source, const std::string & compressionMethod)
-    : compressedData([&]() {
-        StringSink sink;
-        auto compressionSink = makeCompressionSink(compressionMethod, sink);
-        source.drainInto(*compressionSink);
-        compressionSink->finish();
-        return std::move(sink.s);
-    }())
-    , compressionMethod(compressionMethod)
-    , stringSource(compressedData)
-{
-}
-
-std::unique_ptr<FinishSink> sourceToSink(std::function<void(Source &)> fun)
+std::unique_ptr<FinishSink> sourceToSink(fun<void(Source &)> reader)
 {
     struct SourceToSink : FinishSink
     {
         typedef boost::coroutines2::coroutine<bool> coro_t;
 
-        std::function<void(Source &)> fun;
+        fun<void(Source &)> reader;
         std::optional<coro_t::push_type> coro;
 
-        SourceToSink(std::function<void(Source &)> fun)
-            : fun(fun)
+        SourceToSink(fun<void(Source &)> reader)
+            : reader(reader)
         {
         }
 
@@ -312,7 +340,7 @@ std::unique_ptr<FinishSink> sourceToSink(std::function<void(Source &)> fun)
                         cur.remove_prefix(n);
                         return n;
                     });
-                    fun(source);
+                    reader(source);
                 });
             }
 
@@ -332,21 +360,21 @@ std::unique_ptr<FinishSink> sourceToSink(std::function<void(Source &)> fun)
         }
     };
 
-    return std::make_unique<SourceToSink>(fun);
+    return std::make_unique<SourceToSink>(reader);
 }
 
-std::unique_ptr<Source> sinkToSource(std::function<void(Sink &)> fun, std::function<void()> eof)
+std::unique_ptr<Source> sinkToSource(fun<void(Sink &)> writer, fun<void()> eof)
 {
     struct SinkToSource : Source
     {
         typedef boost::coroutines2::coroutine<std::string_view> coro_t;
 
-        std::function<void(Sink &)> fun;
-        std::function<void()> eof;
+        fun<void(Sink &)> writer;
+        fun<void()> eof;
         std::optional<coro_t::pull_type> coro;
 
-        SinkToSource(std::function<void(Sink &)> fun, std::function<void()> eof)
-            : fun(fun)
+        SinkToSource(fun<void(Sink &)> writer, fun<void()> eof)
+            : writer(writer)
             , eof(eof)
         {
         }
@@ -363,12 +391,12 @@ std::unique_ptr<Source> sinkToSource(std::function<void(Sink &)> fun, std::funct
                             yield(data);
                         }
                     });
-                    fun(sink);
+                    writer(sink);
                 });
             }
 
             if (cur.empty()) {
-                if (hasCoro) {
+                if (hasCoro && *coro) {
                     (*coro)();
                 }
                 if (*coro) {
@@ -383,11 +411,21 @@ std::unique_ptr<Source> sinkToSource(std::function<void(Sink &)> fun, std::funct
             size_t n = cur.copy(data, len);
             cur.remove_prefix(n);
 
+            /* This is necessary to ensure that the coroutine gets resumed
+               after the consumer has finished reading the Source. Otherwise the
+               coroutine is always abandoned (i.e. it is always destroyed when
+               suspended). */
+            if (cur.empty() && coro && *coro) {
+                (*coro)();
+                if (*coro)
+                    cur = coro->get();
+            }
+
             return n;
         }
     };
 
-    return std::make_unique<SinkToSource>(fun, eof);
+    return std::make_unique<SinkToSource>(writer, eof);
 }
 
 void writePadding(size_t len, Sink & sink)
@@ -494,8 +532,8 @@ T readStrings(Source & source)
     return ss;
 }
 
-template Paths readStrings(Source & source);
-template PathSet readStrings(Source & source);
+template Strings readStrings(Source & source);
+template StringSet readStrings(Source & source);
 
 Error readError(Source & source)
 {

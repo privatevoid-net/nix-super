@@ -25,10 +25,6 @@
 
 extern char ** environ __attribute__((weak));
 
-namespace nix::fs {
-using namespace std::filesystem;
-}
-
 using namespace nix;
 
 std::string chrootHelperName = "__run_in_chroot";
@@ -86,18 +82,25 @@ void execProgramInStore(
 
     if (store->storeDir != store2->getRealStoreDir()) {
         Strings helperArgs = {
-            chrootHelperName, store->storeDir, store2->getRealStoreDir(), std::string(system.value_or("")), program};
+            chrootHelperName,
+            store->storeDir,
+            store2->getRealStoreDir().string(),
+            std::string(system.value_or("")),
+            program};
         for (auto & arg : args)
             helperArgs.push_back(arg);
 
-        execve(getSelfExe().value_or("nix").c_str(), stringsToCharPtrs(helperArgs).data(), envp);
+        execve(getSelfExe().value_or("nix").string().c_str(), stringsToCharPtrs(helperArgs).data(), envp);
 
         throw SysError("could not execute chroot helper");
     }
 
 #ifdef __linux__
     if (system)
-        linux::setPersonality(*system);
+        linux::setPersonality({
+            .system = *system,
+            .impersonateLinux26 = settings.getLocalSettings().impersonateLinux26,
+        });
 #endif
 
     if (useLookupPath == UseLookupPath::Use) {
@@ -223,9 +226,9 @@ void chrootHelper(int argc, char ** argv)
             auto st = entry.symlink_status();
             if (std::filesystem::is_directory(st)) {
                 if (mkdir(dst.c_str(), 0700) == -1)
-                    throw SysError("creating directory '%s'", dst);
+                    throw SysError("creating directory %s", PathFmt(dst));
                 if (mount(src.c_str(), dst.c_str(), "", MS_BIND | MS_REC, 0) == -1)
-                    throw SysError("mounting '%s' on '%s'", src, dst);
+                    throw SysError("mounting %s on %s", PathFmt(src), PathFmt(dst));
             } else if (std::filesystem::is_symlink(st))
                 createSymlink(readLink(src), dst);
         }
@@ -236,7 +239,7 @@ void chrootHelper(int argc, char ** argv)
         Finally freeCwd([&]() { free(cwd); });
 
         if (chroot(tmpDir.c_str()) == -1)
-            throw SysError("chrooting into '%s'", tmpDir);
+            throw SysError("chrooting into %s", PathFmt(tmpDir));
 
         if (chdir(cwd) == -1)
             throw SysError("chdir to '%s' in chroot", cwd);
@@ -252,7 +255,10 @@ void chrootHelper(int argc, char ** argv)
 
 #  ifdef __linux__
     if (system != "")
-        linux::setPersonality(system);
+        linux::setPersonality({
+            .system = system,
+            .impersonateLinux26 = settings.getLocalSettings().impersonateLinux26,
+        });
 #  endif
 
     execvp(cmd.c_str(), stringsToCharPtrs(args).data());

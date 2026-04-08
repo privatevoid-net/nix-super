@@ -1,14 +1,17 @@
+#include "nix/cmd/common-eval-args.hh"
 #include "nix/main/common-args.hh"
 #include "nix/main/shared.hh"
 #include "nix/expr/eval.hh"
 #include "nix/expr/eval-inline.hh"
 #include "nix/expr/eval-settings.hh"
 #include "nix/expr/get-drvs.hh"
+#include "nix/util/os-string.hh"
 #include "nix/util/signals.hh"
 #include "nix/store/store-open.hh"
 #include "nix/store/derivations.hh"
 #include "nix/store/outputs-spec.hh"
 #include "nix/expr/attr-path.hh"
+#include "nix/fetchers/fetch-settings.hh"
 #include "nix/fetchers/fetchers.hh"
 #include "nix/fetchers/registry.hh"
 #include "nix/expr/eval-cache.hh"
@@ -26,10 +29,6 @@
 
 // FIXME is this supposed to be private or not?
 #include "flake-command.hh"
-
-namespace nix::fs {
-using namespace std::filesystem;
-}
 
 using namespace nix;
 using namespace nix::flake;
@@ -90,9 +89,12 @@ public:
             .optional = true,
             .handler = {[&](std::vector<std::string> inputsToUpdate) {
                 for (const auto & inputToUpdate : inputsToUpdate) {
-                    InputAttrPath inputAttrPath;
+                    std::optional<NonEmptyInputAttrPath> inputAttrPath;
                     try {
-                        inputAttrPath = flake::parseInputAttrPath(inputToUpdate);
+                        inputAttrPath = flake::NonEmptyInputAttrPath::parse(inputToUpdate);
+                        if (!inputAttrPath)
+                            throw UsageError(
+                                "input path to be updated cannot be zero-length; it would refer to the flake itself, not an input");
                     } catch (Error & e) {
                         warn(
                             "Invalid flake input '%s'. To update a specific flake, use 'nix flake update --flake %s' instead.",
@@ -100,11 +102,11 @@ public:
                             inputToUpdate);
                         throw e;
                     }
-                    if (lockFlags.inputUpdates.contains(inputAttrPath))
+                    if (lockFlags.inputUpdates.contains(*inputAttrPath))
                         warn(
                             "Input '%s' was specified multiple times. You may have done this by accident.",
-                            printInputAttrPath(inputAttrPath));
-                    lockFlags.inputUpdates.insert(inputAttrPath);
+                            printInputAttrPath(*inputAttrPath));
+                    lockFlags.inputUpdates.insert(*inputAttrPath);
                 }
             }},
             .completer = {[&](AddCompletions & completions, size_t, std::string_view prefix) {
@@ -126,7 +128,7 @@ public:
 
     void run(nix::ref<nix::Store> store) override
     {
-        settings.tarballTtl = 0;
+        fetchSettings.tarballTtl = 0;
         auto updateAll = lockFlags.inputUpdates.empty();
 
         lockFlags.recreateLockFile = updateAll;
@@ -159,7 +161,7 @@ struct CmdFlakeLock : FlakeCommand
 
     void run(nix::ref<nix::Store> store) override
     {
-        settings.tarballTtl = 0;
+        fetchSettings.tarballTtl = 0;
 
         lockFlags.writeLockFile = true;
         lockFlags.failOnUnlocked = true;
@@ -361,7 +363,7 @@ struct CmdFlakeCheck : FlakeCommand
             } catch (Interrupted & e) {
                 throw;
             } catch (Error & e) {
-                if (settings.keepGoing) {
+                if (settings.getWorkerSettings().keepGoing) {
                     logError(e.info());
                     hasErrors = true;
                 } else
@@ -821,12 +823,12 @@ struct CmdFlakeCheck : FlakeCommand
                                 "failed to build attribute '%s', build of '%s' failed: %s",
                                 attrPath.to_string(*state),
                                 result.path.to_string(*store),
-                                failure->errorMsg));
+                                failure->message()));
                         }
                     } else {
                         // Derivation has no attribute path (e.g., a build dependency)
                         reportError(
-                            Error("build of '%s' failed: %s", result.path.to_string(*store), failure->errorMsg));
+                            Error("build of '%s' failed: %s", result.path.to_string(*store), failure->message()));
                     }
                 }
             }
@@ -852,7 +854,7 @@ static Strings defaultTemplateAttrPaths = {"templates.default", "defaultTemplate
 struct CmdFlakeInitCommon : virtual Args, EvalCommand
 {
     std::string templateUrl = "templates";
-    Path destDir;
+    std::filesystem::path destDir;
 
     const LockFlags lockFlags{.writeLockFile = false};
 
@@ -918,11 +920,11 @@ struct CmdFlakeInitCommon : virtual Args, EvalCommand
                 else if (st.type == SourceAccessor::tRegular) {
                     auto contents = from2.readFile();
                     if (std::filesystem::exists(to_st)) {
-                        auto contents2 = readFile(to2.string());
+                        auto contents2 = readFile(to2);
                         if (contents != contents2) {
                             printError(
-                                "refusing to overwrite existing file '%s'\n please merge it manually with '%s'",
-                                to2.string(),
+                                "refusing to overwrite existing file %s\n please merge it manually with '%s'",
+                                PathFmt(to2),
                                 from2);
                             conflictedFiles.push_back(to2);
                         } else {
@@ -936,8 +938,8 @@ struct CmdFlakeInitCommon : virtual Args, EvalCommand
                     if (std::filesystem::exists(to_st)) {
                         if (std::filesystem::read_symlink(to2) != target) {
                             printError(
-                                "refusing to overwrite existing file '%s'\n please merge it manually with '%s'",
-                                to2.string(),
+                                "refusing to overwrite existing file %s\n please merge it manually with '%s'",
+                                PathFmt(to2),
                                 from2);
                             conflictedFiles.push_back(to2);
                         } else {
@@ -945,21 +947,28 @@ struct CmdFlakeInitCommon : virtual Args, EvalCommand
                         }
                         continue;
                     } else
-                        createSymlink(target, os_string_to_string(PathViewNG{to2}));
+                        createSymlink(target, to2);
                 } else
                     throw Error(
                         "path '%s' needs to be a symlink, file, or directory but instead is a %s",
                         from2,
                         st.typeString());
                 changedFiles.push_back(to2);
-                notice("wrote: %s", to2);
+                notice("wrote: %s", PathFmt(to2));
             }
         }(templateDir, flakeDir);
 
         if (!changedFiles.empty() && std::filesystem::exists(std::filesystem::path{flakeDir} / ".git")) {
-            Strings args = {"-C", flakeDir, "add", "--intent-to-add", "--force", "--"};
+            OsStrings args = {
+                OS_STR("-C"),
+                flakeDir.native(),
+                OS_STR("add"),
+                OS_STR("--intent-to-add"),
+                OS_STR("--force"),
+                OS_STR("--"),
+            };
             for (auto & s : changedFiles)
-                args.emplace_back(s.string());
+                args.emplace_back(s.native());
             runProgram("git", true, args);
         }
 
@@ -1051,7 +1060,7 @@ struct CmdFlakeClone : FlakeCommand
 
 struct CmdFlakeArchive : FlakeCommand, MixJSON, MixDryRun, MixNoCheckSigs
 {
-    std::string dstUri;
+    std::optional<StoreReference> dstUri;
 
     SubstituteFlag substitute = NoSubstitute;
 
@@ -1061,7 +1070,7 @@ struct CmdFlakeArchive : FlakeCommand, MixJSON, MixDryRun, MixNoCheckSigs
             .longName = "to",
             .description = "URI of the destination Nix store",
             .labels = {"store-uri"},
-            .handler = {&dstUri},
+            .handler = {[this](std::string s) { dstUri = StoreReference::parse(s); }},
         });
     }
 
@@ -1121,8 +1130,8 @@ struct CmdFlakeArchive : FlakeCommand, MixJSON, MixDryRun, MixNoCheckSigs
             traverse(*flake.lockFile.root);
         }
 
-        if (!dryRun && !dstUri.empty()) {
-            ref<Store> dstStore = dstUri.empty() ? openStore() : openStore(dstUri);
+        if (!dryRun && dstUri) {
+            ref<Store> dstStore = openStore(StoreReference{*dstUri});
 
             copyPaths(*store, *dstStore, sources, NoRepair, checkSigs, substitute);
         }

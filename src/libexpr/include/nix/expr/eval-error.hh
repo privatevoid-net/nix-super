@@ -2,6 +2,7 @@
 
 #include "nix/util/error.hh"
 #include "nix/util/pos-idx.hh"
+#include "nix/store/path.hh"
 
 namespace nix {
 
@@ -18,7 +19,7 @@ class EvalErrorBuilder;
  *
  * Most subclasses should inherit from `EvalError` instead of this class.
  */
-class EvalBaseError : public Error
+class EvalBaseError : public CloneableError<EvalBaseError, Error>
 {
     template<class T>
     friend class EvalErrorBuilder;
@@ -26,14 +27,14 @@ public:
     EvalState & state;
 
     EvalBaseError(EvalState & state, ErrorInfo && errorInfo)
-        : Error(errorInfo)
+        : CloneableError(errorInfo)
         , state(state)
     {
     }
 
     template<typename... Args>
     explicit EvalBaseError(EvalState & state, const std::string & formatString, const Args &... formatArgs)
-        : Error(formatString, formatArgs...)
+        : CloneableError(formatString, formatArgs...)
         , state(state)
     {
     }
@@ -54,17 +55,36 @@ MakeError(TypeError, EvalError);
 MakeError(UndefinedVarError, EvalError);
 MakeError(MissingArgumentError, EvalError);
 MakeError(InfiniteRecursionError, EvalError);
-MakeError(IFDError, EvalBaseError);
 
-struct InvalidPathError : public EvalError
+/**
+ * Resource exhaustion error when evaluation exceeds max-call-depth.
+ * Inherits from EvalBaseError (not EvalError) because resource exhaustion
+ * should not be cached.
+ */
+struct StackOverflowError : public CloneableError<StackOverflowError, EvalBaseError>
 {
-public:
-    Path path;
-
-    InvalidPathError(EvalState & state, const Path & path)
-        : EvalError(state, "path '%s' is not valid", path)
+    StackOverflowError(EvalState & state)
+        : CloneableError(state, "stack overflow; max-call-depth exceeded")
     {
     }
+};
+
+MakeError(IFDError, EvalBaseError);
+
+/**
+ * An evaluation error which should be retried instead of rethrown.
+ *
+ * A RecoverableEvalError is not an EvalError, because we shouldn't cache it in
+ * the eval cache, as it should be retried anyway.
+ */
+MakeError(RecoverableEvalError, EvalBaseError);
+
+struct InvalidPathError : public CloneableError<InvalidPathError, EvalError>
+{
+public:
+    StorePath path;
+
+    InvalidPathError(EvalState & state, const StorePath & path);
 };
 
 /**

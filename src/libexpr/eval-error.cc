@@ -1,8 +1,15 @@
 #include "nix/expr/eval-error.hh"
 #include "nix/expr/eval.hh"
 #include "nix/expr/value.hh"
+#include "nix/store/store-api.hh"
 
 namespace nix {
+
+InvalidPathError::InvalidPathError(EvalState & state, const StorePath & path)
+    : CloneableError(state, "path '%s' is not valid", path.to_string())
+    , path{path}
+{
+}
 
 template<class T>
 EvalErrorBuilder<T> & EvalErrorBuilder<T>::withExitStatus(unsigned int exitStatus)
@@ -111,7 +118,9 @@ template class EvalErrorBuilder<TypeError>;
 template class EvalErrorBuilder<UndefinedVarError>;
 template class EvalErrorBuilder<MissingArgumentError>;
 template class EvalErrorBuilder<InfiniteRecursionError>;
+template class EvalErrorBuilder<StackOverflowError>;
 template class EvalErrorBuilder<InvalidPathError>;
 template class EvalErrorBuilder<IFDError>;
+template class EvalErrorBuilder<RecoverableEvalError>;
 
 } // namespace nix

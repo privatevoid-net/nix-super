@@ -1,18 +1,21 @@
 #include "nix/util/current-process.hh"
 #include "nix/util/environment-variables.hh"
 #include "nix/util/executable-path.hh"
+#include "nix/util/fmt.hh"
 #include "nix/util/signals.hh"
 #include "nix/util/processes.hh"
 #include "nix/util/finally.hh"
 #include "nix/util/serialise.hh"
 
 #include <cerrno>
+#include <filesystem>
 #include <cstdlib>
 #include <cstring>
 #include <future>
 #include <iostream>
 #include <sstream>
-#include <thread>
+#include <atomic>
+using namespace std::chrono_literals;
 
 #include <grp.h>
 #include <sys/types.h>
@@ -35,15 +38,25 @@ namespace nix {
 
 Pid::Pid() {}
 
+Pid::Pid(Pid && other) noexcept
+    : pid(other.pid)
+    , separatePG(other.separatePG)
+    , killSignal(other.killSignal)
+{
+    other.release();
+}
+
 Pid::Pid(pid_t pid)
     : pid(pid)
 {
 }
 
 Pid::~Pid()
-{
+try {
     if (pid != -1)
-        kill();
+        kill(/*allowInterrupts=*/false);
+} catch (...) {
+    ignoreExceptionInDestructor();
 }
 
 void Pid::operator=(pid_t pid)
@@ -59,11 +72,25 @@ Pid::operator pid_t()
     return pid;
 }
 
-int Pid::kill()
+int Pid::kill(bool allowInterrupts)
 {
     assert(pid != -1);
 
     debug("killing process %1%", pid);
+
+    std::atomic<bool> killed = false;
+
+    if (killTimeout > 0ms && killSignal != SIGKILL)
+        killThread = std::thread([&]() {
+            auto elapsed = 0ms;
+            while (elapsed < killTimeout) {
+                std::this_thread::sleep_for(25ms);
+                elapsed += 25ms;
+                if (killed)
+                    return;
+            }
+            ::kill(separatePG ? -pid : pid, SIGKILL);
+        });
 
     /* Send the requested signal to the child.  If it has its own
        process group, send the signal to every process in the child
@@ -78,10 +105,15 @@ int Pid::kill()
             logError(SysError("killing process %d", pid).info());
     }
 
-    return wait();
+    int ret = wait(allowInterrupts);
+    if (killThread.joinable()) {
+        killed = true;
+        killThread.join();
+    }
+    return ret;
 }
 
-int Pid::wait()
+int Pid::wait(bool allowInterrupts)
 {
     assert(pid != -1);
     while (1) {
@@ -93,7 +125,8 @@ int Pid::wait()
         }
         if (errno != EINTR)
             throw SysError("cannot get exit status of PID %d", pid);
-        checkInterrupt();
+        if (allowInterrupts)
+            checkInterrupt();
     }
 }
 
@@ -107,10 +140,20 @@ void Pid::setKillSignal(int signal)
     this->killSignal = signal;
 }
 
+void Pid::setKillTimeout(std::chrono::milliseconds duration)
+{
+    this->killTimeout = duration;
+}
+
 pid_t Pid::release()
 {
     pid_t p = pid;
+    /* We use the move assignment operator rather than setting the individual fields so we aren't duplicating the
+       default values from the header, which would be hard to keep in sync. If we just used the assignment operator
+       without manually resetting pid first it would kill that process, however, so we do manually reset that one field.
+     */
     pid = -1;
+    *this = Pid();
     return p;
 }
 
@@ -162,7 +205,7 @@ void killUser(uid_t uid)
 
 //////////////////////////////////////////////////////////////////////
 
-using ChildWrapperFunction = std::function<void()>;
+using ChildWrapperFunction = fun<void()>;
 
 /* Wrapper around vfork to prevent the child process from clobbering
    the caller's stack frame in the parent. */
@@ -190,7 +233,7 @@ static int childEntry(void * arg)
 }
 #endif
 
-pid_t startProcess(std::function<void()> fun, const ProcessOptions & options)
+pid_t startProcess(fun<void()> processMain, const ProcessOptions & options)
 {
     auto newLogger = makeSimpleLogger();
     ChildWrapperFunction wrapper = [&] {
@@ -208,7 +251,7 @@ pid_t startProcess(std::function<void()> fun, const ProcessOptions & options)
             if (options.dieWithParent && prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)
                 throw SysError("setting death signal");
 #endif
-            fun();
+            processMain();
         } catch (std::exception & e) {
             try {
                 std::cerr << options.errorPrefix << e.what() << "\n";
@@ -251,7 +294,11 @@ pid_t startProcess(std::function<void()> fun, const ProcessOptions & options)
 }
 
 std::string runProgram(
-    Path program, bool lookupPath, const Strings & args, const std::optional<std::string> & input, bool isInteractive)
+    std::filesystem::path program,
+    bool lookupPath,
+    const OsStrings & args,
+    const std::optional<std::string> & input,
+    bool isInteractive)
 {
     auto res = runProgram(
         RunOptions{
@@ -262,7 +309,7 @@ std::string runProgram(
             .isInteractive = isInteractive});
 
     if (!statusOk(res.first))
-        throw ExecError(res.first, "program '%1%' %2%", program, statusToString(res.first));
+        throw ExecError(res.first, "program %s %s", PathFmt(program), statusToString(res.first));
 
     return res.second;
 }
@@ -337,7 +384,7 @@ void runProgram2(const RunOptions & options)
                 throw SysError("setuid failed");
 
             Strings args_(options.args);
-            args_.push_front(options.program);
+            args_.push_front(options.program.native());
 
             restoreProcessContext();
 
@@ -348,7 +395,7 @@ void runProgram2(const RunOptions & options)
             else
                 execv(options.program.c_str(), stringsToCharPtrs(args_).data());
 
-            throw SysError("executing '%1%'", options.program);
+            throw SysError("executing %s", PathFmt(options.program));
         },
         processOptions);
 
@@ -396,7 +443,7 @@ void runProgram2(const RunOptions & options)
         promise.get_future().get();
 
     if (status)
-        throw ExecError(status, "program '%1%' %2%", options.program, statusToString(status));
+        throw ExecError(status, "program %1% %2%", PathFmt(options.program), statusToString(status));
 }
 
 //////////////////////////////////////////////////////////////////////

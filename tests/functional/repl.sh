@@ -70,7 +70,7 @@ testRepl () {
     echo "$replOutput" | grepInverse "error: Cannot run 'nix-shell'"
 
     expectStderr 1 nix repl "${testDir}/simple.nix" \
-      | grepQuiet -s "error: path '$testDir/simple.nix' is not a flake"
+      | grepQuiet -s "error: path \"$testDir/simple.nix\" is not a flake"
 }
 
 # Simple test, try building a drv
@@ -140,6 +140,64 @@ testReplResponse '
 testReplResponseNoRegex '
 "$" + "{hi}"
 ' '"\${hi}"'
+
+# Test inherit statement support (issue #15053)
+testReplResponseNoRegex '
+a = { b = 1; c = 2; }
+inherit (a) b
+b
+' '1'
+
+# inherit multiple attributes
+testReplResponseNoRegex '
+a = { x = 10; y = 20; }
+inherit (a) x y
+x + y
+' '30'
+
+# inherit from current scope
+testReplResponseNoRegex '
+foo = 42
+inherit foo
+foo
+' '42'
+
+# inherit with semicolon (also works)
+testReplResponseNoRegex '
+a = { z = 99; }
+inherit (a) z;
+z
+' '99'
+
+# multiple bindings on one line
+testReplResponseNoRegex '
+a = 1; b = 2;
+a + b
+' '3'
+
+# nested attribute path
+testReplResponseNoRegex '
+a.b.c = 1;
+a.b
+' '{ c = 1; }'
+
+# mixed bindings: inherit and assignment
+testReplResponseNoRegex '
+x = { p = 10; }
+inherit (x) p; q = 20;
+p + q
+' '30'
+
+# inherit error shows position (without spurious semicolon from retry)
+testReplResponse '
+a = { x = 1; }
+inherit (a) y
+y
+' "error: attribute 'y' missing
+.*at .string.:1:13:
+.*inherit (a) y
+.* \\^
+.*Did you mean x"
 
 testReplResponse '
 drvPath
@@ -311,6 +369,12 @@ testReplResponseNoRegex '
   x = «repeated»;
   y = { a = 1; };
 }
+'
+
+testReplResponseNoRegex '
+:ll
+' \
+'error: nothing has been loaded yet
 '
 
 # Don't prompt for more input when getting unexpected EOF in imported files.

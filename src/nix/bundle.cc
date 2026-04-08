@@ -7,21 +7,18 @@
 #include "nix/expr/eval-inline.hh"
 #include "nix/store/globals.hh"
 
-namespace nix::fs {
-using namespace std::filesystem;
-}
-
 using namespace nix;
 
 struct CmdBundle : InstallableValueCommand
 {
     std::string bundler = "github:NixOS/bundlers";
-    std::optional<Path> outLink;
+    std::optional<std::filesystem::path> outLink;
 
     CmdBundle()
     {
         addFlag({
             .longName = "bundler",
+            .shortName = 'B',
             .description = fmt("Use a custom bundler instead of the default (`%s`).", bundler),
             .labels = {"flake-url"},
             .handler = {&bundler},
@@ -130,7 +127,7 @@ struct CmdBundle : InstallableValueCommand
         }
 
         // TODO: will crash if not a localFSStore?
-        store.dynamic_pointer_cast<LocalFSStore>()->addPermRoot(outPath, absPath(*outLink));
+        store.dynamic_pointer_cast<LocalFSStore>()->addPermRoot(outPath, absPath(*outLink).string());
     }
 };
 

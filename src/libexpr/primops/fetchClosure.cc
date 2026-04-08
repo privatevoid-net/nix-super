@@ -191,19 +191,25 @@ static void prim_fetchClosure(EvalState & state, const PosIdx pos, Value ** args
             {.msg = HintFmt("attribute '%s' is missing in call to 'fetchClosure'", "fromStore"),
              .pos = state.positions[pos]});
 
-    auto parsedURL = parseURL(*fromStoreUrl, /*lenient=*/true);
+    auto storeRef = StoreReference::parse(*fromStoreUrl);
 
-    if (parsedURL.scheme != "http" && parsedURL.scheme != "https"
-        && !(getEnv("_NIX_IN_TEST").has_value() && parsedURL.scheme == "file"))
-        throw Error(
-            {.msg = HintFmt("'fetchClosure' only supports http:// and https:// stores"), .pos = state.positions[pos]});
+    if ([&] {
+            auto * specified = std::get_if<StoreReference::Specified>(&storeRef.variant);
+            return !specified
+                   || (specified->scheme != "http" && specified->scheme != "https"
+                       && !(getEnv("_NIX_IN_TEST").has_value() && specified->scheme == "file"));
+        }())
+        throw Error({
+            .msg = HintFmt("'fetchClosure' only supports http:// and https:// stores"),
+            .pos = state.positions[pos],
+        });
 
-    if (!parsedURL.query.empty())
+    if (!storeRef.params.empty())
         throw Error(
             {.msg = HintFmt("'fetchClosure' does not support URL query parameters (in '%s')", *fromStoreUrl),
              .pos = state.positions[pos]});
 
-    auto fromStore = openStore(parsedURL.to_string());
+    auto fromStore = openStore(std::move(storeRef));
 
     if (toPath)
         runFetchClosureWithRewrite(state, pos, *fromStore, *fromPath, *toPath, v);
@@ -243,7 +249,7 @@ static RegisterPrimOp primop_fetchClosure({
       ```nix
       builtins.fetchClosure {
         fromStore = "https://cache.nixos.org";
-        fromPath = /nix/store/r2jd6ygnmirm2g803mksqqjm4y39yi6i-git-2.33.1;
+        fromPath = /nix/store/nph9br6y2dmciy6q3dj3fwk2brdlr4gh-git-2.33.1;
         toPath = /nix/store/ldbhlwhh39wha58rm61bkiiwm6j7211j-git-2.33.1;
       }
       ```
@@ -258,8 +264,8 @@ static RegisterPrimOp primop_fetchClosure({
       use [`nix store make-content-addressed`](@docroot@/command-ref/new-cli/nix3-store-make-content-addressed.md):
 
       ```console
-      # nix store make-content-addressed --from https://cache.nixos.org /nix/store/r2jd6ygnmirm2g803mksqqjm4y39yi6i-git-2.33.1
-      rewrote '/nix/store/r2jd6ygnmirm2g803mksqqjm4y39yi6i-git-2.33.1' to '/nix/store/ldbhlwhh39wha58rm61bkiiwm6j7211j-git-2.33.1'
+      # nix store make-content-addressed --from https://cache.nixos.org /nix/store/nph9br6y2dmciy6q3dj3fwk2brdlr4gh-git-2.33.1
+      rewrote '/nix/store/nph9br6y2dmciy6q3dj3fwk2brdlr4gh-git-2.33.1' to '/nix/store/ldbhlwhh39wha58rm61bkiiwm6j7211j-git-2.33.1'
       ```
 
       Alternatively, set `toPath = ""` and find the correct `toPath` in the error message.
@@ -271,7 +277,7 @@ static RegisterPrimOp primop_fetchClosure({
       ```nix
       builtins.fetchClosure {
         fromStore = "https://cache.nixos.org";
-        fromPath = /nix/store/r2jd6ygnmirm2g803mksqqjm4y39yi6i-git-2.33.1;
+        fromPath = /nix/store/nph9br6y2dmciy6q3dj3fwk2brdlr4gh-git-2.33.1;
         inputAddressed = true;
       }
       ```
@@ -285,7 +291,7 @@ static RegisterPrimOp primop_fetchClosure({
       However, `fetchClosure` is more reproducible because it specifies a binary cache from which the path can be fetched.
       Also, using content-addressed store paths does not require users to configure [`trusted-public-keys`](@docroot@/command-ref/conf-file.md#conf-trusted-public-keys) to ensure their authenticity.
     )",
-    .fun = prim_fetchClosure,
+    .impl = prim_fetchClosure,
     .experimentalFeature = Xp::FetchClosure,
 });
 

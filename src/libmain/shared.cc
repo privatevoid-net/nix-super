@@ -1,7 +1,9 @@
 #include "nix/store/globals.hh"
 #include "nix/util/current-process.hh"
+#include "nix/util/executable-path.hh"
 #include "nix/main/shared.hh"
 #include "nix/store/store-api.hh"
+#include "nix/store/store-open.hh"
 #include "nix/store/gc-store.hh"
 #include "nix/main/loggers.hh"
 #include "nix/main/progress-bar.hh"
@@ -17,6 +19,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
+
+#ifndef _WIN32
+#  include <sys/resource.h>
+#endif
 #ifdef __linux__
 #  include <features.h>
 #endif
@@ -116,6 +122,26 @@ std::string getArg(const std::string & opt, Strings::iterator & i, const Strings
 static void sigHandler(int signo) {}
 #endif
 
+/**
+ * Increase the open file soft limit to the hard limit. On some
+ * platforms (macOS), the default soft limit is very low, but the hard
+ * limit is high. So let's just raise it the maximum permitted.
+ */
+void bumpFileLimit()
+{
+#ifndef _WIN32
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0)
+        return;
+
+    if (limit.rlim_cur < limit.rlim_max) {
+        limit.rlim_cur = limit.rlim_max;
+        // Ignore errors, this is best effort.
+        setrlimit(RLIMIT_NOFILE, &limit);
+    }
+#endif
+}
+
 void initNix(bool loadConfig)
 {
     /* Turn on buffering for cerr. */
@@ -138,10 +164,10 @@ void initNix(bool loadConfig)
     if (sigaction(SIGCHLD, &act, 0))
         throw SysError("resetting SIGCHLD");
 
-    /* Install a dummy SIGUSR1 handler for use with pthread_kill(). */
+    /* Install a dummy NIX_SIG_MULTI_INT handler for use with pthread_kill(). */
     act.sa_handler = sigHandler;
-    if (sigaction(SIGUSR1, &act, 0))
-        throw SysError("handling SIGUSR1");
+    if (sigaction(NIX_SIG_MULTI_INT, &act, 0))
+        throw SysError("handling multiplexed interrupt");
 #endif
 
 #ifdef __APPLE__
@@ -183,11 +209,12 @@ void initNix(bool loadConfig)
        now.  In particular, store objects should be readable by
        everybody. */
     umask(0022);
+
+    bumpFileLimit();
 }
 
 LegacyArgs::LegacyArgs(
-    const std::string & programName,
-    std::function<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
+    const std::string & programName, fun<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
     : MixCommonArgs(programName)
     , parseArg(parseArg)
 {
@@ -209,13 +236,13 @@ LegacyArgs::LegacyArgs(
         .longName = "keep-going",
         .shortName = 'k',
         .description = "Keep going after a build fails.",
-        .handler = {&(bool &) settings.keepGoing, true},
+        .handler = {&(bool &) settings.getWorkerSettings().keepGoing, true},
     });
 
     addFlag({
         .longName = "fallback",
         .description = "Build from source if substitution fails.",
-        .handler = {&(bool &) settings.tryFallback, true},
+        .handler = {&(bool &) settings.getWorkerSettings().tryFallback, true},
     });
 
     auto intSettingAlias =
@@ -252,7 +279,7 @@ LegacyArgs::LegacyArgs(
         .longName = "store",
         .description = "The URL of the Nix store to use.",
         .labels = {"store-uri"},
-        .handler = {&(std::string &) settings.storeUri},
+        .handler = {[](std::string s) { settings.storeUri = StoreReference::parse(s); }},
     });
 }
 
@@ -278,8 +305,7 @@ bool LegacyArgs::processArgs(const Strings & args, bool finish)
     return true;
 }
 
-void parseCmdLine(
-    int argc, char ** argv, std::function<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
+void parseCmdLine(int argc, char ** argv, fun<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
 {
     parseCmdLine(std::string(baseNameOf(argv[0])), argvToStrings(argc, argv), parseArg);
 }
@@ -287,7 +313,7 @@ void parseCmdLine(
 void parseCmdLine(
     const std::string & programName,
     const Strings & args,
-    std::function<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
+    fun<bool(Strings::iterator & arg, const Strings::iterator & end)> parseArg)
 {
     LegacyArgs(programName, parseArg).parseCmdline(args);
 }
@@ -307,42 +333,14 @@ void printVersion(const std::string & programName)
         std::cout << "System type: " << settings.thisSystem << "\n";
         std::cout << "Additional system types: " << concatStringsSep(", ", settings.extraPlatforms.get()) << "\n";
         std::cout << "Features: " << concatStringsSep(", ", cfg) << "\n";
-        std::cout << "System configuration file: " << (settings.nixConfDir / "nix.conf") << "\n";
-        std::cout << "User configuration files: " << concatStringsSep(":", settings.nixUserConfFiles) << "\n";
-        std::cout << "Store directory: " << settings.nixStore << "\n";
-        std::cout << "State directory: " << settings.nixStateDir << "\n";
-        std::cout << "Data directory: " << settings.nixDataDir << "\n";
+        std::cout << "System configuration file: " << os_string_to_string(nixConfFile().native()) << "\n";
+        std::cout << "User configuration files: "
+                  << os_string_to_string(ExecutablePath{.directories = nixUserConfFiles()}.render()) << "\n";
+        std::cout << "Store directory: " << resolveStoreConfig(StoreReference{settings.storeUri.get()})->storeDir
+                  << "\n";
+        std::cout << "State directory: " << os_string_to_string(settings.nixStateDir.native()) << "\n";
     }
     throw Exit();
-}
-
-int handleExceptions(const std::string & programName, std::function<void()> fun)
-{
-    ReceiveInterrupts receiveInterrupts; // FIXME: need better place for this
-
-    ErrorInfo::programName = baseNameOf(programName);
-
-    std::string error = ANSI_RED "error:" ANSI_NORMAL " ";
-    try {
-        fun();
-    } catch (Exit & e) {
-        return e.status;
-    } catch (UsageError & e) {
-        logError(e.info());
-        printError("Try '%1% --help' for more information.", programName);
-        return 1;
-    } catch (BaseError & e) {
-        logError(e.info());
-        return e.info().status;
-    } catch (std::bad_alloc & e) {
-        printError(error + "out of memory");
-        return 1;
-    } catch (std::exception & e) {
-        printError(error + e.what());
-        return 1;
-    }
-
-    return 0;
 }
 
 RunPager::RunPager()
@@ -399,9 +397,12 @@ RunPager::~RunPager()
     }
 }
 
-PrintFreed::~PrintFreed()
+void printFreed(bool dryRun, const GCResults & results)
 {
-    if (show)
+    /* bytesFreed cannot be reliably computed without actually deleting store paths because of hardlinking. */
+    if (dryRun)
+        std::cout << fmt("%d store paths would be deleted\n", results.paths.size());
+    else
         std::cout << fmt("%d store paths deleted, %s freed\n", results.paths.size(), renderSize(results.bytesFreed));
 }
 

@@ -24,6 +24,10 @@ subproject('libcmd')
 # Executables
 subproject('nix')
 
+if host_machine.system() == 'linux'
+  subproject('nswrapper')
+endif
+
 # Docs
 if get_option('doc-gen')
   subproject('internal-api-docs')
@@ -63,6 +67,9 @@ subproject('nix-functional-tests')
 if get_option('json-schema-checks')
   subproject('json-schema-checks')
 endif
-if get_option('kaitai-struct-checks')
-  subproject('kaitai-struct-checks')
-endif
+
+# Static Analysis
+# Build the custom clang-tidy plugin if LLVM is available.
+# required: false → gracefully skipped if dependency('LLVM') fails.
+clang_tidy_plugin_sp = subproject('clang-tidy-plugin', required : false)
+subdir('nix-meson-build-support/common/clang-tidy')

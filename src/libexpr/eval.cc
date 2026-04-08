@@ -1,4 +1,5 @@
 #include "nix/expr/eval.hh"
+#include "nix/expr/eval-error.hh"
 #include "nix/expr/eval-settings.hh"
 #include "nix/expr/primops.hh"
 #include "nix/expr/print-options.hh"
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -155,6 +157,8 @@ std::string_view showType(ValueType type, bool withArticle)
         return WA("a", "float");
     case nThunk:
         return WA("a", "thunk");
+    case nFailed:
+        return WA("an", "error");
     }
     unreachable();
 }
@@ -224,10 +228,6 @@ static Symbol getName(const AttrName & name, EvalState & state, Env & env)
 static constexpr size_t BASE_ENV_SIZE = 128;
 
 EvalMemory::EvalMemory()
-#if NIX_USE_BOEHMGC
-    : valueAllocCache(std::allocate_shared<void *>(traceable_allocator<void *>(), nullptr))
-    , env1AllocCache(std::allocate_shared<void *>(traceable_allocator<void *>(), nullptr))
-#endif
 {
     assertGCInitialized();
 }
@@ -303,6 +303,8 @@ EvalState::EvalState(
     , srcToStore(make_ref<decltype(srcToStore)::element_type>())
     , importResolutionCache(make_ref<decltype(importResolutionCache)::element_type>())
     , fileEvalCache(make_ref<decltype(fileEvalCache)::element_type>())
+    , positionToDocComment(make_ref<decltype(positionToDocComment)::element_type>())
+    , lookupPathResolved(make_ref<decltype(lookupPathResolved)::element_type>())
     , regexCache(makeRegexCache())
 #if NIX_USE_BOEHMGC
     , baseEnvP(std::allocate_shared<Env *>(traceable_allocator<Env *>(), &mem.allocEnv(BASE_ENV_SIZE)))
@@ -318,7 +320,6 @@ EvalState::EvalState(
     countCalls = getEnv("NIX_COUNT_CALLS").value_or("0") != "0";
 
     static_assert(sizeof(Env) <= 16, "environment must be <= 16 bytes");
-    static_assert(sizeof(Counter) == 64, "counters must be 64 bytes");
 
     /* Construct the Nix expression search path. */
     assert(lookupPath.elements.empty());
@@ -365,7 +366,7 @@ EvalState::EvalState(
 
 EvalState::~EvalState() {}
 
-void EvalState::allowPathLegacy(const Path & path)
+void EvalState::allowPathLegacy(const std::string & path)
 {
     if (auto rootFS2 = rootFS.dynamic_pointer_cast<AllowListSourceAccessor>())
         rootFS2->allowPrefix(CanonPath(path));
@@ -423,29 +424,36 @@ bool isAllowedURI(std::string_view uri, const Strings & allowedUris)
     return false;
 }
 
-void EvalState::checkURI(const std::string & uri)
+void EvalState::checkURI(const std::string & uri0)
 {
     if (!settings.restrictEval)
         return;
 
-    if (isAllowedURI(uri, settings.allowedUris.get()))
+    if (isAllowedURI(uri0, settings.allowedUris.get()))
         return;
 
     /* If the URI is a path, then check it against allowedPaths as
        well. */
-    if (isAbsolute(uri)) {
-        if (auto rootFS2 = rootFS.dynamic_pointer_cast<AllowListSourceAccessor>())
-            rootFS2->checkAccess(CanonPath(uri));
-        return;
+    {
+        std::filesystem::path path(uri0);
+        if (path.is_absolute()) {
+            if (auto rootFS2 = rootFS.dynamic_pointer_cast<AllowListSourceAccessor>())
+                rootFS2->checkAccess(CanonPath(path.string()));
+            return;
+        }
     }
 
-    if (hasPrefix(uri, "file://")) {
-        if (auto rootFS2 = rootFS.dynamic_pointer_cast<AllowListSourceAccessor>())
-            rootFS2->checkAccess(CanonPath(uri.substr(7)));
-        return;
+    try {
+        ParsedURL uri = parseURL(uri0);
+        if (uri.scheme == "file") {
+            if (auto rootFS2 = rootFS.dynamic_pointer_cast<AllowListSourceAccessor>())
+                rootFS2->checkAccess(CanonPath(urlPathToPath(uri.path).string()));
+            return;
+        }
+    } catch (BadURL &) {
     }
 
-    throw RestrictedPathError("access to URI '%s' is forbidden in restricted mode", uri);
+    throw RestrictedPathError("access to URI '%s' is forbidden in restricted mode", uri0);
 }
 
 Value * EvalState::addConstant(const std::string & name, Value & v, Constant info)
@@ -467,7 +475,7 @@ void EvalState::addConstant(const std::string & name, Value * v, Constant info)
 
            We might know the type of a thunk in advance, so be allowed
            to just write it down in that case. */
-        if (auto gotType = v->type(true); gotType != nThunk)
+        if (auto gotType = v->type</*invalidIsThunk=*/true>(); gotType != nThunk)
             assert(info.type == gotType);
 
         /* Install value the base environment. */
@@ -741,6 +749,11 @@ public:
         inDebugger = true;
     }
 
+    DebuggerGuard(DebuggerGuard &&) = delete;
+    DebuggerGuard(const DebuggerGuard &) = delete;
+    DebuggerGuard & operator=(DebuggerGuard &&) = delete;
+    DebuggerGuard & operator=(const DebuggerGuard &) = delete;
+
     ~DebuggerGuard()
     {
         inDebugger = false;
@@ -881,7 +894,7 @@ void Value::mkPath(const SourcePath & path, EvalMemory & mem)
     mkPath(&*path.accessor, StringData::make(mem, path.path.abs()));
 }
 
-inline Value * EvalState::lookupVar(Env * env, const ExprVar & var, bool noEval)
+[[gnu::always_inline]] inline Value * EvalState::lookupVar(Env * env, const ExprVar & var, bool noEval)
 {
     for (auto l = var.level; l; --l, env = env->up)
         ;
@@ -899,11 +912,11 @@ inline Value * EvalState::lookupVar(Env * env, const ExprVar & var, bool noEval)
     while (1) {
         forceAttrs(*env->values[0], fromWith->pos, "while evaluating the first subexpression of a with expression");
         if (auto j = env->values[0]->attrs()->get(var.name)) {
-            if (countCalls)
+            if (countCalls) [[unlikely]]
                 attrSelects[j->pos]++;
             return j->value;
         }
-        if (!fromWith->parentWith)
+        if (!fromWith->parentWith) [[unlikely]]
             error<UndefinedVarError>("undefined variable '%1%'", symbols[var.name])
                 .atPos(var.pos)
                 .withFrame(*env, var)
@@ -1514,12 +1527,12 @@ void EvalState::callFunction(Value & fun, std::span<Value *> args, Value & vRes,
     Value vCur(fun);
 
     auto makeAppChain = [&]() {
-        vRes = vCur;
         for (auto arg : args) {
             auto fun2 = allocValue();
-            *fun2 = vRes;
-            vRes.mkPrimOpApp(fun2, arg);
+            *fun2 = vCur;
+            vCur.mkPrimOpApp(fun2, arg);
         }
+        vRes = vCur;
     };
 
     const Attr * functor;
@@ -1649,7 +1662,7 @@ void EvalState::callFunction(Value & fun, std::span<Value *> args, Value & vRes,
                     primOpCalls[fn->name]++;
 
                 try {
-                    fn->fun(*this, vCur.determinePos(noPos), args.data(), vCur);
+                    fn->impl(*this, vCur.determinePos(noPos), args.data(), vCur);
                 } catch (Error & e) {
                     if (fn->addTrace)
                         addErrorTrace(e, pos, "while calling the '%1%' builtin", fn->name);
@@ -1699,7 +1712,7 @@ void EvalState::callFunction(Value & fun, std::span<Value *> args, Value & vRes,
                     // 2. Create a fake env (arg1, arg2, etc.) and a fake expr (arg1: arg2: etc: builtins.name arg1 arg2
                     // etc)
                     //    so the debugger allows to inspect the wrong parameters passed to the builtin.
-                    fn->fun(*this, vCur.determinePos(noPos), vArgs, vCur);
+                    fn->impl(*this, vCur.determinePos(noPos), vArgs, vCur);
                 } catch (Error & e) {
                     if (fn->addTrace)
                         addErrorTrace(e, pos, "while calling the '%1%' builtin", fn->name);
@@ -1983,11 +1996,15 @@ void ExprOpUpdate::eval(EvalState & state, Env & env, Value & v)
     UpdateQueue q;
     evalForUpdate(state, env, q);
 
-    v.mkAttrs(&Bindings::emptyBindings);
+    Value vTmp;
+    vTmp.mkAttrs(&Bindings::emptyBindings);
+
     for (auto & rhs : std::views::reverse(q)) {
         /* Remember that queue is sorted rightmost attrset first. */
-        eval(state, /*v=*/v, /*v1=*/v, /*v2=*/rhs);
+        eval(state, /*v=*/vTmp, /*v1=*/vTmp, /*v2=*/rhs);
     }
+
+    v = vTmp;
 }
 
 void Expr::evalForUpdate(EvalState & state, Env & env, UpdateQueue & q, std::string_view errorCtx)
@@ -2017,22 +2034,21 @@ void ExprOpConcatLists::eval(EvalState & state, Env & env, Value & v)
     Value v2;
     e2->eval(state, env, v2);
     Value * lists[2] = {&v1, &v2};
-    state.concatLists(v, 2, lists, pos, "while evaluating one of the elements to concatenate");
+    state.concatLists(v, lists, pos, "while evaluating one of the elements to concatenate");
 }
 
-void EvalState::concatLists(
-    Value & v, size_t nrLists, Value * const * lists, const PosIdx pos, std::string_view errorCtx)
+void EvalState::concatLists(Value & v, std::span<Value * const> lists, const PosIdx pos, std::string_view errorCtx)
 {
     nrListConcats++;
 
-    Value * nonEmpty = 0;
+    Value * nonEmpty = nullptr;
     size_t len = 0;
-    for (size_t n = 0; n < nrLists; ++n) {
-        forceList(*lists[n], pos, errorCtx);
-        auto l = lists[n]->listSize();
+    for (auto * list : lists) {
+        forceList(*list, pos, errorCtx);
+        auto l = list->listSize();
         len += l;
         if (l)
-            nonEmpty = lists[n];
+            nonEmpty = list;
     }
 
     if (nonEmpty && len == nonEmpty->listSize()) {
@@ -2042,12 +2058,13 @@ void EvalState::concatLists(
 
     auto list = buildList(len);
     auto out = list.elems;
-    for (size_t n = 0, pos = 0; n < nrLists; ++n) {
-        auto listView = lists[n]->listView();
-        auto l = listView.size();
-        if (l)
-            memcpy(out + pos, listView.data(), l * sizeof(Value *));
-        pos += l;
+    size_t pos2 = 0;
+    for (auto * l : lists) {
+        auto listView = l->listView();
+        auto n = listView.size();
+        if (n)
+            memcpy(out + pos2, listView.data(), n * sizeof(Value *));
+        pos2 += n;
     }
     v.mkList(list);
 }
@@ -2170,6 +2187,54 @@ void ExprBlackHole::eval(EvalState & state, [[maybe_unused]] Env & env, Value & 
 // always force this to be separate, otherwise forceValue may inline it and take
 // a massive perf hit
 [[gnu::noinline]]
+void EvalState::handleEvalExceptionForThunk(Env * env, Expr * expr, Value & v, const PosIdx pos)
+{
+    if (!env)
+        tryFixupBlackHolePos(v, pos);
+
+    auto e = std::current_exception();
+    Value * recovery = nullptr;
+    try {
+        std::rethrow_exception(e);
+    } catch (const RecoverableEvalError & e) {
+        recovery = allocValue();
+    } catch (...) {
+    }
+    if (recovery) {
+        recovery->mkThunk(env, expr);
+    }
+    v.mkFailed(e, recovery);
+}
+
+[[gnu::noinline]]
+void EvalState::handleEvalExceptionForApp(Value & v, const Value & savedApp)
+{
+    auto e = std::current_exception();
+    Value * recovery = nullptr;
+    try {
+        std::rethrow_exception(e);
+    } catch (const RecoverableEvalError & e) {
+        recovery = allocValue();
+    } catch (...) {
+    }
+    if (recovery) {
+        *recovery = savedApp;
+    }
+    v.mkFailed(e, recovery);
+}
+
+[[gnu::noinline]]
+void EvalState::handleEvalFailed(Value & v, const PosIdx pos)
+{
+    assert(v.isFailed());
+    if (auto recoveryValue = v.failed().recoveryValue) {
+        v = *recoveryValue;
+        forceValue(v, pos);
+    } else {
+        v.failed().rethrow();
+    }
+}
+
 void EvalState::tryFixupBlackHolePos(Value & v, PosIdx pos)
 {
     if (!v.isBlackhole())
@@ -2178,7 +2243,8 @@ void EvalState::tryFixupBlackHolePos(Value & v, PosIdx pos)
     try {
         std::rethrow_exception(e);
     } catch (InfiniteRecursionError & e) {
-        e.atPos(positions[pos]);
+        if (!e.hasPos())
+            e.atPos(positions[pos]);
     } catch (...) {
     }
 }
@@ -2351,10 +2417,11 @@ std::string_view EvalState::forceStringNoCtx(Value & v, const PosIdx pos, std::s
 {
     auto s = forceString(v, pos, errorCtx);
     if (v.context()) {
+        auto ctxElem = NixStringContextElem::parse((*v.context()->begin())->view());
         error<EvalError>(
             "the string '%1%' is not allowed to refer to a store path (such as '%2%')",
             v.string_view(),
-            (*v.context()->begin())->view())
+            ctxElem.display(*store))
             .withTrace(pos, errorCtx)
             .debugThrow();
     }
@@ -2403,6 +2470,8 @@ BackedStringView EvalState::coerceToString(
     bool copyToStore,
     bool canonicalizePath)
 {
+    auto _level = addCallDepth(pos);
+
     forceValue(v, pos);
 
     if (v.type() == nString) {
@@ -2546,7 +2615,7 @@ SourcePath EvalState::coerceToPath(const PosIdx pos, Value & v, NixStringContext
     auto path = coerceToString(pos, v, context, errorCtx, false, false, true).toOwned();
     if (path == "" || path[0] != '/')
         error<EvalError>("string '%1%' doesn't represent an absolute path", path).withTrace(pos, errorCtx).debugThrow();
-    return rootPath(path);
+    return rootPath(CanonPath(path));
 }
 
 StorePath
@@ -2622,6 +2691,8 @@ SingleDerivedPath EvalState::coerceToSingleDerivedPath(const PosIdx pos, Value &
 // `assert a == b; x` are critical for our users' testing UX.
 void EvalState::assertEqValues(Value & v1, Value & v2, const PosIdx pos, std::string_view errorCtx)
 {
+    auto _level = addCallDepth(pos);
+
     // This implementation must match eqValues.
     forceValue(v1, pos);
     forceValue(v2, pos);
@@ -2813,8 +2884,11 @@ void EvalState::assertEqValues(Value & v1, Value & v2, const PosIdx pos, std::st
         }
         return;
 
-    case nThunk: // Must not be left by forceValue
-        assert(false);
+    // Cannot be returned by forceValue().
+    case nThunk:
+    case nFailed:
+        unreachable();
+
     default: // Note that we pass compiler flags that should make `default:` unreachable.
         // Also note that this probably ran after `eqValues`, which implements
         // the same logic more efficiently (without having to unwind stacks),
@@ -2828,6 +2902,8 @@ void EvalState::assertEqValues(Value & v1, Value & v2, const PosIdx pos, std::st
 // This implementation must match assertEqValues
 bool EvalState::eqValues(Value & v1, Value & v2, const PosIdx pos, std::string_view errorCtx)
 {
+    auto _level = addCallDepth(pos);
+
     forceValue(v1, pos);
     forceValue(v2, pos);
 
@@ -2906,8 +2982,11 @@ bool EvalState::eqValues(Value & v1, Value & v2, const PosIdx pos, std::string_v
         // !!!
         return v1.fpoint() == v2.fpoint();
 
-    case nThunk: // Must not be left by forceValue
-        assert(false);
+    // Cannot be returned by forceValue().
+    case nThunk:
+    case nFailed:
+        unreachable();
+
     default: // Note that we pass compiler flags that should make `default:` unreachable.
         error<EvalError>("eqValues: cannot compare %1% with %2%", showType(v1), showType(v2))
             .withTrace(pos, errorCtx)
@@ -3128,6 +3207,21 @@ Expr * EvalState::parseExprFromString(std::string s, const SourcePath & basePath
     return parseExprFromString(std::move(s), basePath, staticBaseEnv);
 }
 
+ExprAttrs *
+EvalState::parseReplBindings(std::string s_, const SourcePath & basePath, const std::shared_ptr<StaticEnv> & staticEnv)
+{
+    return parseReplBindings(s_, s_, basePath, staticEnv);
+}
+
+ExprAttrs * EvalState::parseReplBindings(
+    std::string s_, std::string errorSource, const SourcePath & basePath, const std::shared_ptr<StaticEnv> & staticEnv)
+{
+    auto s = make_ref<std::string>(std::move(errorSource));
+    // flex requires two NUL terminators for yy_scan_buffer
+    s_.append("\0\0", 2);
+    return parseReplBindings(s_.data(), s_.size(), Pos::String{.source = s}, basePath, staticEnv);
+}
+
 Expr * EvalState::parseStdin()
 {
     // NOTE this method (and parseExprFromString) must take care to *fully copy* their
@@ -3184,16 +3278,15 @@ SourcePath EvalState::findFile(const LookupPath & lookupPath, const std::string_
 std::optional<SourcePath> EvalState::resolveLookupPathPath(const LookupPath::Path & value0, bool initAccessControl)
 {
     auto & value = value0.s;
-    auto i = lookupPathResolved.find(value);
-    if (i != lookupPathResolved.end())
-        return i->second;
+    if (auto cached = getConcurrent(*lookupPathResolved, value))
+        return *cached;
 
     auto finish = [&](std::optional<SourcePath> res) {
         if (res)
             debug("resolved search path element '%s' to '%s'", value, *res);
         else
             debug("failed to resolve search path element '%s'", value);
-        lookupPathResolved.emplace(value, res);
+        lookupPathResolved->emplace(std::string(value), res);
         return res;
     };
 
@@ -3253,20 +3346,48 @@ Expr * EvalState::parse(
     const SourcePath & basePath,
     const std::shared_ptr<StaticEnv> & staticEnv)
 {
-    DocCommentMap tmpDocComments; // Only used when not origin is not a SourcePath
-    DocCommentMap * docComments = &tmpDocComments;
+    auto tmpDocComments = make_ref<DocCommentMap>();
 
-    if (auto sourcePath = std::get_if<SourcePath>(&origin)) {
-        auto [it, _] = positionToDocComment.try_emplace(*sourcePath);
-        docComments = &it->second;
-    }
-
-    auto result =
-        parseExprFromBuf(text, length, origin, basePath, mem.exprs, symbols, settings, positions, *docComments, rootFS);
+    auto result = parseExprFromBuf(
+        text, length, origin, basePath, mem.exprs, symbols, settings, positions, *tmpDocComments, rootFS);
 
     result->bindVars(*this, staticEnv);
 
+    if (auto sourcePath = std::get_if<SourcePath>(&origin))
+        /* A single file might appear multiple times in PosTable if it's
+           parsed by scopedImport. If we are the first then emplace into the map, otherwise
+           copy our positions into the existing map. */
+        positionToDocComment->emplace_or_visit(*sourcePath, tmpDocComments, [&tmpDocComments](auto & kv) {
+            kv.second->insert(tmpDocComments->begin(), tmpDocComments->end());
+        });
+
     return result;
+}
+
+ExprAttrs * EvalState::parseReplBindings(
+    char * text,
+    size_t length,
+    Pos::Origin origin,
+    const SourcePath & basePath,
+    const std::shared_ptr<StaticEnv> & staticEnv)
+{
+    auto tmpDocComments = make_ref<DocCommentMap>();
+
+    auto bindings = parseReplBindingsFromBuf(
+        text, length, origin, basePath, mem.exprs, symbols, settings, positions, *tmpDocComments, rootFS);
+    assert(bindings);
+
+    bindings->bindVars(*this, staticEnv);
+
+    if (auto sourcePath = std::get_if<SourcePath>(&origin))
+        /* A single file might appear multiple times in PosTable if it's
+           parsed by scopedImport. If we are the first then emplace into the map, otherwise
+           copy our positions into the existing map. */
+        positionToDocComment->emplace_or_visit(*sourcePath, tmpDocComments, [&tmpDocComments](auto & kv) {
+            kv.second->insert(tmpDocComments->begin(), tmpDocComments->end());
+        });
+
+    return bindings;
 }
 
 DocComment EvalState::getDocCommentForPos(PosIdx pos)
@@ -3276,14 +3397,12 @@ DocComment EvalState::getDocCommentForPos(PosIdx pos)
     if (!path)
         return {};
 
-    auto table = positionToDocComment.find(*path);
-    if (table == positionToDocComment.end())
-        return {};
-
-    auto it = table->second.find(pos);
-    if (it == table->second.end())
-        return {};
-    return it->second;
+    DocComment result;
+    positionToDocComment->visit(*path, [&](const auto & kv) {
+        if (auto it = kv.second->find(pos); it != kv.second->end())
+            result = it->second;
+    });
+    return result;
 }
 
 std::string ExternalValueBase::coerceToString(

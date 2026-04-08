@@ -1,11 +1,13 @@
 #include "nix/util/archive.hh"
 #include "nix/store/derivations.hh"
+#include "nix/store/outputs-query.hh"
 #include "dotgraph.hh"
 #include "nix/store/globals.hh"
 #include "nix/store/store-open.hh"
 #include "nix/store/store-cast.hh"
 #include "nix/store/local-fs-store.hh"
 #include "nix/store/log-store.hh"
+#include "nix/store/local-store.hh"
 #include "nix/store/serve-protocol.hh"
 #include "nix/store/serve-protocol-connection.hh"
 #include "nix/main/shared.hh"
@@ -15,13 +17,15 @@
 #include "nix/store/globals.hh"
 #include "nix/store/path-with-outputs.hh"
 #include "nix/store/export-import.hh"
+#include "nix/util/strings.hh"
+#include "nix/store/posix-fs-canonicalise.hh"
+#include "nix/util/error.hh"
+#include "nix/store/gc-store.hh"
 
 #include "man-pages.hh"
 
 #ifndef _WIN32 // TODO implement on Windows or provide allowed-to-noop interface
-#  include "nix/store/local-store.hh"
 #  include "nix/util/monitor-fd.hh"
-#  include "nix/store/posix-fs-canonicalise.hh"
 #endif
 
 #include <iostream>
@@ -43,12 +47,11 @@ using std::cout;
 
 typedef void (*Operation)(Strings opFlags, Strings opArgs);
 
-static Path gcRoot;
+static std::filesystem::path gcRoot;
 static int rootNr = 0;
 static bool noOutput = false;
 static std::shared_ptr<Store> store;
 
-#ifndef _WIN32 // TODO reenable on Windows once we have `LocalStore` there
 ref<LocalStore> ensureLocalStore()
 {
     auto store2 = std::dynamic_pointer_cast<LocalStore>(store);
@@ -56,7 +59,6 @@ ref<LocalStore> ensureLocalStore()
         throw Error("you don't have sufficient rights to use this command");
     return ref<LocalStore>(store2);
 }
-#endif
 
 static StorePath useDeriver(const StorePath & path)
 {
@@ -68,16 +70,17 @@ static StorePath useDeriver(const StorePath & path)
     return *info->deriver;
 }
 
-/* Realise the given path.  For a derivation that means build it; for
-   other paths it means ensure their validity. */
-static PathSet realisePath(StorePathWithOutputs path, bool build = true)
+/**
+ * Because we are downcasting first thing to a `LocalFSStore`, we know it is OK to return local paths.
+ */
+static std::set<std::filesystem::path> realisePath(StorePathWithOutputs path, bool build = true)
 {
     auto store2 = std::dynamic_pointer_cast<LocalFSStore>(store);
 
     if (path.path.isDerivation()) {
         if (build)
             store->buildPaths({path.toDerivedPath()});
-        auto outputPaths = store->queryDerivationOutputMap(path.path);
+        auto outputPaths = deepQueryDerivationOutputMap(*store, path.path);
         Derivation drv = store->derivationFromPath(path.path);
         rootNr++;
 
@@ -86,19 +89,19 @@ static PathSet realisePath(StorePathWithOutputs path, bool build = true)
             for (auto & i : drv.outputs)
                 path.outputs.insert(i.first);
 
-        PathSet outputs;
+        std::set<std::filesystem::path> outputs;
         for (auto & j : path.outputs) {
             /* Match outputs of a store path with outputs of the derivation that produces it. */
             DerivationOutputs::iterator i = drv.outputs.find(j);
             if (i == drv.outputs.end())
                 throw Error("derivation '%s' does not have an output named '%s'", store2->printStorePath(path.path), j);
             auto outPath = outputPaths.at(i->first);
-            auto retPath = store->printStorePath(outPath);
+            std::filesystem::path retPath = store->printStorePath(outPath);
             if (store2) {
                 if (gcRoot == "")
                     printGCWarning();
                 else {
-                    Path rootName = gcRoot;
+                    std::filesystem::path rootName = gcRoot;
                     if (rootNr > 1)
                         rootName += "-" + std::to_string(rootNr);
                     if (i->first != "out")
@@ -120,14 +123,14 @@ static PathSet realisePath(StorePathWithOutputs path, bool build = true)
             if (gcRoot == "")
                 printGCWarning();
             else {
-                Path rootName = gcRoot;
+                std::filesystem::path rootName = gcRoot;
                 rootNr++;
                 if (rootNr > 1)
                     rootName += "-" + std::to_string(rootNr);
                 return {store2->addPermRoot(path.path, rootName)};
             }
         }
-        return {store->printStorePath(path.path)};
+        return {std::filesystem::path{store->printStorePath(path.path)}};
     }
 }
 
@@ -180,7 +183,7 @@ static void opRealise(Strings opFlags, Strings opArgs)
             auto paths2 = realisePath(i, false);
             if (!noOutput)
                 for (auto & j : paths2)
-                    cout << fmt("%1%\n", j);
+                    cout << fmt("%s\n", j.string());
         }
 }
 
@@ -503,7 +506,8 @@ static void opQuery(Strings opFlags, Strings opArgs)
                 args.insert(p);
 
         StorePathSet referrers;
-        store->computeFSClosure(args, referrers, true, settings.gcKeepOutputs, settings.gcKeepDerivations);
+        auto & gcSettings = settings.getLocalSettings().getGCSettings();
+        store->computeFSClosure(args, referrers, true, gcSettings.keepOutputs, gcSettings.keepDerivations);
 
         auto & gcStore = require<GcStore>(*store);
         Roots roots = gcStore.findRoots(false);
@@ -526,25 +530,17 @@ static void opPrintEnv(Strings opFlags, Strings opArgs)
     if (opArgs.size() != 1)
         throw UsageError("'--print-env' requires one derivation store path");
 
-    Path drvPath = opArgs.front();
-    Derivation drv = store->derivationFromPath(store->parseStorePath(drvPath));
+    StorePath drvPath = store->parseStorePath(opArgs.front());
+    Derivation drv = store->derivationFromPath(drvPath);
 
     /* Print each environment variable in the derivation in a format
      * that can be sourced by the shell. */
     for (auto & i : drv.env)
         logger->cout("export %1%; %1%=%2%\n", i.first, escapeShellArgAlways(i.second));
 
-    /* Also output the arguments.  This doesn't preserve whitespace in
-       arguments. */
-    cout << "export _args; _args='";
-    bool first = true;
-    for (auto & i : drv.args) {
-        if (!first)
-            cout << ' ';
-        first = false;
-        cout << escapeShellArgAlways(i);
-    }
-    cout << "'\n";
+    /* Also output the arguments. */
+    std::string argsStr = concatStringsSep(" ", drv.args);
+    cout << "export _args; _args=" << escapeShellArgAlways(argsStr) << "\n";
 }
 
 static void opReadLog(Strings opFlags, Strings opArgs)
@@ -596,11 +592,9 @@ static void registerValidity(bool reregister, bool hashGiven, bool canonicalise)
         if (!store->isValidPath(info->path) || reregister) {
             /* !!! races */
             if (canonicalise)
-#ifdef _WIN32 // TODO implement on Windows
-                throw UnimplementedError("file attribute canonicalisation Is not implemented on Windows");
-#else
-                canonicalisePathMetaData(store->printStorePath(info->path), {});
-#endif
+                canonicalisePathMetaData(
+                    store->printStorePath(info->path),
+                    {NIX_WHEN_SUPPORT_ACLS(settings.getLocalSettings().ignoredAcls)});
             if (!hashGiven) {
                 HashResult hash = hashPath(
                     {store->requireStoreObjectAccessor(info->path, /*requireValidPath=*/false)},
@@ -613,9 +607,7 @@ static void registerValidity(bool reregister, bool hashGiven, bool canonicalise)
         }
     }
 
-#ifndef _WIN32 // TODO reenable on Windows once we have `LocalStore` there
     ensureLocalStore()->registerValidPaths(infos);
-#endif
 }
 
 static void opLoadDB(Strings opFlags, Strings opArgs)
@@ -691,11 +683,15 @@ static void opGC(Strings opFlags, Strings opArgs)
     if (!opArgs.empty())
         throw UsageError("no arguments expected");
 
+    if (options.maxFreed != std::numeric_limits<uint64_t>::max()
+        && (options.action == GCOptions::gcReturnDead || options.action == GCOptions::gcReturnLive || printRoots))
+        throw UsageError("option --max-freed cannot be combined with --print-live, --print-dead, or --print-roots");
+
     auto & gcStore = require<GcStore>(*store);
 
     if (printRoots) {
         Roots roots = gcStore.findRoots(false);
-        std::set<std::pair<Path, StorePath>> roots2;
+        std::set<std::pair<std::filesystem::path, StorePath>> roots2;
         // Transpose and sort the roots.
         for (auto & [target, links] : roots)
             for (auto & link : links)
@@ -705,12 +701,14 @@ static void opGC(Strings opFlags, Strings opArgs)
     }
 
     else {
-        PrintFreed freed(options.action == GCOptions::gcDeleteDead, results);
+        Finally printer([&] {
+            if (options.action != GCOptions::gcDeleteDead)
+                for (auto & i : results.paths)
+                    cout << i << std::endl;
+            else
+                printFreed(false, results);
+        });
         gcStore.collectGarbage(options, results);
-
-        if (options.action != GCOptions::gcDeleteDead)
-            for (auto & i : results.paths)
-                cout << i << std::endl;
     }
 }
 
@@ -734,7 +732,7 @@ static void opDelete(Strings opFlags, Strings opArgs)
     auto & gcStore = require<GcStore>(*store);
 
     GCResults results;
-    PrintFreed freed(true, results);
+    Finally printer([&] { printFreed(false, results); });
     gcStore.collectGarbage(options, results);
 }
 
@@ -894,7 +892,7 @@ static void opServe(Strings opFlags, Strings opArgs)
     FdSink out(getStandardOutput());
 
     /* Exchange the greeting. */
-    ServeProto::Version clientVersion = ServeProto::BasicServerConnection::handshake(out, in, SERVE_PROTOCOL_VERSION);
+    ServeProto::Version clientVersion = ServeProto::BasicServerConnection::handshake(out, in, ServeProto::latest);
 
     ServeProto::ReadConn rconn{
         .from = in,
@@ -909,8 +907,8 @@ static void opServe(Strings opFlags, Strings opArgs)
         // FIXME: changing options here doesn't work if we're
         // building through the daemon.
         verbosity = lvlError;
-        settings.keepLog = false;
-        settings.useSubstitutes = false;
+        settings.getLogFileSettings().keepLog = false;
+        settings.getWorkerSettings().useSubstitutes = false;
 
         auto options = ServeProto::Serialise<ServeProto::BuildOptions>::read(*store, rconn);
 
@@ -919,11 +917,11 @@ static void opServe(Strings opFlags, Strings opArgs)
         // See how the serialization logic in
         // `ServeProto::Serialise<ServeProto::BuildOptions>` matches
         // these conditions.
-        settings.maxSilentTime = options.maxSilentTime;
-        settings.buildTimeout = options.buildTimeout;
-        if (GET_PROTOCOL_MINOR(clientVersion) >= 2)
-            settings.maxLogSize = options.maxLogSize;
-        if (GET_PROTOCOL_MINOR(clientVersion) >= 3) {
+        settings.getWorkerSettings().maxSilentTime = options.maxSilentTime;
+        settings.getWorkerSettings().buildTimeout = options.buildTimeout;
+        if (clientVersion >= ServeProto::Version{2, 2})
+            settings.getWorkerSettings().maxLogSize = options.maxLogSize;
+        if (clientVersion >= ServeProto::Version{2, 3}) {
             if (options.nrRepeats != 0) {
                 throw Error("client requested repeating builds, but this is not currently implemented");
             }
@@ -934,9 +932,9 @@ static void opServe(Strings opFlags, Strings opArgs)
             // checked that `nrRepeats` in fact is 0, so we can safely
             // ignore this without doing something other than what the
             // client asked for.
-            settings.runDiffHook = true;
+            settings.getLocalSettings().runDiffHook = true;
         }
-        if (GET_PROTOCOL_MINOR(clientVersion) >= 7) {
+        if (clientVersion >= ServeProto::Version{2, 7}) {
             settings.keepFailed = options.keepFailed;
         }
     };
@@ -1066,7 +1064,7 @@ static void opServe(Strings opFlags, Strings opArgs)
                 info.deriver = store->parseStorePath(deriver);
             info.references = ServeProto::Serialise<StorePathSet>::read(*store, rconn);
             in >> info.registrationTime >> info.narSize >> info.ultimate;
-            info.sigs = readStrings<StringSet>(in);
+            info.sigs = ServeProto::Serialise<std::set<Signature>>::read(*store, rconn);
             info.ca = ContentAddress::parseOpt(readString(in));
 
             if (info.narSize == 0)
@@ -1106,9 +1104,8 @@ static void opGenerateBinaryCacheKey(Strings opFlags, Strings opArgs)
 
     auto secretKey = SecretKey::generate(keyName);
 
-    writeFile(publicKeyFile, secretKey.toPublicKey().to_string());
-    umask(0077);
-    writeFile(secretKeyFile, secretKey.to_string());
+    writeFile(publicKeyFile, secretKey.toPublicKey().to_string(), 0666, FsSync::Yes);
+    writeFile(secretKeyFile, secretKey.to_string(), 0600, FsSync::Yes);
 }
 
 static void opVersion(Strings opFlags, Strings opArgs)

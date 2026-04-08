@@ -62,7 +62,7 @@ nix_err nix_flake_reference_parse_flags_set_base_directory(
 {
     nix_clear_err(context);
     try {
-        flags->baseDirectory.emplace(nix::Path{std::string(baseDirectory, baseDirectoryLen)});
+        flags->baseDirectory.emplace(std::string(baseDirectory, baseDirectoryLen));
         return NIX_OK;
     }
     NIXC_CATCH_ERRS
@@ -162,8 +162,11 @@ nix_err nix_flake_lock_flags_add_input_override(
 {
     nix_clear_err(context);
     try {
-        auto path = nix::flake::parseInputAttrPath(inputPath);
-        flags->lockFlags->inputOverrides.emplace(path, *flakeRef->flakeRef);
+        auto path = nix::flake::NonEmptyInputAttrPath::parse(inputPath);
+        if (!path)
+            throw nix::UsageError(
+                "input override path cannot be zero-length; it would refer to the flake itself, not an input");
+        flags->lockFlags->inputOverrides.emplace(std::move(*path), *flakeRef->flakeRef);
         if (flags->lockFlags->writeLockFile) {
             return nix_flake_lock_flags_set_mode_virtual(context, flags);
         }

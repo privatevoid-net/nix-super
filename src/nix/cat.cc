@@ -18,7 +18,9 @@ struct MixCat : virtual Args
             throw Error("path '%1%' is not a regular file", path.abs());
         logger->stop();
 
-        writeFull(getStandardOutput(), accessor->readFile(path));
+        FdSink output{getStandardOutput()};
+        accessor->readFile(path, output);
+        output.flush();
     }
 };
 
@@ -46,13 +48,13 @@ struct CmdCatStore : StoreCommand, MixCat
     void run(ref<Store> store) override
     {
         auto [storePath, rest] = store->toStorePath(path);
-        cat(store->requireStoreObjectAccessor(storePath), CanonPath{rest});
+        cat(store->requireStoreObjectAccessor(storePath), rest);
     }
 };
 
 struct CmdCatNar : StoreCommand, MixCat
 {
-    Path narPath;
+    std::filesystem::path narPath;
 
     std::string path;
 
@@ -76,9 +78,9 @@ struct CmdCatNar : StoreCommand, MixCat
 
     void run(ref<Store> store) override
     {
-        AutoCloseFD fd = toDescriptor(open(narPath.c_str(), O_RDONLY));
+        auto fd = openFileReadonly(narPath);
         if (!fd)
-            throw SysError("opening NAR file '%s'", narPath);
+            throw NativeSysError("opening NAR file %s", PathFmt(narPath));
         auto source = FdSource{fd.get()};
 
         struct CatRegularFileSink : NullFileSystemObjectSink
@@ -86,7 +88,7 @@ struct CmdCatNar : StoreCommand, MixCat
             CanonPath neededPath = CanonPath::root;
             bool found = false;
 
-            void createRegularFile(const CanonPath & path, std::function<void(CreateRegularFileSink &)> crf) override
+            void createRegularFile(const CanonPath & path, fun<void(CreateRegularFileSink &)> crf) override
             {
                 struct : CreateRegularFileSink, FdSink
                 {

@@ -6,10 +6,49 @@ namespace nix {
 
 struct SourcePath;
 
+namespace detail {
+
+/**
+ * Common base helper class for deduplicating common code paths for tracking mtime.
+ */
+class PosixSourceAccessorBase : virtual public SourceAccessor
+{
+protected:
+    const bool trackLastModified = false;
+
+    /**
+     * The most recent mtime seen by lstat(). This is a hack to
+     * support dumpPathAndGetMtime(). Should remove this eventually.
+     */
+    time_t mtime = 0;
+
+    void maybeUpdateMtime(time_t seenMTime)
+    {
+        /* The contract is that trackLastModified implies that the caller uses the accessor
+           from a single thread. Thus this is not a CAS loop. */
+        if (trackLastModified)
+            mtime = std::max(mtime, seenMTime);
+    }
+
+    PosixSourceAccessorBase(bool trackLastModified)
+        : trackLastModified(trackLastModified)
+    {
+    }
+
+    virtual std::optional<time_t> getLastModified() override
+    {
+        if (trackLastModified)
+            return mtime;
+        return std::nullopt;
+    }
+};
+
+} // namespace detail
+
 /**
  * A source accessor that uses the Unix filesystem.
  */
-class PosixSourceAccessor : virtual public SourceAccessor
+class PosixSourceAccessor : public detail::PosixSourceAccessorBase
 {
     /**
      * Optional root path to prefix all operations into the native file
@@ -18,20 +57,14 @@ class PosixSourceAccessor : virtual public SourceAccessor
      */
     const std::filesystem::path root;
 
-    const bool trackLastModified = false;
-
 public:
 
     PosixSourceAccessor();
     PosixSourceAccessor(std::filesystem::path && root, bool trackLastModified = false);
 
-    /**
-     * The most recent mtime seen by lstat(). This is a hack to
-     * support dumpPathAndGetMtime(). Should remove this eventually.
-     */
-    time_t mtime = 0;
+    void readFile(const CanonPath & path, Sink & sink, fun<void(uint64_t)> sizeCallback) override;
 
-    void readFile(const CanonPath & path, Sink & sink, std::function<void(uint64_t)> sizeCallback) override;
+    using SourceAccessor::readFile;
 
     bool pathExists(const CanonPath & path) override;
 
@@ -73,10 +106,7 @@ public:
      */
     static SourcePath createAtRoot(const std::filesystem::path & path, bool trackLastModified = false);
 
-    std::optional<std::time_t> getLastModified() override
-    {
-        return trackLastModified ? std::optional{mtime} : std::nullopt;
-    }
+    void invalidateCache(const CanonPath & path) override;
 
 private:
 
@@ -85,7 +115,7 @@ private:
      */
     void assertNoSymlinks(CanonPath path);
 
-    std::optional<struct stat> cachedLstat(const CanonPath & path);
+    std::optional<PosixStat> cachedLstat(const CanonPath & path);
 
     std::filesystem::path makeAbsPath(const CanonPath & path);
 };

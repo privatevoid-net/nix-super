@@ -161,7 +161,7 @@ bool Input::isFinal() const
     return maybeGetBoolAttr(attrs, "__final").value_or(false);
 }
 
-std::optional<std::string> Input::isRelative() const
+std::optional<std::filesystem::path> Input::isRelative() const
 {
     assert(scheme);
     return scheme->isRelative(*this);
@@ -236,6 +236,9 @@ void Input::checkLocks(Input specified, Input & result)
         if (auto prevNarHash = specified.getNarHash())
             specified.attrs.insert_or_assign("narHash", prevNarHash->to_string(HashFormat::SRI, true));
 
+        if (auto narHash = result.getNarHash())
+            result.attrs.insert_or_assign("narHash", narHash->to_string(HashFormat::SRI, true));
+
         for (auto & field : specified.attrs) {
             auto field2 = result.attrs.find(field.first);
             if (field2 != result.attrs.end() && field.second != field2->second)
@@ -269,23 +272,9 @@ void Input::checkLocks(Input specified, Input & result)
         }
     }
 
-    if (auto prevLastModified = specified.getLastModified()) {
-        if (result.getLastModified() != prevLastModified)
-            throw Error(
-                "'lastModified' attribute mismatch in input '%s', expected %d, got %d",
-                result.to_string(),
-                *prevLastModified,
-                result.getLastModified().value_or(-1));
-    }
-
     if (auto prevRev = specified.getRev()) {
         if (result.getRev() != prevRev)
             throw Error("'rev' attribute mismatch in input '%s', expected %s", result.to_string(), prevRev->gitRev());
-    }
-
-    if (auto prevRevCount = specified.getRevCount()) {
-        if (result.getRevCount() != prevRevCount)
-            throw Error("'revCount' attribute mismatch in input '%s', expected %d", result.to_string(), *prevRevCount);
     }
 }
 
@@ -339,9 +328,10 @@ std::pair<ref<SourceAccessor>, Input> Input::getAccessorUnchecked(const Settings
             // can reuse the existing nar instead of copying the unpacked
             // input back into the store on every evaluation.
             if (accessor->fingerprint) {
-                ContentAddressMethod method = ContentAddressMethod::Raw::NixArchive;
-                auto cacheKey = makeFetchToStoreCacheKey(getName(), *accessor->fingerprint, method, "/");
-                settings.getCache()->upsert(cacheKey, store, {}, storePath);
+                settings.getCache()->upsert(
+                    makeSourcePathToHashCacheKey(
+                        *accessor->fingerprint, ContentAddressMethod::Raw::NixArchive, CanonPath::root),
+                    {{"hash", store.queryPathInfo(storePath)->narHash.to_string(HashFormat::SRI, true)}});
             }
 
             accessor->setPathDisplay("«" + to_string() + "»");
@@ -489,11 +479,11 @@ void InputScheme::clone(
     const Settings & settings, Store & store, const Input & input, const std::filesystem::path & destDir) const
 {
     if (std::filesystem::exists(destDir))
-        throw Error("cannot clone into existing path %s", destDir);
+        throw Error("cannot clone into existing path %s", PathFmt(destDir));
 
     auto [accessor, input2] = getAccessor(settings, store, input);
 
-    Activity act(*logger, lvlTalkative, actUnknown, fmt("copying '%s' to %s...", input2.to_string(), destDir));
+    Activity act(*logger, lvlTalkative, actUnknown, fmt("copying '%s' to %s...", input2.to_string(), PathFmt(destDir)));
 
     RestoreSink sink(/*startFsync=*/false);
     sink.dstPath = destDir;

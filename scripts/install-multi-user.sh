@@ -52,9 +52,10 @@ readonly PROFILE_FISH_PREFIXES=(
 readonly PROFILE_NIX_FILE_FISH="$NIX_ROOT/var/nix/profiles/default/etc/profile.d/nix-daemon.fish"
 
 readonly NIX_INSTALLED_NIX="@nix@"
+readonly NIX_INSTALLED_NIX_MAN="@nix-manual@"
 readonly NIX_INSTALLED_CACERT="@cacert@"
-#readonly NIX_INSTALLED_NIX="/nix/store/j8dbv5w6jl34caywh2ygdy88knx1mdf7-nix-2.3.6"
-#readonly NIX_INSTALLED_CACERT="/nix/store/7dxhzymvy330i28ii676fl1pqwcahv2f-nss-cacert-3.49.2"
+#readonly NIX_INSTALLED_NIX="/nix/store/byi37zv50wnfrpp4d81z3spswd5zva37-nix-2.3.6"
+#readonly NIX_INSTALLED_CACERT="/nix/store/7pi45g541xa8ahwgpbpy7ggsl0xj1jj6-nss-cacert-3.49.2"
 EXTRACTED_NIX_PATH="$(dirname "$0")"
 readonly EXTRACTED_NIX_PATH
 
@@ -969,6 +970,8 @@ setup_default_profile() {
     task "Setting up the default profile"
     _sudo "to install a bootstrapping Nix in to the default profile" \
           HOME="$ROOT_HOME" "$NIX_INSTALLED_NIX/bin/nix-env" -i "$NIX_INSTALLED_NIX"
+    _sudo "to install Nix man pages in to the default profile" \
+          HOME="$ROOT_HOME" "$NIX_INSTALLED_NIX/bin/nix-env" -i "$NIX_INSTALLED_NIX_MAN"
 
     if [ -z "${NIX_SSL_CERT_FILE:-}" ] || ! [ -f "${NIX_SSL_CERT_FILE:-}" ] || cert_in_store; then
         _sudo "to install a bootstrapping SSL certificate just for Nix in to the default profile" \

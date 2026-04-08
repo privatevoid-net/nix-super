@@ -120,13 +120,13 @@ struct CmdLsStore : StoreCommand, MixLs
     void run(ref<Store> store) override
     {
         auto [storePath, rest] = store->toStorePath(path);
-        list(store->requireStoreObjectAccessor(storePath), CanonPath{rest});
+        list(store->requireStoreObjectAccessor(storePath), rest);
     }
 };
 
 struct CmdLsNar : Command, MixLs
 {
-    Path narPath;
+    std::filesystem::path narPath;
 
     std::string path;
 
@@ -150,11 +150,11 @@ struct CmdLsNar : Command, MixLs
 
     void run() override
     {
-        AutoCloseFD fd = toDescriptor(open(narPath.c_str(), O_RDONLY));
+        auto fd = openFileReadonly(narPath);
         if (!fd)
-            throw SysError("opening NAR file '%s'", narPath);
+            throw NativeSysError("opening NAR file %s", PathFmt(narPath));
         auto source = FdSource{fd.get()};
-        list(makeLazyNarAccessor(source, seekableGetNarBytes(fd.get())), CanonPath{path});
+        list(makeLazyNarAccessor(parseNarListing(source), seekableGetNarBytes(fd.get())), CanonPath{path});
     }
 };
 

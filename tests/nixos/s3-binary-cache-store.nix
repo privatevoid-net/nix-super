@@ -48,9 +48,14 @@ in
           rootCredentialsFile = pkgs.writeText "minio-credentials-full" ''
             MINIO_ROOT_USER=${accessKey}
             MINIO_ROOT_PASSWORD=${secretKey}
+            MINIO_DOMAIN=minio.local
           '';
         };
         networking.firewall.allowedTCPPorts = [ 9000 ];
+        # Static hosts for virtual-hosted-style S3 tests.
+        # MinIO with MINIO_DOMAIN=minio.local accepts virtual-hosted requests
+        # where the bucket name is a hostname prefix.
+        networking.extraHosts = "127.0.0.1 vhost-test.minio.local minio.local";
       };
 
     client =
@@ -62,6 +67,7 @@ in
           experimental-features = nix-command
           substituters =
         '';
+        networking.extraHosts = "192.168.1.2 vhost-test.minio.local minio.local";
       };
   };
 
@@ -82,6 +88,10 @@ in
       SECRET_KEY = '${secretKey}'
       ENDPOINT = 'http://server:9000'
       REGION = 'eu-west-1'
+
+      # Virtual-hosted-style configuration (requires MINIO_DOMAIN and static host entries)
+      VHOST_DOMAIN = 'minio.local'
+      VHOST_ENDPOINT = f'http://{VHOST_DOMAIN}:9000'
 
       PKGS = {
           'A': '${pkgA}',
@@ -118,7 +128,7 @@ in
       def verify_no_compression(machine, bucket, object_path):
           """Verify S3 object has no compression headers"""
           stat = machine.succeed(f"mc stat minio/{bucket}/{object_path}")
-          if "Content-Encoding" in stat and ("gzip" in stat or "xz" in stat):
+          if "Content-Encoding" in stat and ("gzip" in stat or "br" in stat):
               print(f"mc stat output for {object_path}:")
               print(stat)
               raise Exception(f"Object {object_path} should not have compression Content-Encoding")
@@ -147,7 +157,7 @@ in
               else:
                   machine.fail(f"nix path-info {pkg}")
 
-      def setup_s3(populate_bucket=[], public=False, versioned=False):
+      def setup_s3(populate_bucket=[], public=False, versioned=False, profiles=None):
           """
           Decorator that creates/destroys a unique bucket for each test.
           Optionally pre-populates bucket with specified packages.
@@ -157,9 +167,22 @@ in
               populate_bucket: List of packages to upload before test runs
               public: If True, make the bucket publicly accessible
               versioned: If True, enable versioning on the bucket before populating
+              profiles: Dict of AWS profiles to create, e.g.:
+                  {"valid": {"access_key": "...", "secret_key": "..."},
+                   "invalid": {"access_key": "WRONG", "secret_key": "WRONG"}}
+                  Profiles are created on the client machine at /root/.aws/credentials
           """
           def decorator(test_func):
               def wrapper():
+                  # Restart nix-daemon on both machines to clear the credential provider cache.
+                  # The AwsCredentialProviderImpl singleton persists in the daemon process,
+                  # and its cache can cause credentials from previous tests to be reused.
+                  # We reset-failed first to avoid systemd's start rate limiting.
+                  server.succeed("systemctl reset-failed nix-daemon.service nix-daemon.socket")
+                  server.succeed("systemctl restart nix-daemon")
+                  client.succeed("systemctl reset-failed nix-daemon.service nix-daemon.socket")
+                  client.succeed("systemctl restart nix-daemon")
+
                   bucket = str(uuid.uuid4())
                   server.succeed(f"mc mb minio/{bucket}")
                   try:
@@ -167,6 +190,15 @@ in
                           server.succeed(f"mc anonymous set download minio/{bucket}")
                       if versioned:
                           server.succeed(f"mc version enable minio/{bucket}")
+                      if profiles:
+                          # Build credentials file content
+                          creds_content = ""
+                          for name, creds in profiles.items():
+                              creds_content += f"[{name}]\n"
+                              creds_content += f"aws_access_key_id = {creds['access_key']}\n"
+                              creds_content += f"aws_secret_access_key = {creds['secret_key']}\n\n"
+                          client.succeed("mkdir -p /root/.aws")
+                          client.succeed(f"cat > /root/.aws/credentials << 'AWSCREDS'\n{creds_content}AWSCREDS")
                       if populate_bucket:
                           store_url = make_s3_url(bucket)
                           for pkg in populate_bucket:
@@ -174,6 +206,9 @@ in
                       test_func(bucket)
                   finally:
                       server.succeed(f"mc rb --force minio/{bucket}")
+                      # Clean up AWS profiles if created
+                      if profiles:
+                          client.succeed("rm -rf /root/.aws")
                       # Clean up client store - only delete if path exists
                       for pkg in PKGS.values():
                           client.succeed(f"[ ! -e {pkg} ] || nix store delete --ignore-liveness {pkg}")
@@ -202,7 +237,40 @@ in
               "Credential provider caching failed"
           )
 
-          print("✓ Credential provider created once and cached")
+      @setup_s3()
+      def test_aws_log_integration(bucket):
+          """Test that AWS SDK logs are properly routed through Nix logger"""
+          print("\n=== Testing AWS Log Integration ===")
+
+          store_url = make_s3_url(bucket)
+
+          # With default verbosity, AWS noise should NOT appear
+          # All AWS messages are demoted to lvlDebug or lvlVomit
+          output_default = server.succeed(
+              f"{ENV_WITH_CREDS} nix copy --to '{store_url}' {PKGS['A']} 2>&1"
+          )
+
+          if "(aws:" in output_default:
+              print("Output at default verbosity:")
+              print(output_default)
+              raise Exception("Found AWS noise at default verbosity")
+
+          # With --debug (lvlDebug), we should see AWS messages with (aws:subject) prefix
+          output_debug = server.succeed(
+              f"{ENV_WITH_CREDS} nix copy --debug --to '{store_url}' {PKGS['B']} 2>&1"
+          )
+
+          # Check for the (aws:subject) prefix format
+          if "(aws:" not in output_debug:
+              print("Output at --debug verbosity:")
+              print(output_debug)
+              raise Exception("Expected to see (aws:subject) prefix in debug output")
+
+          # Should also see Nix's own credential provider creation message
+          if "creating new AWS credential provider" not in output_debug:
+              print("Debug output:")
+              print(output_debug)
+              raise Exception("Expected to see credential provider creation at debug level")
 
       @setup_s3(populate_bucket=[PKGS['A']])
       def test_fetchurl_basic(bucket):
@@ -217,8 +285,6 @@ in
               f"{ENV_WITH_CREDS} nix eval --impure --expr "
               f"'builtins.fetchurl {{ name = \"foo\"; url = \"{cache_info_url}\"; }}'"
           )
-
-          print("✓ builtins.fetchurl works with s3:// URLs")
 
       @setup_s3()
       def test_error_message_formatting(bucket):
@@ -237,8 +303,6 @@ in
               print("Actual error message:")
               print(error_msg)
               raise Exception("Error message formatting failed - should show actual URL, not %s placeholder")
-
-          print("✓ Error messages format URLs correctly")
 
       @setup_s3(populate_bucket=[PKGS['A']])
       def test_fork_credential_preresolution(bucket):
@@ -279,8 +343,6 @@ in
               print(output)
               raise Exception("Expected to find FileTransfer creation in forked process")
 
-          print("  ✓ Forked process creates fresh FileTransfer")
-
           # Verify pre-resolution in parent
           required_messages = [
               "Pre-resolving AWS credentials for S3 URL in builtin:fetchurl",
@@ -292,8 +354,6 @@ in
                   print("Debug output:")
                   print(output)
                   raise Exception(f"Missing expected message: {msg}")
-
-          print("  ✓ Parent pre-resolves credentials")
 
           # Verify child uses pre-resolved credentials
           if "Using pre-resolved AWS credentials from parent process" not in output:
@@ -318,8 +378,6 @@ in
               print(output)
               raise Exception(f"Child process (pid={child_pid}) should NOT create new credential providers")
 
-          print("  ✓ Child uses pre-resolved credentials (no new providers)")
-
       @setup_s3(populate_bucket=[PKGS['A'], PKGS['B'], PKGS['C']])
       def test_store_operations(bucket):
           """Test nix store info and copy operations"""
@@ -336,8 +394,6 @@ in
 
           if not store_info.get("url"):
               raise Exception("Store should have a URL")
-
-          print(f"  ✓ Store URL: {store_info['url']}")
 
           # Test copy from store
           verify_packages_in_store(client, PKGS['A'], should_exist=False)
@@ -356,9 +412,6 @@ in
 
           verify_packages_in_store(client, [PKGS['A'], PKGS['B'], PKGS['C']])
 
-          print("  ✓ nix copy works")
-          print("  ✓ Credentials cached on client")
-
       @setup_s3(populate_bucket=[PKGS['A'], PKGS['B']], public=True)
       def test_public_bucket_operations(bucket):
           """Test store operations on public bucket without credentials"""
@@ -368,7 +421,6 @@ in
 
           # Verify store info works without credentials
           client.succeed(f"nix store info --store '{store_url}' >&2")
-          print("  ✓ nix store info works without credentials")
 
           # Get and validate store info JSON
           info_json = client.succeed(f"nix store info --json --store '{store_url}'")
@@ -376,8 +428,6 @@ in
 
           if not store_info.get("url"):
               raise Exception("Store should have a URL")
-
-          print(f"  ✓ Store URL: {store_info['url']}")
 
           # Verify packages are not yet in client store
           verify_packages_in_store(client, [PKGS['A'], PKGS['B']], should_exist=False)
@@ -391,8 +441,6 @@ in
           # Verify packages were copied successfully
           verify_packages_in_store(client, [PKGS['A'], PKGS['B']])
 
-          print("  ✓ nix copy from public bucket works without credentials")
-
       @setup_s3(populate_bucket=[PKGS['A']])
       def test_url_format_variations(bucket):
           """Test different S3 URL parameter combinations"""
@@ -401,12 +449,10 @@ in
           # Test parameter order variation (region before endpoint)
           url1 = f"s3://{bucket}?region={REGION}&endpoint={ENDPOINT}"
           client.succeed(f"{ENV_WITH_CREDS} nix store info --store '{url1}' >&2")
-          print("  ✓ Parameter order: region before endpoint works")
 
           # Test parameter order variation (endpoint before region)
           url2 = f"s3://{bucket}?endpoint={ENDPOINT}&region={REGION}"
           client.succeed(f"{ENV_WITH_CREDS} nix store info --store '{url2}' >&2")
-          print("  ✓ Parameter order: endpoint before region works")
 
       @setup_s3(populate_bucket=[PKGS['A']])
       def test_concurrent_fetches(bucket):
@@ -460,9 +506,6 @@ in
           providers_created = output.count("creating new AWS credential provider")
           transfers_created = output.count("builtin:fetchurl creating fresh FileTransfer instance")
 
-          print(f"  ✓ {providers_created} credential providers created")
-          print(f"  ✓ {transfers_created} FileTransfer instances created")
-
           if transfers_created != 5:
               print("Debug output:")
               print(output)
@@ -488,41 +531,33 @@ in
           pkg_hash = get_package_hash(PKGS['B'])
           verify_content_encoding(server, bucket, f"{pkg_hash}.narinfo", "gzip")
 
-          print("  ✓ .narinfo has Content-Encoding: gzip")
-
           # Verify client can download and decompress
           client.succeed(f"{ENV_WITH_CREDS} nix copy --from '{store_url}' --no-check-sigs {PKGS['B']}")
           verify_packages_in_store(client, PKGS['B'])
 
-          print("  ✓ Client decompressed .narinfo successfully")
-
       @setup_s3()
       def test_compression_mixed(bucket):
-          """Test mixed compression (narinfo=xz, ls=gzip)"""
-          print("\n=== Testing Compression: mixed (narinfo=xz, ls=gzip) ===")
+          """Test mixed compression (narinfo=br, ls=gzip)"""
+          print("\n=== Testing Compression: mixed (narinfo=br, ls=gzip) ===")
 
           store_url = make_s3_url(
               bucket,
-              **{'narinfo-compression': 'xz', 'write-nar-listing': 'true', 'ls-compression': 'gzip'}
+              **{'narinfo-compression': 'br', 'write-nar-listing': 'true', 'ls-compression': 'gzip'}
           )
 
           server.succeed(f"{ENV_WITH_CREDS} nix copy --to '{store_url}' {PKGS['C']}")
 
           pkg_hash = get_package_hash(PKGS['C'])
 
-          # Verify .narinfo has xz compression
-          verify_content_encoding(server, bucket, f"{pkg_hash}.narinfo", "xz")
-          print("  ✓ .narinfo has Content-Encoding: xz")
+          # Verify .narinfo has br compression
+          verify_content_encoding(server, bucket, f"{pkg_hash}.narinfo", "br")
 
           # Verify .ls has gzip compression
           verify_content_encoding(server, bucket, f"{pkg_hash}.ls", "gzip")
-          print("  ✓ .ls has Content-Encoding: gzip")
 
           # Verify client can download with mixed compression
           client.succeed(f"{ENV_WITH_CREDS} nix copy --from '{store_url}' --no-check-sigs {PKGS['C']}")
           verify_packages_in_store(client, PKGS['C'])
-
-          print("  ✓ Client downloaded package with mixed compression")
 
       @setup_s3()
       def test_compression_disabled(bucket):
@@ -534,8 +569,6 @@ in
 
           pkg_hash = get_package_hash(PKGS['A'])
           verify_no_compression(server, bucket, f"{pkg_hash}.narinfo")
-
-          print("  ✓ No compression applied by default")
 
       @setup_s3()
       def test_nix_prefetch_url(bucket):
@@ -556,8 +589,6 @@ in
               "nix hash file --type sha256 --base32 /tmp/test-file.txt"
           ).strip()
 
-          print(f"  ✓ Uploaded test file to S3 ({test_file_size} bytes)")
-
           # Use nix-prefetch-url to download from S3
           s3_url = make_s3_url(bucket, path="/test-file.txt")
 
@@ -577,8 +608,6 @@ in
                   f"Hash mismatch: expected {expected_hash}, got {prefetch_hash}"
               )
 
-          print("  ✓ nix-prefetch-url completed with correct hash")
-
           # Verify the downloaded file is NOT empty (the bug in #8862)
           file_size = int(client.succeed(f"stat -c %s {store_path}").strip())
 
@@ -590,15 +619,11 @@ in
                   f"File size mismatch: expected {test_file_size}, got {file_size}"
               )
 
-          print(f"  ✓ File has correct size ({file_size} bytes, not empty)")
-
           # Verify actual content matches by comparing hashes instead of printing entire file
           downloaded_hash = client.succeed(f"nix hash file --type sha256 --base32 {store_path}").strip()
 
           if downloaded_hash != expected_hash:
               raise Exception(f"Content hash mismatch: expected {expected_hash}, got {downloaded_hash}")
-
-          print("  ✓ File content verified correct (hash matches)")
 
       @setup_s3(populate_bucket=[PKGS['A']], versioned=True)
       def test_versioned_urls(bucket):
@@ -613,7 +638,6 @@ in
               f"{ENV_WITH_CREDS} nix eval --impure --expr "
               f"'builtins.fetchurl {{ name = \"cache-info\"; url = \"{cache_info_url}\"; }}'"
           )
-          print("  ✓ Fetch without versionId works")
 
           # List versions to get a version ID
           # MinIO output format: [timestamp] size tier versionId versionNumber method filename
@@ -627,8 +651,6 @@ in
               raise Exception("Could not extract version ID from MinIO output")
 
           version_id = version_match.group(1)
-          print(f"  ✓ Found version ID: {version_id}")
-
           # Version ID should not be "null" since versioning was enabled before upload
           if version_id == "null":
               raise Exception("Version ID is 'null' - versioning may not be working correctly")
@@ -639,7 +661,6 @@ in
               f"{ENV_WITH_CREDS} nix eval --impure --expr "
               f"'builtins.fetchurl {{ name = \"cache-info-versioned\"; url = \"{versioned_url}\"; }}'"
           )
-          print("  ✓ Fetch with versionId parameter works")
 
       @setup_s3()
       def test_multipart_upload_basic(bucket):
@@ -652,7 +673,7 @@ in
           ).strip()
 
           chunk_size = 5 * 1024 * 1024
-          expected_parts = 3  # 10 MB raw becomes ~10.5 MB compressed (NAR + xz overhead)
+          expected_parts = 3  # 10 MB raw becomes ~10.5 MB compressed (NAR + br overhead)
 
           store_url = make_s3_url(
               bucket,
@@ -675,12 +696,8 @@ in
               print(output)
               raise Exception(f"Expected '{expected_msg}' in output")
 
-          print(f"  ✓ Multipart upload used with {expected_parts} parts")
-
           client.succeed(f"{ENV_WITH_CREDS} nix copy --from '{store_url}' {large_pkg} --no-check-sigs")
           verify_packages_in_store(client, large_pkg, should_exist=True)
-
-          print("  ✓ Large file downloaded and verified")
 
       @setup_s3()
       def test_multipart_threshold(bucket):
@@ -704,12 +721,8 @@ in
           if "using S3 regular upload" not in output:
               raise Exception("Expected regular upload to be used")
 
-          print("  ✓ Regular upload used for file below threshold")
-
           client.succeed(f"{ENV_WITH_CREDS} nix copy --no-check-sigs --from '{store_url}' {PKGS['A']}")
           verify_packages_in_store(client, PKGS['A'], should_exist=True)
-
-          print("  ✓ Small file uploaded and verified")
 
       @setup_s3()
       def test_multipart_with_log_compression(bucket):
@@ -742,7 +755,7 @@ in
                   "multipart-upload": "true",
                   "multipart-threshold": str(5 * 1024 * 1024),
                   "multipart-chunk-size": str(5 * 1024 * 1024),
-                  "log-compression": "xz",
+                  "log-compression": "br",
               }
           )
 
@@ -762,7 +775,185 @@ in
               print(output)
               raise Exception("Expected multipart completion message")
 
-          print("  ✓ Compressed log uploaded with multipart")
+      @setup_s3(
+          populate_bucket=[PKGS['A']],
+          profiles={
+              "valid": {"access_key": ACCESS_KEY, "secret_key": SECRET_KEY},
+              "invalid": {"access_key": "INVALIDKEY", "secret_key": "INVALIDSECRET"},
+          }
+      )
+      def test_profile_credentials(bucket):
+          """Test that profile-based credentials work without environment variables"""
+          print("\n=== Testing Profile-Based Credentials ===")
+
+          store_url = make_s3_url(bucket, profile="valid")
+
+          # Verify store info works with profile credentials (no env vars)
+          client.succeed(f"HOME=/root nix store info --store '{store_url}' >&2")
+
+          # Verify we can copy from the store using profile
+          verify_packages_in_store(client, PKGS['A'], should_exist=False)
+          client.succeed(f"HOME=/root nix copy --no-check-sigs --from '{store_url}' {PKGS['A']}")
+          verify_packages_in_store(client, PKGS['A'])
+
+          # Clean up the package we just copied so we can test invalid profile
+          client.succeed(f"nix store delete --ignore-liveness {PKGS['A']}")
+          verify_packages_in_store(client, PKGS['A'], should_exist=False)
+
+          # Verify invalid profile fails when trying to copy
+          invalid_url = make_s3_url(bucket, profile="invalid")
+          client.fail(f"HOME=/root nix copy --no-check-sigs --from '{invalid_url}' {PKGS['A']} 2>&1")
+
+      @setup_s3(
+          populate_bucket=[PKGS['A']],
+          profiles={
+              "wrong": {"access_key": "WRONGKEY", "secret_key": "WRONGSECRET"},
+          }
+      )
+      def test_env_vars_precedence(bucket):
+          """Test that environment variables take precedence over profile credentials"""
+          print("\n=== Testing Environment Variables Precedence ===")
+
+          # Use profile with wrong credentials, but provide correct creds via env vars
+          store_url = make_s3_url(bucket, profile="wrong")
+
+          # Ensure package is not in client store
+          verify_packages_in_store(client, PKGS['A'], should_exist=False)
+
+          # This should succeed because env vars (correct) override profile (wrong)
+          output = client.succeed(
+              f"HOME=/root {ENV_WITH_CREDS} nix copy --no-check-sigs --debug --from '{store_url}' {PKGS['A']} 2>&1"
+          )
+
+          # Verify the credential chain shows Environment provider was added
+          if "Added AWS Environment Credential Provider" not in output:
+              print("Debug output:")
+              print(output)
+              raise Exception("Expected Environment provider to be added to chain")
+
+          # Clean up the package so we can test again without env vars
+          client.succeed(f"nix store delete --ignore-liveness {PKGS['A']}")
+          verify_packages_in_store(client, PKGS['A'], should_exist=False)
+
+          # Without env vars, same URL should fail (proving profile creds are actually wrong)
+          client.fail(f"HOME=/root nix copy --no-check-sigs --from '{store_url}' {PKGS['A']} 2>&1")
+
+      @setup_s3(
+          populate_bucket=[PKGS['A']],
+          profiles={
+              "testprofile": {"access_key": ACCESS_KEY, "secret_key": SECRET_KEY},
+          }
+      )
+      def test_credential_provider_chain(bucket):
+          """Test that debug logging shows which providers are added to the chain"""
+          print("\n=== Testing Credential Provider Chain Logging ===")
+
+          store_url = make_s3_url(bucket, profile="testprofile")
+
+          output = client.succeed(
+              f"HOME=/root nix store info --debug --store '{store_url}' 2>&1"
+          )
+
+          # For a named profile, we expect to see these providers in the chain
+          expected_providers = ["Environment", "Profile", "IMDS"]
+          for provider in expected_providers:
+              msg = f"Added AWS {provider} Credential Provider to chain for profile 'testprofile'"
+              if msg not in output:
+                  print("Debug output:")
+                  print(output)
+                  raise Exception(f"Expected to find: {msg}")
+
+          # SSO should be skipped (no SSO config for this profile)
+          if "Skipped AWS SSO Credential Provider for profile 'testprofile'" not in output:
+              print("Debug output:")
+              print(output)
+              raise Exception("Expected SSO provider to be skipped")
+
+      def test_virtual_hosted_copy():
+          """Test nix copy with virtual-hosted-style addressing on custom endpoint"""
+          print("\n=== Testing Virtual-Hosted-Style Addressing ===")
+
+          # Use a fixed bucket name matching the static /etc/hosts entries
+          bucket = 'vhost-test'
+          server.succeed(f"mc mb minio/{bucket}")
+          try:
+              store_url = make_s3_url(
+                  bucket,
+                  endpoint=VHOST_ENDPOINT,
+                  **{'addressing-style': 'virtual'}
+              )
+
+              # Upload with virtual-hosted-style, capture debug output
+              output = server.succeed(
+                  f"{ENV_WITH_CREDS} nix copy --debug --to '{store_url}' {PKGS['A']} 2>&1"
+              )
+
+              # Verify virtual-hosted-style URL was used (bucket in hostname)
+              vhost_url_prefix = f"http://{bucket}.{VHOST_DOMAIN}:9000/"
+              if vhost_url_prefix not in output:
+                  print("Debug output:")
+                  print(output)
+                  raise Exception(
+                      f"Expected virtual-hosted-style URL containing '{vhost_url_prefix}'"
+                  )
+
+              # Verify path-style URL was NOT used (bucket should not be in the path)
+              path_style_pattern = f"{VHOST_ENDPOINT}/{bucket}/"
+              if path_style_pattern in output:
+                  print("Debug output:")
+                  print(output)
+                  raise Exception("Found path-style URL when virtual-hosted-style was expected")
+
+              # Download with virtual-hosted-style
+              verify_packages_in_store(client, PKGS['A'], should_exist=False)
+              output = client.succeed(
+                  f"{ENV_WITH_CREDS} nix copy --debug --no-check-sigs "
+                  f"--from '{store_url}' {PKGS['A']} 2>&1"
+              )
+
+              if vhost_url_prefix not in output:
+                  print("Debug output:")
+                  print(output)
+                  raise Exception(
+                      f"Expected virtual-hosted-style URL in download containing '{vhost_url_prefix}'"
+                  )
+
+              verify_packages_in_store(client, PKGS['A'])
+          finally:
+              server.succeed(f"mc rb --force minio/{bucket}")
+              for pkg in PKGS.values():
+                  client.succeed(f"[ ! -e {pkg} ] || nix store delete --ignore-liveness {pkg}")
+
+      @setup_s3()
+      def test_explicit_path_style(bucket):
+          """Test that addressing-style=path works as backwards-compatible fallback"""
+          print("\n=== Testing Explicit Path-Style Addressing ===")
+
+          store_url = make_s3_url(
+              bucket,
+              **{'addressing-style': 'path'}
+          )
+
+          # Upload with explicit path-style
+          output = server.succeed(
+              f"{ENV_WITH_CREDS} nix copy --debug --to '{store_url}' {PKGS['A']} 2>&1"
+          )
+
+          # Verify path-style URL was used (bucket in path, not hostname)
+          path_style_pattern = f"{ENDPOINT}/{bucket}/"
+          if path_style_pattern not in output:
+              print("Debug output:")
+              print(output)
+              raise Exception(
+                  f"Expected path-style URL containing '{path_style_pattern}'"
+              )
+
+          # Download
+          verify_packages_in_store(client, PKGS['A'], should_exist=False)
+          client.succeed(
+              f"{ENV_WITH_CREDS} nix copy --no-check-sigs --from '{store_url}' {PKGS['A']}"
+          )
+          verify_packages_in_store(client, PKGS['A'])
 
       # ============================================================================
       # Main Test Execution
@@ -778,10 +969,11 @@ in
       server.wait_for_unit("minio")
       server.wait_for_unit("network-addresses-eth1.service")
       server.wait_for_open_port(9000)
-      server.succeed(f"mc config host add minio http://localhost:9000 {ACCESS_KEY} {SECRET_KEY} --api s3v4")
+      server.succeed(f"mc alias set minio http://localhost:9000 {ACCESS_KEY} {SECRET_KEY} --api s3v4")
 
       # Run tests (each gets isolated bucket via decorator)
       test_credential_caching()
+      test_aws_log_integration()
       test_fetchurl_basic()
       test_error_message_formatting()
       test_fork_credential_preresolution()
@@ -797,9 +989,10 @@ in
       test_multipart_upload_basic()
       test_multipart_threshold()
       test_multipart_with_log_compression()
-
-      print("\n" + "="*80)
-      print("✓ All S3 Binary Cache Store Tests Passed!")
-      print("="*80)
+      test_profile_credentials()
+      test_env_vars_precedence()
+      test_credential_provider_chain()
+      test_virtual_hosted_copy()
+      test_explicit_path_style()
     '';
 }

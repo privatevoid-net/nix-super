@@ -1,3 +1,5 @@
+#include "nix/cmd/common-eval-args.hh"
+#include "nix/fetchers/fetch-settings.hh"
 #include "nix/util/args/root.hh"
 #include "nix/util/current-process.hh"
 #include "nix/cmd/command.hh"
@@ -27,7 +29,6 @@
 #include "cli-config-private.hh"
 
 #include <sys/types.h>
-#include <regex>
 #include <nlohmann/json.hpp>
 
 #ifndef _WIN32
@@ -246,7 +247,12 @@ static void showHelp(std::vector<std::string> subcommand, NixArgs & toplevel)
 
     evalSettings.restrictEval = true;
     evalSettings.pureEval = true;
-    EvalState state({}, openStore("dummy://"), fetchSettings, evalSettings);
+    auto statePtr = std::make_shared<EvalState>(
+        LookupPath{},
+        openStore(StoreReference{.variant = StoreReference::Specified{.scheme = "dummy"}}),
+        fetchSettings,
+        evalSettings);
+    auto & state = *statePtr;
 
     auto vGenerateManpage = state.allocValue();
     state.eval(
@@ -375,21 +381,21 @@ void mainWrapped(int argc, char ** argv)
     }
 #endif
 
-    initNix();
-    initGC();
-    flakeSettings.configureEvalSettings(evalSettings);
-
     /* Set the build hook location
 
        For builds we perform a self-invocation, so Nix has to be
        self-aware. That is, it has to know where it is installed. We
        don't think it's sentient.
      */
-    settings.buildHook.setDefault(
+    settings.getWorkerSettings().buildHook.setDefault(
         Strings{
             getNixBin({}).string(),
             "__build-remote",
         });
+
+    initNix();
+    initGC();
+    flakeSettings.configureEvalSettings(evalSettings);
 
 #ifdef __linux__
     if (isRootUser()) {
@@ -398,6 +404,7 @@ void mainWrapped(int argc, char ** argv)
             if (unshare(CLONE_NEWNS) == -1)
                 throw SysError("setting up a private mount namespace");
         } catch (Error & e) {
+            warn("failed to set up a private mount namespace: %s", e.msg());
         }
     }
 #endif
@@ -415,14 +422,15 @@ void mainWrapped(int argc, char ** argv)
     }
 
     {
-        auto legacy = RegisterLegacyCommand::commands()[programName];
-        if (legacy)
-            return legacy(argc, argv);
+        if (auto legacy = get(RegisterLegacyCommand::commands(), programName))
+            return (*legacy)(argc, argv);
     }
 
     evalSettings.pureEval = true;
 
+#ifndef _WIN32
     setLogFormat("bar");
+#endif
     settings.verboseBuild = false;
 
     // If on a terminal, progress will be displayed via progress bars etc. (thus verbosity=notice)
@@ -447,7 +455,12 @@ void mainWrapped(int argc, char ** argv)
             Xp::FetchTree,
         };
         evalSettings.pureEval = false;
-        EvalState state({}, openStore("dummy://"), fetchSettings, evalSettings);
+        auto statePtr = std::make_shared<EvalState>(
+            LookupPath{},
+            openStore(StoreReference{.variant = StoreReference::Specified{.scheme = "dummy"}}),
+            fetchSettings,
+            evalSettings);
+        auto & state = *statePtr;
         auto builtinsJson = nlohmann::json::object();
         for (auto & builtinPtr : state.getBuiltins().attrs()->lexicographicOrder(state.symbols)) {
             auto & builtin = *builtinPtr;
@@ -501,7 +514,7 @@ void mainWrapped(int argc, char ** argv)
     });
 
     try {
-        auto isNixCommand = std::regex_search(programName, std::regex("nix$"));
+        auto isNixCommand = programName.ends_with("nix");
         auto allowShebang = isNixCommand && argc > 1;
         args.parseCmdline(argvToStrings(argc, argv), allowShebang);
     } catch (UsageError &) {
@@ -545,20 +558,24 @@ void mainWrapped(int argc, char ** argv)
 
     if (!args.useNet) {
         // FIXME: should check for command line overrides only.
-        if (!settings.useSubstitutes.overridden)
-            settings.useSubstitutes = false;
-        if (!settings.tarballTtl.overridden)
-            settings.tarballTtl = std::numeric_limits<unsigned int>::max();
+        if (!settings.getWorkerSettings().useSubstitutes.overridden)
+            settings.getWorkerSettings().useSubstitutes = false;
+        if (!fetchSettings.tarballTtl.overridden)
+            fetchSettings.tarballTtl = std::numeric_limits<unsigned int>::max();
         if (!fileTransferSettings.tries.overridden)
             fileTransferSettings.tries = 0;
         if (!fileTransferSettings.connectTimeout.overridden)
             fileTransferSettings.connectTimeout = 1;
+        auto & ttlMeta = settings.getNarInfoDiskCacheSettings().ttlMeta;
+        if (!ttlMeta.overridden)
+            ttlMeta = std::numeric_limits<unsigned int>::max();
     }
 
     if (args.refresh) {
-        settings.tarballTtl = 0;
-        settings.ttlNegativeNarInfoCache = 0;
-        settings.ttlPositiveNarInfoCache = 0;
+        fetchSettings.tarballTtl = 0;
+        settings.getNarInfoDiskCacheSettings().ttlNegative = 0;
+        settings.getNarInfoDiskCacheSettings().ttlPositive = 0;
+        settings.getNarInfoDiskCacheSettings().ttlMeta = 0;
     }
 
     if (args.command->second->forceImpureByDefault() && !evalSettings.pureEval.overridden) {

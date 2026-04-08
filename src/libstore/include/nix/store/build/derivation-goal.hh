@@ -45,17 +45,12 @@ struct DerivationGoal : public Goal
      */
     DerivationGoal(
         const StorePath & drvPath,
-        const Derivation & drv,
+        ref<const Derivation> drv,
         const OutputName & wantedOutput,
         Worker & worker,
         BuildMode buildMode,
         bool storeDerivation);
     ~DerivationGoal() = default;
-
-    void timedOut(Error && ex) override
-    {
-        unreachable();
-    };
 
     std::string key() override;
 
@@ -69,9 +64,7 @@ private:
     /**
      * The derivation stored at drvPath.
      */
-    std::unique_ptr<Derivation> drv;
-
-    const Hash outputHash;
+    ref<const Derivation> drv;
 
     const BuildMode buildMode;
 

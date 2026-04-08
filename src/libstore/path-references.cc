@@ -47,7 +47,7 @@ StorePathSet PathRefScanSink::getResultPaths()
     return found;
 }
 
-StorePathSet scanForReferences(Sink & toTee, const Path & path, const StorePathSet & refs)
+StorePathSet scanForReferences(Sink & toTee, const std::filesystem::path & path, const StorePathSet & refs)
 {
     PathRefScanSink refsSink = PathRefScanSink::fromPaths(refs);
     TeeSink sink{refsSink, toTee};
@@ -62,7 +62,7 @@ void scanForReferencesDeep(
     SourceAccessor & accessor,
     const CanonPath & rootPath,
     const StorePathSet & refs,
-    std::function<void(FileRefScanResult)> callback)
+    fun<void(FileRefScanResult)> callback)
 {
     // Recursive tree walker
     auto walk = [&](this auto & self, const CanonPath & path) -> void {
@@ -124,7 +124,7 @@ void scanForReferencesDeep(
         case SourceAccessor::tFifo:
         case SourceAccessor::tUnknown:
         default:
-            throw Error("file '%s' has an unsupported type", path.abs());
+            throw Error("file '%s' has an unsupported type", accessor.showPath(path));
         }
     };
 

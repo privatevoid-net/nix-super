@@ -4,17 +4,19 @@
 #include "nix/util/executable-path.hh"
 #include "nix/util/file-descriptor.hh"
 #include "nix/util/file-path.hh"
+#include "nix/util/fmt.hh"
+#include "nix/util/os-string.hh"
 #include "nix/util/signals.hh"
 #include "nix/util/processes.hh"
 #include "nix/util/finally.hh"
 #include "nix/util/serialise.hh"
 #include "nix/util/file-system.hh"
 #include "nix/util/util.hh"
-#include "nix/util/windows-error.hh"
 
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <sstream>
@@ -34,6 +36,11 @@ using namespace nix::windows;
 
 Pid::Pid() {}
 
+Pid::Pid(Pid && other) noexcept
+    : pid(std::move(other.pid))
+{
+}
+
 Pid::Pid(AutoCloseFD pid)
     : pid(std::move(pid))
 {
@@ -52,29 +59,30 @@ void Pid::operator=(AutoCloseFD pid)
     this->pid = std::move(pid);
 }
 
-// TODO: Implement (not needed for process spawning yet)
-int Pid::kill()
+int Pid::kill(bool allowInterrupts)
 {
     assert(pid.get() != INVALID_DESCRIPTOR);
 
     debug("killing process %1%", pid.get());
 
-    throw UnimplementedError("Pid::kill unimplemented");
+    if (!TerminateProcess(pid.get(), 1))
+        logError(WinError("terminating process %1%", pid.get()).info());
+
+    return wait(allowInterrupts);
 }
 
-int Pid::wait()
+// Note that `allowInterrupts` is ignored for now, but there to match
+// Unix.
+int Pid::wait(bool allowInterrupts)
 {
-    // https://github.com/nix-windows/nix/blob/windows-meson/src/libutil/util.cc#L1938
     assert(pid.get() != INVALID_DESCRIPTOR);
     DWORD status = WaitForSingleObject(pid.get(), INFINITE);
-    if (status != WAIT_OBJECT_0) {
-        debug("WaitForSingleObject returned %1%", status);
-    }
+    if (status != WAIT_OBJECT_0)
+        throw WinError("waiting for process %1%", pid.get());
 
     DWORD exitCode = 0;
-    if (GetExitCodeProcess(pid.get(), &exitCode) == FALSE) {
-        debug("GetExitCodeProcess failed on pid %1%", pid.get());
-    }
+    if (GetExitCodeProcess(pid.get(), &exitCode) == FALSE)
+        throw WinError("getting exit code of process %1%", pid.get());
 
     pid.close();
     return exitCode;
@@ -82,7 +90,11 @@ int Pid::wait()
 
 // TODO: Merge this with Unix's runProgram since it's identical logic.
 std::string runProgram(
-    Path program, bool lookupPath, const Strings & args, const std::optional<std::string> & input, bool isInteractive)
+    std::filesystem::path program,
+    bool lookupPath,
+    const OsStrings & args,
+    const std::optional<std::string> & input,
+    bool isInteractive)
 {
     auto res = runProgram(
         RunOptions{
@@ -93,17 +105,17 @@ std::string runProgram(
             .isInteractive = isInteractive});
 
     if (!statusOk(res.first))
-        throw ExecError(res.first, "program '%1%' %2%", program, statusToString(res.first));
+        throw ExecError(res.first, "program %s %s", PathFmt(program), statusToString(res.first));
 
     return res.second;
 }
 
-std::optional<Path> getProgramInterpreter(const Path & program)
+std::optional<std::filesystem::path> getProgramInterpreter(const std::filesystem::path & program)
 {
     // These extensions are automatically handled by Windows and don't require an interpreter.
     static constexpr const char * exts[] = {".exe", ".cmd", ".bat"};
     for (const auto ext : exts) {
-        if (hasSuffix(program, ext)) {
+        if (hasSuffix(program.string(), ext)) {
             return {};
         }
     }
@@ -145,23 +157,23 @@ AutoCloseFD nullFD()
 
 // Adapted from
 // https://blogs.msdn.microsoft.com/twistylittlepassagesallalike/2011/04/23/everyone-quotes-command-line-arguments-the-wrong-way/
-std::string windowsEscape(const std::string & str, bool cmd)
+OsString windowsEscape(const OsString & str, bool cmd)
 {
     // TODO: This doesn't handle cmd.exe escaping.
     if (cmd) {
         throw UnimplementedError("cmd.exe escaping is not implemented");
     }
 
-    if (str.find_first_of(" \t\n\v\"") == str.npos && !str.empty()) {
+    if (str.find_first_of(L" \t\n\v\"") == str.npos && !str.empty()) {
         // No need to escape this one, the nonempty contents don't have a special character
         return str;
     }
-    std::string buffer;
+    OsString buffer;
     // Add the opening quote
-    buffer += '"';
+    buffer += L'"';
     for (auto iter = str.begin();; ++iter) {
         size_t backslashes = 0;
-        while (iter != str.end() && *iter == '\\') {
+        while (iter != str.end() && *iter == L'\\') {
             ++iter;
             ++backslashes;
         }
@@ -172,24 +184,24 @@ std::string windowsEscape(const std::string & str, bool cmd)
         // Both of these cases break the escaping if not handled. Otherwise backslashes are fine as-is
         if (iter == str.end()) {
             // Need to escape each backslash
-            buffer.append(backslashes * 2, '\\');
+            buffer.append(backslashes * 2, L'\\');
             // Exit since we've reached the end of the string
             break;
-        } else if (*iter == '"') {
+        } else if (*iter == L'"') {
             // Need to escape each backslash and the intermediate quote character
-            buffer.append(backslashes * 2, '\\');
-            buffer += "\\\"";
+            buffer.append(backslashes * 2, L'\\');
+            buffer += L"\\\"";
         } else {
             // Don't escape the backslashes since they won't break the delimiter
-            buffer.append(backslashes, '\\');
+            buffer.append(backslashes, L'\\');
             buffer += *iter;
         }
     }
     // Add the closing quote
-    return buffer + '"';
+    return buffer + L'"';
 }
 
-Pid spawnProcess(const Path & realProgram, const RunOptions & options, Pipe & out, Pipe & in)
+Pid spawnProcess(const std::filesystem::path & realProgram, const RunOptions & options, Pipe & out, Pipe & in)
 {
     // Setup pipes.
     if (options.standardOut) {
@@ -212,40 +224,43 @@ Pid spawnProcess(const Path & realProgram, const RunOptions & options, Pipe & ou
     startInfo.hStdOutput = out.writeSide.get();
     startInfo.hStdError = out.writeSide.get();
 
-    std::string envline;
-    // Retain the current processes' environment variables.
-    for (const auto & envVar : getEnv()) {
-        envline += (envVar.first + '=' + envVar.second + '\0');
-    }
-    // Also add new ones specified in options.
+    auto env = getEnvOs();
+
     if (options.environment) {
         for (const auto & envVar : *options.environment) {
-            envline += (envVar.first + '=' + envVar.second + '\0');
+            env[envVar.first] = envVar.second;
         }
     }
 
-    std::string cmdline = windowsEscape(realProgram, false);
+    OsString envline;
+
+    for (const auto & envVar : env) {
+        envline += (envVar.first + L'=' + envVar.second + L'\0');
+    }
+
+    OsString cmdline = windowsEscape(realProgram.native(), false);
     for (const auto & arg : options.args) {
         // TODO: This isn't the right way to escape windows command
         // See https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw
-        cmdline += ' ' + windowsEscape(arg, false);
+        cmdline += L' ';
+        cmdline += windowsEscape(arg, false);
     }
 
     PROCESS_INFORMATION procInfo = {0};
     if (CreateProcessW(
             // EXE path is provided in the cmdline
             NULL,
-            string_to_os_string(cmdline).data(),
+            cmdline.data(),
             NULL,
             NULL,
             TRUE,
             CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
-            string_to_os_string(envline).data(),
-            options.chdir.has_value() ? string_to_os_string(*options.chdir).data() : NULL,
+            envline.data(),
+            options.chdir.has_value() ? options.chdir->c_str() : NULL,
             &startInfo,
             &procInfo)
         == 0) {
-        throw WinError("CreateProcessW failed (%1%)", cmdline);
+        throw WinError("CreateProcessW failed (%1%)", os_string_to_string(cmdline));
     }
 
     // Convert these to use RAII
@@ -313,7 +328,7 @@ void runProgram2(const RunOptions & options)
     if (source)
         in.create();
 
-    Path realProgram = options.program;
+    std::filesystem::path realProgram = options.program;
     // TODO: Implement shebang / program interpreter lookup on Windows
     auto interpreter = getProgramInterpreter(realProgram);
 
@@ -366,7 +381,7 @@ void runProgram2(const RunOptions & options)
         promise.get_future().get();
 
     if (status)
-        throw ExecError(status, "program '%1%' %2%", options.program, statusToString(status));
+        throw ExecError(status, "program %1% %2%", PathFmt(options.program), statusToString(status));
 }
 
 std::string statusToString(int status)

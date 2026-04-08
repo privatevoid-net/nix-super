@@ -1,5 +1,5 @@
 #include "nix/util/current-process.hh"
-#include "nix/util/windows-error.hh"
+#include "nix/util/error.hh"
 #include <cmath>
 
 #ifdef _WIN32
@@ -16,8 +16,7 @@ std::chrono::microseconds getCpuUserTime()
     FILETIME userTime;
 
     if (!GetProcessTimes(GetCurrentProcess(), &creationTime, &exitTime, &kernelTime, &userTime)) {
-        auto lastError = GetLastError();
-        throw windows::WinError(lastError, "failed to get CPU time");
+        throw windows::WinError("failed to get CPU time");
     }
 
     ULARGE_INTEGER uLargeInt;
