@@ -83,7 +83,7 @@ struct SystemActivationCommand : ActivationCommand<SystemCommand>, MixProfile
                 }
                 profile = systemProfileBase + "/" + profile.value().string();
             }
-            updateProfile(out);
+            updateProfile(*store, out);
             executePrivileged(profile.value() + "/bin/switch-to-configuration", Strings{activationType});
         }
     }
