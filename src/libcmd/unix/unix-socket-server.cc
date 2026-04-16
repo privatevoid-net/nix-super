@@ -122,6 +122,9 @@ PeerInfo getPeerInfo(Descriptor remote)
                 handler(std::move(remote), [&]() { listeningSockets.clear(); });
             }
 
+        } catch (AbortServeSocket &) {
+            /* Explicitly aborted, bail out. */
+            throw;
         } catch (Error & error) {
             auto ei = error.info();
             // FIXME: add to trace?
