@@ -29,9 +29,11 @@ git -C "$TEST_ROOT/shallow-parent" commit -m "Branch commit"
 # Make a shallow clone (depth=1)
 git clone --depth 1 "file://$TEST_ROOT/shallow-parent" "$TEST_ROOT/shallow-clone"
 
-# Test 1: Fetching a shallow repo shouldn't work by default, because we can't
-# return a revCount.
-(! nix eval --impure --raw --expr "(builtins.fetchGit { url = \"$TEST_ROOT/shallow-clone\"; ref = \"dev\"; }).outPath")
+# Test 1: Fetching a shallow repo succeeds for outPath because revCount is lazy.
+path1=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = \"$TEST_ROOT/shallow-clone\"; ref = \"dev\"; }).outPath")
+[[ -d "$path1" ]]
+# But accessing revCount on a shallow clone fails.
+(! nix eval --impure --expr "(builtins.fetchGit { url = \"$TEST_ROOT/shallow-clone\"; ref = \"dev\"; }).revCount" 2>/dev/null)
 
 # Test 2: But you can request a shallow clone, which won't return a revCount.
 path=$(nix eval --impure --raw --expr "(builtins.fetchTree { type = \"git\"; url = \"file://$TEST_ROOT/shallow-clone\"; ref = \"dev\"; shallow = true; }).outPath")
