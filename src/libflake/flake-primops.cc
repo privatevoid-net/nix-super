@@ -105,12 +105,13 @@ static void prim_parseFlakeRef(EvalState & state, const PosIdx pos, Value ** arg
     for (const auto & [key, value] : attrs) {
         auto s = state.symbols.create(key);
         auto & vv = binds.alloc(s);
+        auto resolved = forceAttr(value);
         std::visit(
             overloaded{
                 [&vv, &state](const std::string & value) { vv.mkString(value, state.mem); },
                 [&vv](const uint64_t & value) { vv.mkInt(value); },
                 [&vv](const Explicit<bool> & value) { vv.mkBool(value.t); }},
-            value);
+            resolved);
     }
     v.mkAttrs(binds);
 }
