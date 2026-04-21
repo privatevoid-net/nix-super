@@ -38,6 +38,7 @@
 #include "nix/fetchers/input-cache.hh"
 #include "nix/expr/attr-set.hh"
 #include "nix/expr/eval-error.hh"
+#include "nix/expr/fetch-tree.hh"
 #include "nix/expr/nixexpr.hh"
 #include "nix/expr/symbol-table.hh"
 #include "nix/expr/value.hh"

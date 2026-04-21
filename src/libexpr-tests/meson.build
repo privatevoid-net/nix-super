@@ -51,6 +51,7 @@ sources = files(
   'error_traces.cc',
   'eval.cc',
   'json.cc',
+  'lazy-fetcher-attr.cc',
   'main.cc',
   'nix_api_expr.cc',
   'nix_api_external.cc',

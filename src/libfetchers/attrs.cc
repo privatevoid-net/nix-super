@@ -51,6 +51,16 @@ nlohmann::json attrsToJSON(const Attrs & attrs)
     return json;
 }
 
+std::optional<LazyAttr> maybeGetLazyAttr(const Attrs & attrs, const std::string & name)
+{
+    auto i = attrs.find(name);
+    if (i == attrs.end())
+        return {};
+    if (auto v = std::get_if<LazyAttr>(&i->second))
+        return *v;
+    return {};
+}
+
 std::optional<std::string> maybeGetStrAttr(const Attrs & attrs, const std::string & name)
 {
     auto i = attrs.find(name);

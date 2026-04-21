@@ -45,6 +45,11 @@ typedef std::map<std::string, Attr> Attrs;
  */
 ResolvedAttr forceAttr(const Attr & attr);
 
+/**
+ * Retrieve an attr, but only if it's a LazyAttr.
+ */
+std::optional<LazyAttr> maybeGetLazyAttr(const Attrs & attrs, const std::string & name);
+
 Attrs jsonToAttrs(const nlohmann::json & json);
 
 nlohmann::json attrsToJSON(const Attrs & attrs);
