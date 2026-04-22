@@ -385,8 +385,9 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     /* Using `--ignore-liveness' with `--delete' can have unintended
        consequences if `keep-outputs' or `keep-derivations' are true
        (the garbage collector will recurse into deleting the outputs
-       or derivers, respectively).  So disable them. */
-    if (options.action == GCOptions::gcDeleteSpecific && options.ignoreLiveness) {
+       or derivers, respectively, even if they aren't in the
+       pathsToDelete).  So disable them. */
+    if (std::holds_alternative<StorePathSet>(options.pathsToDelete) && options.ignoreLiveness) {
         keepOutputs = false;
         keepDerivations = false;
     }
@@ -608,14 +609,15 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
 
             /* Bail out if we've previously discovered that this path
                is alive. */
-            if (alive.count(*path)) {
+            if (alive.contains(*path)) {
+                debug("cannot delete '%s' because '%s' is alive", printStorePath(start), printStorePath(*path));
                 alive.insert(start);
                 return;
             }
 
             /* If we've previously deleted this path, we don't have to
                handle it again. */
-            if (dead.count(*path))
+            if (dead.contains(*path))
                 continue;
 
             auto markAlive = [&]() {
@@ -636,19 +638,24 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
             };
 
             /* If this is a root, bail out. */
-            if (roots.count(*path)) {
+            if (roots.contains(*path)) {
                 debug("cannot delete '%s' because it's a root", printStorePath(*path));
                 return markAlive();
             }
 
             if (std::holds_alternative<StorePathSet>(options.pathsToDelete)
-                && !std::get<StorePathSet>(options.pathsToDelete).contains(*path))
+                && !std::get<StorePathSet>(options.pathsToDelete).contains(*path)) {
+                debug(
+                    "cannot delete '%s' because '%s' is not in the specified paths to delete",
+                    printStorePath(start),
+                    printStorePath(*path));
                 return;
+            }
 
             {
                 auto hashPart = path->hashPart();
                 auto shared(_shared.lock());
-                if (shared->tempRoots.count(hashPart)) {
+                if (shared->tempRoots.contains(hashPart)) {
                     debug("cannot delete '%s' because it's a temporary root", printStorePath(*path));
                     return markAlive();
                 }
@@ -668,8 +675,8 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                 for (auto & p : i->second)
                     enqueue(p);
 
-                /* If keep-derivations is set and this is a
-                   derivation, then visit the derivation outputs. */
+                /* If keep-derivations is set and this is a derivation, then we only want to delete this derivation if
+                 * we can also delete all its outputs, so visit the derivation outputs. */
                 if (keepDerivations && path->isDerivation()) {
                     for (auto & [name, maybeOutPath] : queryPartialDerivationOutputMap(*path))
                         if (maybeOutPath && isValidPath(*maybeOutPath)
@@ -677,7 +684,8 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                             enqueue(*maybeOutPath);
                 }
 
-                /* If keep-outputs is set, then visit the derivers. */
+                /* If keep-outputs is set, we only want to delete this path if we
+                 * can also delete its derivers, so visit the derivers. */
                 if (keepOutputs) {
                     auto derivers = queryValidDerivers(*path);
                     for (auto & i : derivers)
@@ -707,27 +715,29 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
         std::visit(
             overloaded{
                 [&](const StorePathSet & paths) {
-                    for (auto & i : paths) {
-                        switch (options.action) {
-                        case GCOptions::gcDeleteDead:
-                            printInfo("deleting garbage within specified paths...");
-                            break;
-                        case GCOptions::gcDeleteSpecific:
-                            printInfo("deleting specified paths...");
-                            break;
-                        case GCOptions::gcReturnDead:
-                        case GCOptions::gcReturnLive:
-                            printInfo("determining live/dead paths...");
-                        }
+                    switch (options.action) {
+                    case GCOptions::gcDeleteDead:
+                        printInfo("deleting garbage within specified paths...");
+                        break;
+                    case GCOptions::gcDeleteSpecific:
+                        printInfo("deleting specified paths...");
+                        break;
+                    case GCOptions::gcReturnDead:
+                    case GCOptions::gcReturnLive:
+                        printInfo("determining live/dead paths...");
+                    }
 
+                    for (auto & i : paths) {
                         maybeDeleteReferrersClosure(i);
 
-                        if (options.action == GCOptions::gcDeleteSpecific && !dead.count(i))
+                        if (options.action == GCOptions::gcDeleteSpecific && !dead.contains(i))
                             throw Error(
                                 "Cannot delete path '%1%' since it is still alive. "
                                 "To find out why, use: "
                                 "nix-store --query --roots and nix-store --query --referrers",
                                 printStorePath(i));
+                        else if (!dead.contains(i))
+                            debug("cannot delete '%s' because it's still alive", printStorePath(i));
                     }
                 },
                 [&](const GCOptions::WholeStore & _) {
