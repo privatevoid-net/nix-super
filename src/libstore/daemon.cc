@@ -746,14 +746,17 @@ static void performOp(
     case WorkerProto::Op::CollectGarbage: {
         GCOptions options;
         options.action = WorkerProto::Serialise<GCOptions::GCAction>::read(*store, rconn);
-        if (rconn.version.features.contains(WorkerProto::featureDeleteDeadSpecific)) {
+        if (rconn.version.features.contains(WorkerProto::featureDeleteDeadSpecificReferrers)) {
             options.pathsToDelete = WorkerProto::Serialise<GCOptions::GCPaths>::read(*store, rconn);
         } else {
             auto paths = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
             if (options.action != GCAction::gcDeleteSpecific && paths.empty())
                 options.pathsToDelete = GCOptions::WholeStore{};
             else
-                options.pathsToDelete = paths;
+                options.pathsToDelete = GCOptions::SpecificPaths{
+                    .paths = paths,
+                    .deleteReferrers = false,
+                };
         }
         conn.from >> options.ignoreLiveness >> options.maxFreed;
         // obsolete fields
@@ -761,8 +764,9 @@ static void performOp(
         readInt(conn.from);
         readInt(conn.from);
 
-        if (options.action == GCAction::gcDeleteDead && std::holds_alternative<StorePathSet>(options.pathsToDelete)
-            && !conn.protoVersion.features.contains(WorkerProto::featureDeleteDeadSpecific)) {
+        if (options.action == GCAction::gcDeleteDead
+            && std::holds_alternative<GCOptions::SpecificPaths>(options.pathsToDelete)
+            && !conn.protoVersion.features.contains(WorkerProto::featureDeleteDeadSpecificReferrers)) {
             throw Error(
                 "Garbage collecting specific paths requested but it is not supported by the negotiated protocol");
         }

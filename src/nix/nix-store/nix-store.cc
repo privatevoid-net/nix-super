@@ -727,7 +727,9 @@ static void opDelete(Strings opFlags, Strings opArgs)
     StorePathSet paths;
     for (auto & i : opArgs)
         paths.insert(store->followLinksToStorePath(i));
-    options.pathsToDelete = std::move(paths);
+    options.pathsToDelete = GCOptions::SpecificPaths{
+        .paths = std::move(paths),
+    };
 
     auto & gcStore = require<GcStore>(*store);
 

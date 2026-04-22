@@ -28,7 +28,7 @@ const WorkerProto::Version WorkerProto::latest = {
             std::string{
                 WorkerProto::featureRealisationWithPath,
             },
-            std::string{WorkerProto::featureDeleteDeadSpecific},
+            std::string{WorkerProto::featureDeleteDeadSpecificReferrers},
         },
 };
 
@@ -533,13 +533,29 @@ void WorkerProto::Serialise<Realisation>::write(const StoreDirConfig & store, Wr
     WorkerProto::write(store, conn, static_cast<const UnkeyedRealisation &>(info));
 }
 
+GCOptions::SpecificPaths
+WorkerProto::Serialise<GCOptions::SpecificPaths>::read(const StoreDirConfig & store, ReadConn conn)
+{
+    GCOptions::SpecificPaths paths;
+    paths.paths = WorkerProto::Serialise<StorePathSet>::read(store, conn);
+    conn.from >> paths.deleteReferrers;
+    return paths;
+}
+
+void WorkerProto::Serialise<GCOptions::SpecificPaths>::write(
+    const StoreDirConfig & store, WriteConn conn, const GCOptions::SpecificPaths & paths)
+{
+    WorkerProto::write(store, conn, paths.paths);
+    conn.to << paths.deleteReferrers;
+}
+
 GCOptions::GCPaths WorkerProto::Serialise<GCOptions::GCPaths>::read(const StoreDirConfig & store, ReadConn conn)
 {
     uint8_t wholeStore;
     conn.from >> wholeStore;
     switch (wholeStore) {
     case 0:
-        return WorkerProto::Serialise<StorePathSet>::read(store, conn);
+        return WorkerProto::Serialise<GCOptions::SpecificPaths>::read(store, conn);
     case 1:
         return GCOptions::WholeStore{};
     default:
@@ -552,7 +568,7 @@ void WorkerProto::Serialise<GCOptions::GCPaths>::write(
 {
     std::visit(
         overloaded{
-            [&](const StorePathSet paths) {
+            [&](const GCOptions::SpecificPaths paths) {
                 conn.to << uint8_t{0};
                 WorkerProto::write(store, conn, paths);
             },

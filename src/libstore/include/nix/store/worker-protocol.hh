@@ -126,9 +126,9 @@ struct WorkerProto
     static constexpr std::string_view featureRealisationWithPath = "realisation-with-path-not-hash";
 
     /**
-     * Feature for garbage collecting a specific set of paths.
+     * Feature for garbage collecting a specific set of paths and deleting referrers.
      */
-    static constexpr std::string_view featureDeleteDeadSpecific = "delete-dead-specific";
+    static constexpr std::string_view featureDeleteDeadSpecificReferrers = "delete-dead-specific-referrers";
 
     /**
      * A unidirectional read connection, to be used by the read half of the
@@ -345,6 +345,10 @@ template<>
 DECLARE_WORKER_SERIALISER(std::optional<std::chrono::microseconds>);
 template<>
 DECLARE_WORKER_SERIALISER(WorkerProto::ClientHandshakeInfo);
+
+template<>
+DECLARE_WORKER_SERIALISER(GCOptions::SpecificPaths);
+
 template<>
 DECLARE_WORKER_SERIALISER(GCOptions::GCPaths);
 
