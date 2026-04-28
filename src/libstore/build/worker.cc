@@ -295,28 +295,11 @@ void Worker::waitForCompletion(GoalPtr goal)
 
 void Worker::run(const Goals & _topGoals)
 {
-    std::vector<nix::DerivedPath> topPaths;
-
-    for (auto & i : _topGoals) {
-        topGoals.insert(i);
-        if (auto goal = dynamic_cast<DerivationTrampolineGoal *>(i.get())) {
-            topPaths.push_back(
-                DerivedPath::Built{
-                    .drvPath = goal->drvReq,
-                    .outputs = goal->wantedOutputs,
-                });
-        } else if (auto goal = dynamic_cast<PathSubstitutionGoal *>(i.get())) {
-            topPaths.push_back(DerivedPath::Opaque{goal->storePath});
-        }
-    }
-
-    /* Call queryMissing() to efficiently query substitutes. */
-    store.queryMissing(topPaths);
-
     debug("entered goal loop");
+    for (std::shared_ptr<Goal> goal : _topGoals)
+        topGoals.insert(std::move(goal));
 
     while (1) {
-
         checkInterrupt();
 
         // TODO GC interface?
