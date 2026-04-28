@@ -20,6 +20,7 @@ struct CmdStoreDelete : StorePathsCommand
 
         addFlag({
             .longName = "skip-alive",
+            .aliases = {"skip-live"},
             .description =
                 "Do not emit errors when attempting to delete something that is still alive, useful with --recursive.",
             .handler = {&options.action, GCOptions::gcDeleteDead},
