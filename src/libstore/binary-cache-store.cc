@@ -22,6 +22,10 @@
 
 namespace nix {
 
+void BinaryCacheStoreConfig::anchor() {}
+
+void BinaryCacheStore::anchor() {}
+
 BinaryCacheStore::BinaryCacheStore(Config & config)
     : config{config}
 {

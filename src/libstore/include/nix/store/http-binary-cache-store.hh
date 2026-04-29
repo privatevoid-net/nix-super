@@ -14,6 +14,10 @@ struct HttpBinaryCacheStoreConfig : std::enable_shared_from_this<HttpBinaryCache
                                     virtual Store::Config,
                                     BinaryCacheStoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     HttpBinaryCacheStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
         , BinaryCacheStoreConfig(params)
@@ -88,6 +92,8 @@ struct HttpBinaryCacheStoreConfig : std::enable_shared_from_this<HttpBinaryCache
 
 class HttpBinaryCacheStore : public virtual BinaryCacheStore
 {
+    void anchor() override;
+
     struct State
     {
         bool enabled = true;

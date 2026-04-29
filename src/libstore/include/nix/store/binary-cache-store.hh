@@ -16,6 +16,10 @@ class RemoteFSAccessor;
 
 struct BinaryCacheStoreConfig : virtual StoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     BinaryCacheStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
     {
@@ -92,6 +96,8 @@ struct alignas(8) /* Work around ASAN failures on i686-linux. */
     Config & config;
 
 private:
+    void anchor() override;
+
     std::vector<std::unique_ptr<Signer>> signers;
 
 protected:

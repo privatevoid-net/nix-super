@@ -38,6 +38,10 @@ bool RestrictionContext::isAllowed(const DerivedPath & req)
  */
 struct RestrictedStore : public virtual IndirectRootStore, public virtual GcStore
 {
+private:
+    void anchor() override;
+
+public:
     ref<const LocalStore::Config> config;
 
     ref<LocalStore> next;
@@ -156,6 +160,8 @@ struct RestrictedStore : public virtual IndirectRootStore, public virtual GcStor
         return NotTrusted;
     }
 };
+
+void RestrictedStore::anchor() {}
 
 ref<Store> makeRestrictedStore(ref<LocalStore::Config> config, ref<LocalStore> next, RestrictionContext & context)
 {

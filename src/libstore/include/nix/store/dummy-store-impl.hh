@@ -15,6 +15,10 @@ struct MemorySourceAccessor;
  */
 struct DummyStore : virtual Store
 {
+private:
+    void anchor() override;
+
+public:
     using Config = DummyStoreConfig;
 
     ref<const Config> config;

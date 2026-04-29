@@ -229,6 +229,12 @@ public:
  */
 struct StoreConfig : public StoreConfigBase, public StoreDirConfig
 {
+private:
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor() = 0;
+
+public:
     using Params = StoreReference::Params;
 
     StoreConfig(const Params & params, FilePathType pathType);
@@ -380,6 +386,10 @@ struct StoreConfig : public StoreConfigBase, public StoreDirConfig
  */
 class Store : public std::enable_shared_from_this<Store>, public StoreDirConfig
 {
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor() = 0;
+
 public:
 
     using Config = StoreConfig;

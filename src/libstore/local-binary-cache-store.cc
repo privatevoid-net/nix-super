@@ -52,6 +52,10 @@ StoreReference LocalBinaryCacheStoreConfig::getReference() const
 
 struct LocalBinaryCacheStore : virtual BinaryCacheStore
 {
+private:
+    void anchor() override;
+
+public:
     using Config = LocalBinaryCacheStoreConfig;
 
     ref<Config> config;
@@ -138,6 +142,10 @@ StringSet LocalBinaryCacheStoreConfig::uriSchemes()
     else
         return {"file"};
 }
+
+void LocalBinaryCacheStoreConfig::anchor() {}
+
+void LocalBinaryCacheStore::anchor() {}
 
 ref<Store> LocalBinaryCacheStoreConfig::openStore() const
 {

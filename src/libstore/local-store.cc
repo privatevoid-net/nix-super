@@ -56,6 +56,14 @@
 
 namespace nix {
 
+void LocalStoreConfig::anchor() {}
+
+void LocalBuildStoreConfig::anchor() {}
+
+void LocalStore::anchor() {}
+
+void GcStore::anchor() {}
+
 LocalStoreConfig::LocalStoreConfig(const std::filesystem::path & path, const Params & params)
     : StoreConfig(params, FilePathType::Native)
     , LocalFSStoreConfig(path, params)

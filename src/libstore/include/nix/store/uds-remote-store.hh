@@ -27,6 +27,10 @@ struct UDSRemoteStoreConfig : std::enable_shared_from_this<UDSRemoteStoreConfig>
                               virtual LocalFSStoreConfig,
                               virtual RemoteStoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     UDSRemoteStoreConfig(const std::filesystem::path & path, const Params & params);
 
     UDSRemoteStoreConfig(const Params & params);
@@ -57,6 +61,10 @@ struct UDSRemoteStoreConfig : std::enable_shared_from_this<UDSRemoteStoreConfig>
 
 struct UDSRemoteStore : virtual IndirectRootStore, virtual RemoteStore
 {
+private:
+    void anchor() override;
+
+public:
     using Config = UDSRemoteStoreConfig;
 
     ref<const Config> config;

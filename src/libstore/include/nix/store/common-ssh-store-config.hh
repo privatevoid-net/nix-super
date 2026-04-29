@@ -10,6 +10,10 @@ class SSHMaster;
 
 struct CommonSSHStoreConfig : virtual StoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     CommonSSHStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
     {
