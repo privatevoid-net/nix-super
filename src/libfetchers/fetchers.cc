@@ -11,6 +11,7 @@
 #include "nix/store/pathlocks.hh"
 #include "nix/util/environment-variables.hh"
 
+#include <thread>
 #include <nlohmann/json.hpp>
 
 namespace nix::fetchers {
