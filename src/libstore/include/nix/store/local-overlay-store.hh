@@ -7,6 +7,10 @@ namespace nix {
  */
 struct LocalOverlayStoreConfig : virtual LocalStoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     LocalOverlayStoreConfig(const StringMap & params)
         : LocalOverlayStoreConfig("", params)
     {
@@ -119,6 +123,8 @@ struct LocalOverlayStore : virtual LocalStore
     LocalOverlayStore(ref<const Config>);
 
 private:
+    void anchor() override;
+
     /**
      * The store beneath us.
      *

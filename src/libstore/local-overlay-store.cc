@@ -10,6 +10,10 @@
 
 namespace nix {
 
+void LocalOverlayStoreConfig::anchor() {}
+
+void LocalOverlayStore::anchor() {}
+
 std::string LocalOverlayStoreConfig::doc()
 {
     return

@@ -106,6 +106,10 @@ struct GCResults
  */
 struct GcStore : public virtual Store
 {
+private:
+    void anchor() override;
+
+public:
     inline static std::string operationName = "Garbage collection";
 
     /**

@@ -12,6 +12,10 @@ struct DummyStore;
 
 struct DummyStoreConfig : public std::enable_shared_from_this<DummyStoreConfig>, virtual StoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     DummyStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
     {

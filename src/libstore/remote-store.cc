@@ -30,6 +30,8 @@
 
 namespace nix {
 
+void RemoteStoreConfig::anchor() {}
+
 /* TODO: Separate these store types into different files, give them better names */
 RemoteStore::RemoteStore(const Config & config)
     : Store{config}
@@ -58,6 +60,8 @@ RemoteStore::RemoteStore(const Config & config)
               }))
 {
 }
+
+void RemoteStore::anchor() {}
 
 ref<RemoteStore::Connection> RemoteStore::openConnectionWrapper()
 {

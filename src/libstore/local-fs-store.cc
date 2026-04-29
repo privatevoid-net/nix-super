@@ -5,6 +5,10 @@
 
 namespace nix {
 
+void LocalFSStoreConfig::anchor() {}
+
+void LocalFSStore::anchor() {}
+
 LocalFSStoreConfig::LocalFSStoreConfig(const std::filesystem::path & rootDir, const Params & params)
     : StoreConfig(params, FilePathType::Native)
     /* Default `?root` from `rootDir` if non set

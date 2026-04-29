@@ -23,6 +23,10 @@ StringSet HttpBinaryCacheStoreConfig::uriSchemes()
     return ret;
 }
 
+void HttpBinaryCacheStoreConfig::anchor() {}
+
+void HttpBinaryCacheStore::anchor() {}
+
 HttpBinaryCacheStoreConfig::HttpBinaryCacheStoreConfig(ParsedURL _cacheUri, const Params & params)
     : StoreConfig(params, FilePathType::Unix)
     , BinaryCacheStoreConfig(params)

@@ -10,6 +10,10 @@
 
 namespace nix {
 
+void DummyStoreConfig::anchor() {}
+
+void DummyStore::anchor() {}
+
 std::string DummyStoreConfig::doc()
 {
     return
@@ -126,6 +130,10 @@ bool DummyStoreConfig::getReadOnly() const
 
 struct DummyStoreImpl : DummyStore
 {
+private:
+    void anchor() override;
+
+public:
     using Config = DummyStoreConfig;
 
     /**
@@ -377,6 +385,8 @@ struct DummyStoreImpl : DummyStore
         return wholeStoreView;
     }
 };
+
+void DummyStoreImpl::anchor() {}
 
 ref<DummyStore> DummyStore::Config::openDummyStore() const
 {

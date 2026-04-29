@@ -12,6 +12,10 @@ namespace nix {
 
 struct LegacySSHStoreConfig : std::enable_shared_from_this<LegacySSHStoreConfig>, virtual CommonSSHStoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     LegacySSHStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
         , CommonSSHStoreConfig(params)
@@ -63,6 +67,10 @@ struct LegacySSHStoreConfig : std::enable_shared_from_this<LegacySSHStoreConfig>
 
 struct LegacySSHStore : public virtual Store
 {
+private:
+    void anchor() override;
+
+public:
     using Config = LegacySSHStoreConfig;
 
     ref<const Config> config;

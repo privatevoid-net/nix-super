@@ -24,6 +24,8 @@ LegacySSHStoreConfig::LegacySSHStoreConfig(const ParsedURL::Authority & authorit
 {
 }
 
+void LegacySSHStoreConfig::anchor() {}
+
 std::string LegacySSHStoreConfig::doc()
 {
     return
@@ -36,6 +38,8 @@ struct LegacySSHStore::Connection : public ServeProto::BasicClientConnection
     std::unique_ptr<SSHMaster::Connection> sshConn;
     bool good = true;
 };
+
+void LegacySSHStore::anchor() {}
 
 LegacySSHStore::LegacySSHStore(ref<const Config> config)
     : Store{*config}
