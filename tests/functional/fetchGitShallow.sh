@@ -65,3 +65,32 @@ fi
 # Verify that we can shallow fetch the worktree
 git -C "$TEST_ROOT/shallow-worktree" rev-list --count HEAD >/dev/null
 nix eval --impure --raw --expr "(builtins.fetchGit { url = \"file://$TEST_ROOT/shallow-worktree\"; shallow = true; }).rev"
+
+# Test 5: nix build --dry-run on a shallow clone must not force revCount.
+# The flake fingerprint must not eagerly evaluate revCount, because that
+# would fail (or produce wrong results) on shallow clones.
+# Nor should it generate a complete lock file that serializes the root node.
+# We remove the parent repo to ensure that a future improvement that
+# tries to fetch missing history can't paper over the issue.
+createGitRepo "$TEST_ROOT/shallow-build-parent"
+echo "" > "$TEST_ROOT/shallow-build-parent/file.txt"
+git -C "$TEST_ROOT/shallow-build-parent" add file.txt
+git -C "$TEST_ROOT/shallow-build-parent" commit -m "first"
+cat > "$TEST_ROOT/shallow-build-parent/flake.nix" <<EOF
+{
+  outputs = { self }: {
+    packages.$system.default =
+      derivation {
+        name = "test";
+        system = "$system";
+        builder = "/bin/sh";
+        args = [ "-c" "echo ok > \\\$out" ];
+      };
+  };
+}
+EOF
+git -C "$TEST_ROOT/shallow-build-parent" add flake.nix
+git -C "$TEST_ROOT/shallow-build-parent" commit -m "add flake"
+git clone --depth 1 "file://$TEST_ROOT/shallow-build-parent" "$TEST_ROOT/shallow-build-clone"
+rm -rf "$TEST_ROOT/shallow-build-parent"
+nix build --dry-run "git+file://$TEST_ROOT/shallow-build-clone"

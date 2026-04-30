@@ -991,9 +991,13 @@ std::optional<Fingerprint> LockedFlake::getFingerprint(Store & store, const fetc
 
     /* Include revCount and lastModified because they're not
        necessarily implied by the content fingerprint (e.g. for
-       tarball flakes) but can influence the evaluation result. */
-    if (auto revCount = flake.lockedRef.input.getRevCount())
-        *fingerprint += fmt(";revCount=%d", *revCount);
+       tarball flakes) but can influence the evaluation result.
+       For revCount, we only include its presence (not its value)
+       because the value is functionally determined by rev, which
+       is already part of the fingerprint. This avoids forcing a
+       lazy revCount computation. */
+    if (flake.lockedRef.input.attrs.contains("revCount"))
+        *fingerprint += ";hasRevCount";
     if (auto lastModified = flake.lockedRef.input.getLastModified())
         *fingerprint += fmt(";lastModified=%d", *lastModified);
 
