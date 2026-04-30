@@ -56,6 +56,13 @@ struct ServeUnixSocketOptions
 
 #ifndef _WIN32
     /**
+     * Name of the socket for socket activation, as included in `LISTEN_FDNAMES`
+     * Ordinarily the name of the socket unit, e.g. `nix-daemon.socket`
+     * If this field is empty, no name filtering will be performed.
+     */
+    std::string activationName = "";
+
+    /**
      * Additional file descriptor to poll. Useful for doing a self-pipe trick
      * https://cr.yp.to/docs/selfpipe.html.
      */
