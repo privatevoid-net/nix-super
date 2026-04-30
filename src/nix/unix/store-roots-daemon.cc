@@ -44,6 +44,7 @@ struct CmdRootsDaemon : StoreConfigCommand
             {
                 .socketPath = gcSocketPath,
                 .socketMode = 0666,
+                .activationName = "nix-roots-daemon.socket",
             },
             [&](AutoCloseFD remote, std::function<void()> closeListeners) {
                 std::thread([&, remote = std::move(remote)]() mutable {

@@ -285,6 +285,7 @@ static void daemonLoop(
             {
                 .socketPath = std::move(socketPath),
                 .socketMode = 0666,
+                .activationName = "nix-daemon.socket",
                 .auxiliaryFd = sigChldPipe.pipe.readSide.get(),
                 .onAuxiliaryFdPollin =
                     []() {
