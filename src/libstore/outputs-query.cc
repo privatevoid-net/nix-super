@@ -10,6 +10,13 @@ namespace nix {
 namespace {
 
 /**
+ * Cache mapping an unresolved drv path to its resolved (Derivation, StorePath)
+ * pair. Shared across a single top-level resolution call to prevent exponential
+ * re-traversal of the closure when many derivations share the same dependencies.
+ */
+using ResolveCache = boost::unordered_flat_map<StorePath, std::pair<Derivation, StorePath>>;
+
+/**
  * Cache mapping a resolved derivation output to its realisation output path.
  */
 using RealisationCache = boost::unordered_flat_map<DrvOutput, std::optional<StorePath>>;
@@ -21,6 +28,7 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
     const std::string & outputName,
     Store * evalStore_,
     QueryRealisationFun & queryRealisation,
+    ResolveCache & cache,
     RealisationCache & resCache);
 
 /**
@@ -37,24 +45,31 @@ static std::optional<StorePath> resolveSingleDerivedPath(
     const SingleDerivedPath & path,
     Store * evalStore_,
     QueryRealisationFun & queryRealisation,
+    ResolveCache & cache,
     RealisationCache & resCache)
 {
     return std::visit(
         overloaded{
             [](const SingleDerivedPath::Opaque & opaque) -> std::optional<StorePath> { return opaque.path; },
             [&](const SingleDerivedPath::Built & built) -> std::optional<StorePath> {
-                auto innerPath = resolveSingleDerivedPath(store, *built.drvPath, evalStore_, queryRealisation, resCache);
+                auto innerPath =
+                    resolveSingleDerivedPath(store, *built.drvPath, evalStore_, queryRealisation, cache, resCache);
                 if (!innerPath)
                     return std::nullopt;
                 return deepQueryPartialDerivationOutputImpl(
-                    store, *innerPath, built.output, evalStore_, queryRealisation, resCache);
+                    store, *innerPath, built.output, evalStore_, queryRealisation, cache, resCache);
             },
         },
         path.raw());
 }
 
 /**
- * Resolve a derivation and compute its store path.
+ * Resolve a derivation and compute its store path, with memoization.
+ *
+ * Results are stored in `cache` (keyed on the unresolved `drvPath`) so that
+ * each derivation in the closure is resolved at most once per top-level call,
+ * preventing the exponential re-traversal that would otherwise occur for
+ * content-addressed derivation closures.
  *
  * @param queryRealisation must already be initialized (not empty)
  */
@@ -63,8 +78,13 @@ static std::pair<Derivation, StorePath> resolveDerivation(
     const StorePath & drvPath,
     Store * evalStore_,
     QueryRealisationFun & queryRealisation,
+    ResolveCache & cache,
     RealisationCache & resCache)
 {
+    auto it = cache.find(drvPath);
+    if (it != cache.end())
+        return it->second;
+
     auto & evalStore = evalStore_ ? *evalStore_ : store;
 
     Derivation drv = evalStore.readInvalidDerivation(drvPath);
@@ -78,18 +98,20 @@ static std::pair<Derivation, StorePath> resolveDerivation(
             [&](ref<const SingleDerivedPath> depDrvPath,
                 const std::string & depOutputName) -> std::optional<StorePath> {
                 auto concreteDrvPath =
-                    resolveSingleDerivedPath(store, *depDrvPath, evalStore_, queryRealisation, resCache);
+                    resolveSingleDerivedPath(store, *depDrvPath, evalStore_, queryRealisation, cache, resCache);
                 if (!concreteDrvPath)
                     return std::nullopt;
                 return deepQueryPartialDerivationOutputImpl(
-                    store, *concreteDrvPath, depOutputName, evalStore_, queryRealisation, resCache);
+                    store, *concreteDrvPath, depOutputName, evalStore_, queryRealisation, cache, resCache);
             });
         if (resolvedDrv)
             drv = Derivation{*resolvedDrv};
     }
 
     auto resolvedDrvPath = computeStorePath(store, drv);
-    return {std::move(drv), std::move(resolvedDrvPath)};
+    auto result = std::make_pair(drv, resolvedDrvPath);
+    cache.emplace(drvPath, result);
+    return result;
 }
 
 void queryPartialDerivationOutputMapCA(
@@ -125,7 +147,7 @@ void queryPartialDerivationOutputMapCA(
 
 /**
  * Internal implementation of deepQueryPartialDerivationOutput that accepts a
- * shared RealisationCache, allowing memoization of realisation queries across recursive calls.
+ * shared ResolveCache and RealisationCache, allowing memoization across recursive calls.
  */
 static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
     Store & store,
@@ -133,6 +155,7 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
     const std::string & outputName,
     Store * evalStore_,
     QueryRealisationFun & queryRealisation,
+    ResolveCache & cache,
     RealisationCache & resCache)
 {
     auto & evalStore = evalStore_ ? *evalStore_ : store;
@@ -141,7 +164,7 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
     if (staticResult || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
         return staticResult;
 
-    auto [drv, resolvedDrvPath] = resolveDerivation(store, drvPath, evalStore_, queryRealisation, resCache);
+    auto [drv, resolvedDrvPath] = resolveDerivation(store, drvPath, evalStore_, queryRealisation, cache, resCache);
 
     if (drv.outputs.count(outputName) == 0)
         throw Error("derivation '%s' does not have an output named '%s'", store.printStorePath(drvPath), outputName);
@@ -183,8 +206,9 @@ std::map<std::string, std::optional<StorePath>> deepQueryPartialDerivationOutput
     if (!experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
         return outputs;
 
+    ResolveCache cache;
     RealisationCache resCache;
-    auto [drv, resolvedDrvPath] = resolveDerivation(store, drvPath, evalStore_, queryRealisation, resCache);
+    auto [drv, resolvedDrvPath] = resolveDerivation(store, drvPath, evalStore_, queryRealisation, cache, resCache);
     queryPartialDerivationOutputMapCA(store, resolvedDrvPath, drv, outputs, queryRealisation, resCache);
 
     return outputs;
@@ -213,9 +237,10 @@ std::optional<StorePath> deepQueryPartialDerivationOutput(
     if (!queryRealisation)
         queryRealisation = [&store](const DrvOutput & o) { return store.queryRealisation(o); };
 
+    ResolveCache cache;
     RealisationCache resCache;
     return deepQueryPartialDerivationOutputImpl(
-        store, drvPath, outputName, evalStore_, queryRealisation, resCache);
+        store, drvPath, outputName, evalStore_, queryRealisation, cache, resCache);
 }
 
 } // namespace nix
