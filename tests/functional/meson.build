@@ -179,6 +179,7 @@ suites = [
       'help.sh',
       'symlinks.sh',
       'external-builders.sh',
+      'delete-no-keep.sh',
     ],
     'workdir' : meson.current_source_dir(),
   },

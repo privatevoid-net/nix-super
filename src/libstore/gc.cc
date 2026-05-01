@@ -357,8 +357,6 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     const auto & gcSettings = config->getLocalSettings().getGCSettings();
 
     bool shouldDelete = options.action == GCOptions::gcDeleteDead || options.action == GCOptions::gcDeleteSpecific;
-    bool keepOutputs = gcSettings.keepOutputs;
-    bool keepDerivations = gcSettings.keepDerivations;
 
     boost::unordered_flat_set<StorePath, std::hash<StorePath>> roots, dead, alive;
 
@@ -381,16 +379,6 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     Sync<Shared> _shared;
 
     std::condition_variable wakeup;
-
-    /* Using `--ignore-liveness' with `--delete' can have unintended
-       consequences if `keep-outputs' or `keep-derivations' are true
-       (the garbage collector will recurse into deleting the outputs
-       or derivers, respectively, even if they aren't in the
-       pathsToDelete).  So disable them. */
-    if (std::holds_alternative<StorePathSet>(options.pathsToDelete) && options.ignoreLiveness) {
-        keepOutputs = false;
-        keepDerivations = false;
-    }
 
     if (shouldDelete)
         deletePath(reservedPath);
@@ -625,12 +613,23 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                 alive.insert(start);
                 try {
                     StorePathSet closure;
+                    bool includeOutputs = false;
+                    bool includeDerivers = false;
+                    std::visit(
+                        overloaded{
+                            [&](const GCOptions::WholeStore &) {
+                                includeOutputs = gcSettings.keepOutputs;
+                                includeDerivers = gcSettings.keepDerivations;
+                            },
+                            [](const StorePathSet &) {},
+                        },
+                        options.pathsToDelete);
                     computeFSClosure(
                         *path,
                         closure,
                         /* flipDirection */ false,
-                        keepOutputs,
-                        keepDerivations);
+                        includeOutputs,
+                        includeDerivers);
                     for (auto & p : closure)
                         alive.insert(p);
                 } catch (InvalidPath &) {
@@ -675,22 +674,28 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                 for (auto & p : i->second)
                     enqueue(p);
 
-                /* If keep-derivations is set and this is a derivation, then we only want to delete this derivation if
-                 * we can also delete all its outputs, so visit the derivation outputs. */
-                if (keepDerivations && path->isDerivation()) {
-                    for (auto & [name, maybeOutPath] : queryPartialDerivationOutputMap(*path))
-                        if (maybeOutPath && isValidPath(*maybeOutPath)
-                            && queryPathInfo(*maybeOutPath)->deriver == *path)
-                            enqueue(*maybeOutPath);
-                }
+                std::visit(
+                    overloaded{
+                        [&](const GCOptions::WholeStore &) {
+                            /* If keep-derivations is set and this is a derivation, then we only want to delete this
+                             * derivation if we can also delete all its outputs, so visit the derivation outputs. */
+                            if (gcSettings.keepDerivations && path->isDerivation())
+                                for (auto & [name, maybeOutPath] : queryPartialDerivationOutputMap(*path))
+                                    if (maybeOutPath && isValidPath(*maybeOutPath)
+                                        && queryPathInfo(*maybeOutPath)->deriver == path)
+                                        enqueue(*maybeOutPath);
 
-                /* If keep-outputs is set, we only want to delete this path if we
-                 * can also delete its derivers, so visit the derivers. */
-                if (keepOutputs) {
-                    auto derivers = queryValidDerivers(*path);
-                    for (auto & i : derivers)
-                        enqueue(i);
-                }
+                            /* If keep-outputs is set, we only want to delete this path if we
+                             * can also delete its derivers, so visit the derivers. */
+                            if (gcSettings.keepOutputs) {
+                                auto derivers = queryValidDerivers(*path);
+                                for (auto & i : derivers)
+                                    enqueue(i);
+                            }
+                        },
+                        [](const StorePathSet &) {},
+                    },
+                    options.pathsToDelete);
             }
         }
         for (auto & path : topoSortPaths(visited)) {
