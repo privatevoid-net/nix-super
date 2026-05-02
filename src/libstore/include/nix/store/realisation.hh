@@ -4,6 +4,7 @@
 #include <variant>
 
 #include "nix/util/hash.hh"
+#include "nix/util/std-hash.hh"
 #include "nix/store/path.hh"
 #include "nix/store/derived-path.hh"
 #include <nlohmann/json_fwd.hpp>
@@ -175,6 +176,26 @@ public:
         const StorePath & drvPathResolved,
         const OutputName & outputName);
 };
+
+} // namespace nix
+
+template<>
+struct std::hash<nix::DrvOutput>
+{
+    std::size_t operator()(const nix::DrvOutput & id) const noexcept
+    {
+        std::size_t h = 0;
+        nix::hash_combine(h, id.drvPath, id.outputName);
+        return h;
+    }
+};
+
+namespace nix {
+
+inline std::size_t hash_value(const DrvOutput & id)
+{
+    return std::hash<DrvOutput>{}(id);
+}
 
 } // namespace nix
 
