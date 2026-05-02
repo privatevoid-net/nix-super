@@ -328,12 +328,6 @@
         // (lib.optionalAttrs (builtins.elem system linux64BitSystems)) {
           dockerImage = self.hydraJobs.dockerImage.${system};
         }
-        // (lib.optionalAttrs (!(builtins.elem system linux32BitSystems))) {
-          # Some perl dependencies are broken on i686-linux.
-          # Since the support is only best-effort there, disable the perl
-          # bindings
-          perlBindings = self.hydraJobs.perlBindings.${system};
-        }
         # Add "passthru" tests
         //
           flatMapAttrs
@@ -419,10 +413,6 @@
               };
 
               "nix-json-schema-checks" = {
-                supportsCross = false;
-              };
-
-              "nix-perl-bindings" = {
                 supportsCross = false;
               };
 

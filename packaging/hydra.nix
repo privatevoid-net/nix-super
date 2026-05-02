@@ -33,7 +33,6 @@ let
   forAllPackages = forAllPackages' { };
   forAllPackages' =
     {
-      enableBindings ? false,
       enableDocs ? false, # already have separate attrs for these
     }:
     lib.genAttrs (
@@ -66,9 +65,6 @@ let
         "nix-json-schema-checks"
         "nix-clang-tidy-plugin"
       ]
-      ++ lib.optionals enableBindings [
-        "nix-perl-bindings"
-      ]
       ++ lib.optionals enableDocs [
         "nix-manual"
         "nix-manual-manpages-only"
@@ -85,7 +81,6 @@ rec {
     let
       arbitrarySystem = "x86_64-linux";
       listedPkgs = forAllPackages' {
-        enableBindings = true;
         enableDocs = true;
       } (_: null);
       actualPkgs = lib.concatMapAttrs (
@@ -176,8 +171,6 @@ rec {
             # Build without unity to catch include issues.
             withUnityBuild = false;
             nix-expr = super.nix-expr.override { enableGC = false; };
-            # Unclear how to make Perl bindings work with a dynamically linked ASAN.
-            nix-perl-bindings = null;
           }
         )
       );
@@ -201,8 +194,6 @@ rec {
         pkgs.nixComponents2.overrideScope (
           self: super: {
             withTSan = true;
-            # Dies at startup.
-            nix-perl-bindings = null;
             # TSan has issues with fork and threads.
             nix-functional-tests = super.nix-functional-tests.overrideAttrs { doCheck = false; };
           }
@@ -255,9 +246,6 @@ rec {
         pkgName == "nix-nswrapper" -> nixpkgsFor.${system}.native.stdenv.hostPlatform.isLinux
       ) (forAllSystems (system: components.${system}.${pkgName}))
     );
-
-  # Perl bindings for various platforms.
-  perlBindings = forAllSystems (system: nixpkgsFor.${system}.native.nixComponents2.nix-perl-bindings);
 
   # Binary tarball for various platforms, containing a Nix store
   # with the closure of 'nix' package, and the second half of
