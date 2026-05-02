@@ -48,9 +48,6 @@ def process_compdb(compdb: list[dict]) -> list[dict]:
         # Filter out Flex/Bison generated parsers (generated code)
         if file.endswith("-tab.cc"):
             return False
-        # Filter out Perl XS generated bindings (generated code)
-        if "/perl/" in file and file.endswith(".cc"):
-            return False
         return True
 
     return [chomp(x) for x in compdb if cmdfilter(x)]

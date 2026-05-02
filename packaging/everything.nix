@@ -41,8 +41,6 @@
   nix-internal-api-docs,
   nix-external-api-docs,
 
-  nix-perl-bindings,
-
   testers,
 
   patchedSrc ? null,
@@ -65,16 +63,7 @@ let
       nix-main-c
       nix-cmd
       ;
-  }
-  //
-    lib.optionalAttrs
-      (!stdenv.hostPlatform.isStatic && stdenv.buildPlatform.canExecute stdenv.hostPlatform)
-      {
-        # Currently fails in static build
-        inherit
-          nix-perl-bindings
-          ;
-      };
+  };
 
   devdoc = buildEnv {
     name = "nix-${nix-cli.version}-devdoc";
@@ -144,13 +133,6 @@ stdenv.mkDerivation (finalAttrs: {
     lib.optionals (stdenv.hostPlatform.isLinux && stdenv.buildPlatform.canExecute stdenv.hostPlatform)
       [
         nix-util-tests.tests.run-without-new-syscalls
-      ]
-  ++
-    lib.optionals (!stdenv.hostPlatform.isStatic && stdenv.buildPlatform.canExecute stdenv.hostPlatform)
-      [
-        # Perl currently fails in static build
-        # TODO: Split out tests into a separate derivation?
-        nix-perl-bindings
       ];
 
   nativeBuildInputs = [

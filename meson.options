@@ -15,13 +15,6 @@ option(
 )
 
 option(
-  'bindings',
-  type : 'boolean',
-  value : true,
-  description : 'Build language bindings (e.g. Perl)',
-)
-
-option(
   'benchmarks',
   type : 'boolean',
   value : false,
