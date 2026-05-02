@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <sys/socket.h>
+#include <sys/wait.h>
 
 namespace nix {
 
