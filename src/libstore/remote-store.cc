@@ -686,18 +686,23 @@ void RemoteStore::collectGarbage(const GCOptions & options, GCResults & results)
 {
     auto conn(getConnection());
 
-    if (conn->protoVersion.features.contains(WorkerProto::featureDeleteDeadSpecific)) {
+    bool supportsDeleteSpecificReferrers =
+        conn->protoVersion.features.contains(WorkerProto::featureDeleteDeadSpecificReferrers);
+
+    if (supportsDeleteSpecificReferrers) {
         conn->to << WorkerProto::Op::CollectGarbage;
         WorkerProto::write(*this, *conn, options.action);
         WorkerProto::write(*this, *conn, options.pathsToDelete);
     } else {
         auto paths = std::visit(
             overloaded{
-                [&](const StorePathSet & paths) {
+                [&](const GCOptions::SpecificPaths & paths) {
                     if (options.action != GCOptions::gcDeleteSpecific)
                         throw Error(
                             "Your daemon version is too old to support garbage collecting a specific set of paths");
-                    return paths;
+                    if (paths.deleteReferrers)
+                        throw Error("Your daemon version is too old to support deleting referrers.");
+                    return paths.paths;
                 },
                 [](const GCOptions::WholeStore & _) { return StorePathSet{}; },
             },
@@ -706,6 +711,7 @@ void RemoteStore::collectGarbage(const GCOptions & options, GCResults & results)
         WorkerProto::write(*this, *conn, options.action);
         WorkerProto::write(*this, *conn, paths);
     }
+
     conn->to << options.ignoreLiveness
              << options.maxFreed
              /* removed options */

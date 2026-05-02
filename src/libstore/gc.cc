@@ -361,8 +361,11 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     boost::unordered_flat_set<StorePath, std::hash<StorePath>> roots, dead, alive;
 
     /* Return early if nothing to delete */
-    if (std::holds_alternative<StorePathSet>(options.pathsToDelete)
-        && std::get<StorePathSet>(options.pathsToDelete).empty())
+    if (std::visit(
+            overloaded{
+                [](const GCOptions::SpecificPaths & pathsToDelete) { return pathsToDelete.paths.empty(); },
+                [](const GCOptions::WholeStore & _) { return false; }},
+            options.pathsToDelete))
         return;
 
     struct Shared
@@ -621,7 +624,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                                 includeOutputs = gcSettings.keepOutputs;
                                 includeDerivers = gcSettings.keepDerivations;
                             },
-                            [](const StorePathSet &) {},
+                            [](const GCOptions::SpecificPaths &) {},
                         },
                         options.pathsToDelete);
                     computeFSClosure(
@@ -642,14 +645,22 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                 return markAlive();
             }
 
-            if (std::holds_alternative<StorePathSet>(options.pathsToDelete)
-                && !std::get<StorePathSet>(options.pathsToDelete).contains(*path)) {
-                debug(
-                    "cannot delete '%s' because '%s' is not in the specified paths to delete",
-                    printStorePath(start),
-                    printStorePath(*path));
+            if (std::visit(
+                    overloaded{
+                        [&](const GCOptions::SpecificPaths & pathsToDelete) {
+                            if (!pathsToDelete.deleteReferrers && !pathsToDelete.paths.contains(*path)) {
+                                debug(
+                                    "cannot delete '%s' because '%s' is not in the specified paths to delete",
+                                    printStorePath(start),
+                                    printStorePath(*path));
+                                return true;
+                            }
+                            return false;
+                        },
+                        [](const GCOptions::WholeStore & _) { return false; },
+                    },
+                    options.pathsToDelete))
                 return;
-            }
 
             {
                 auto hashPart = path->hashPart();
@@ -693,7 +704,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                                     enqueue(i);
                             }
                         },
-                        [](const StorePathSet &) {},
+                        [](const GCOptions::SpecificPaths &) {},
                     },
                     options.pathsToDelete);
             }
@@ -719,7 +730,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
         /* Either delete all garbage paths, or just the specified paths. */
         std::visit(
             overloaded{
-                [&](const StorePathSet & paths) {
+                [&](const GCOptions::SpecificPaths & pathsToDelete) {
                     switch (options.action) {
                     case GCOptions::gcDeleteDead:
                         printInfo("deleting garbage within specified paths...");
@@ -732,7 +743,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                         printInfo("determining live/dead paths...");
                     }
 
-                    for (auto & i : paths) {
+                    for (auto & i : pathsToDelete.paths) {
                         maybeDeleteReferrersClosure(i);
 
                         if (options.action == GCOptions::gcDeleteSpecific && !dead.contains(i))
