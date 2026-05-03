@@ -6,7 +6,7 @@ project(
     'cpp_std=c++23',
     'warning_level=2',
   ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 

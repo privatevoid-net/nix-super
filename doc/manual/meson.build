@@ -1,7 +1,7 @@
 project(
   'nix-manual',
   version : files('.version'),
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 
