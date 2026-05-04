@@ -1,6 +1,5 @@
 #pragma once
 ///@file
-// Tests in: src/libutil-tests/fun.cc
 
 #include <functional>
 #include <stdexcept>
