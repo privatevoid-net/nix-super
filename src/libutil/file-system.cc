@@ -95,7 +95,8 @@ absPath(const std::filesystem::path & path0, const std::filesystem::path * dir, 
 
 std::filesystem::path canonPath(const std::filesystem::path & path, bool resolveSymlinks)
 {
-    assert(!path.empty());
+    if (path.empty())
+        throw Error("cannot canonicalise an empty path");
 
     if (!path.is_absolute())
         throw Error("not an absolute path: %s", PathFmt(path));
