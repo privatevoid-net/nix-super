@@ -107,6 +107,18 @@ private:
 
     std::unique_ptr<InterruptCallback> interruptCallback;
 
+    void hideCursorIfNeeded() const
+    {
+        if (isTTY)
+            writeToStderr("\e[?25l");
+    }
+
+    void unhideCursorIfNeeded() const
+    {
+        if (isTTY)
+            writeToStderr("\e[?25h");
+    }
+
 public:
 
     ProgressBar(bool isTTY)
@@ -116,6 +128,7 @@ public:
             redraw("\rshutting down\e[K");
         }))
     {
+        hideCursorIfNeeded();
         state_.lock()->active = isTTY;
         updateThread = std::thread([&]() {
             auto state(state_.lock());
@@ -142,6 +155,7 @@ public:
             if (state->active) {
                 state->active = false;
                 clearProgressDisplay();
+                unhideCursorIfNeeded();
                 updateCV.notify_one();
                 quitCV.notify_one();
             }
@@ -159,8 +173,10 @@ public:
             return;
         }
 
-        if (state->active)
+        if (state->active) {
             clearProgressDisplay();
+            unhideCursorIfNeeded();
+        }
     }
 
     void resume() override
@@ -173,8 +189,10 @@ public:
             state->suspensions--;
         }
         if (state->suspensions == 0) {
-            if (state->active)
+            if (state->active) {
                 clearProgressDisplay();
+                hideCursorIfNeeded();
+            }
             state->haveUpdate = true;
             updateCV.notify_one();
         }
@@ -681,7 +699,9 @@ public:
             return {};
         invalidateRedrawCache();
         std::cerr << fmt("\r\e[K%s ", msg);
+        unhideCursorIfNeeded();
         auto s = trim(readLine(getStandardInput(), true));
+        hideCursorIfNeeded();
         if (s.size() != 1)
             return {};
         draw(*state);
