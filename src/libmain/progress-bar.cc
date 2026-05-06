@@ -2,8 +2,10 @@
 #include "nix/util/terminal.hh"
 #include "nix/util/sync.hh"
 #include "nix/util/signals.hh"
-#include "nix/store/store-api.hh"
+#include "nix/store/path.hh"
+#include "nix/util/file-system.hh"
 #include "nix/store/names.hh"
+#include "nix/util/util.hh"
 
 #include <map>
 #include <thread>
@@ -13,17 +15,19 @@
 
 namespace nix {
 
+namespace {
+
 static std::string_view getS(const std::vector<Logger::Field> & fields, size_t n)
 {
-    assert(n < fields.size());
-    assert(fields[n].type == Logger::Field::tString);
+    if (n >= fields.size() || fields[n].type != Logger::Field::tString)
+        throw Error("could not get expected log field of type 'string' at index %d", n);
     return fields[n].s;
 }
 
 static uint64_t getI(const std::vector<Logger::Field> & fields, size_t n)
 {
-    assert(n < fields.size());
-    assert(fields[n].type == Logger::Field::tInt);
+    if (n >= fields.size() || fields[n].type != Logger::Field::tInt)
+        throw Error("could not get expected log field of type 'int' at index %d", n);
     return fields[n].i;
 }
 
@@ -34,10 +38,17 @@ static std::string_view storePathToName(std::string_view path)
     return i == std::string::npos ? base.substr(0, 0) : base.substr(i + 1);
 }
 
-class ProgressBar : public Logger
+static std::string_view storePathToNameWithoutDrvSuffix(std::string_view path)
+{
+    auto res = storePathToName(path);
+    if (hasSuffix(res, drvExtension))
+        res.remove_suffix(drvExtension.size());
+    return res;
+}
+
+class ProgressBar final : public Logger
 {
 private:
-
     struct ActInfo
     {
         std::string s, lastLine, phase;
@@ -223,9 +234,7 @@ public:
         state->activitiesByType[type].its.emplace(act, i);
 
         if (type == actBuild) {
-            std::string name(storePathToName(getS(fields, 0)));
-            if (hasSuffix(name, ".drv"))
-                name = name.substr(0, name.size() - 4);
+            auto name = storePathToNameWithoutDrvSuffix(getS(fields, 0));
             i->s = fmt("building " ANSI_BOLD "%s" ANSI_NORMAL, name);
             auto machineName = getS(fields, 1);
             if (machineName != "")
@@ -250,9 +259,7 @@ public:
         }
 
         if (type == actPostBuildHook) {
-            auto name = storePathToName(getS(fields, 0));
-            if (hasSuffix(name, ".drv"))
-                name = name.substr(0, name.size() - 4);
+            auto name = storePathToNameWithoutDrvSuffix(getS(fields, 0));
             i->s = fmt("post-build " ANSI_BOLD "%s" ANSI_NORMAL, name);
             i->name = DrvName(name).name;
         }
@@ -686,6 +693,8 @@ public:
         this->printBuildLogs = printBuildLogs;
     }
 };
+
+} // namespace
 
 std::unique_ptr<Logger> makeProgressBar()
 {
