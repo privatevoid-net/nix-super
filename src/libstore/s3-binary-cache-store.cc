@@ -322,7 +322,7 @@ std::string S3BinaryCacheStore::createMultipartUpload(
         std::move(headers->begin(), headers->end(), std::back_inserter(req.headers));
     }
 
-    auto result = getFileTransfer()->enqueueFileTransfer(req).get();
+    auto result = fileTransfer->enqueueFileTransfer(req).get();
 
     std::regex uploadIdRegex("<UploadId>([^<]+)</UploadId>");
     std::smatch match;
@@ -353,7 +353,7 @@ S3BinaryCacheStore::uploadPart(std::string_view key, std::string_view uploadId, 
     req.data = {payload};
     req.mimeType = "application/octet-stream";
 
-    auto result = getFileTransfer()->enqueueFileTransfer(req).get();
+    auto result = fileTransfer->enqueueFileTransfer(req).get();
 
     if (result.etag.empty()) {
         throw Error("S3 UploadPart response missing ETag for part %d", partNumber);
@@ -374,7 +374,7 @@ void S3BinaryCacheStore::abortMultipartUpload(std::string_view key, std::string_
         req.uri = VerbatimURL(url);
         req.method = HttpMethod::Delete;
 
-        getFileTransfer()->enqueueFileTransfer(req).get();
+        fileTransfer->enqueueFileTransfer(req).get();
     } catch (...) {
         ignoreExceptionInDestructor();
     }
@@ -407,7 +407,7 @@ void S3BinaryCacheStore::completeMultipartUpload(
     req.data = {payload};
     req.mimeType = "text/xml";
 
-    getFileTransfer()->enqueueFileTransfer(req).get();
+    fileTransfer->enqueueFileTransfer(req).get();
 
     debug("S3 multipart upload completed: %d parts uploaded for '%s'", partEtags.size(), key);
 }
