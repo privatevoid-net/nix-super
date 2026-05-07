@@ -79,6 +79,7 @@ sources = files(
   'json-utils.cc',
   'logging.cc',
   'lru-cache.cc',
+  'memo.cc',
   'memory-source-accessor.cc',
   'monitorfdhup.cc',
   'nar-listing.cc',

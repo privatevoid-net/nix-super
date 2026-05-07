@@ -1,7 +1,9 @@
+#include "nix/expr/value.hh"
 #include "nix/fetchers/attrs.hh"
 #include "nix/expr/primops.hh"
 #include "nix/expr/eval-inline.hh"
 #include "nix/expr/eval-settings.hh"
+#include "nix/expr/fetch-tree.hh"
 #include "nix/store/store-api.hh"
 #include "nix/fetchers/fetchers.hh"
 #include "nix/store/filetransfer.hh"
@@ -18,6 +20,95 @@
 #include <iomanip>
 
 namespace nix {
+
+/**
+ * Adapter for putting libfetchers data into a thunk closure.
+ * Used as the argument to prim_forceLazyFetcherAttr in a lazy apply thunk.
+ */
+class LazyFetcherAttr : public ExternalValueBase, public gc_cleanup
+{
+    fetchers::LazyAttr lazy;
+
+public:
+    LazyFetcherAttr(fetchers::LazyAttr lazy)
+        : lazy(std::move(lazy))
+    {
+    }
+
+    fetchers::ResolvedAttr force()
+    {
+        return lazy->compute();
+    }
+
+protected:
+    std::ostream & print(std::ostream & str) const override
+    {
+        unreachable();
+    }
+
+public:
+    std::string showType() const override
+    {
+        unreachable();
+    }
+
+    std::string typeOf() const override
+    {
+        unreachable();
+    }
+};
+
+/**
+ * Initialize a `Value` from a resolved fetcher attribute.
+ */
+static void resolvedAttrToValue(EvalState & state, Value & v, const fetchers::ResolvedAttr & resolved)
+{
+    std::visit(
+        overloaded{
+            [&](const std::string & s) { v.mkString(s, state.mem); },
+            [&](uint64_t n) { v.mkInt(n); },
+            [&](const Explicit<bool> & b) { v.mkBool(b.t); },
+        },
+        resolved);
+}
+
+/**
+ * internal primop: Force a LazyFetcherAttr external value.
+ */
+static void prim_forceLazyFetcherAttr(EvalState & state, const PosIdx pos, Value ** args, Value & v)
+{
+    Value & arg = *args[0];
+
+    state.forceValue(arg, pos);
+    // We only construct this primop with LazyFetcherAttr preapplied.
+    assert(arg.type() == nExternal);
+    auto * ext = dynamic_cast<LazyFetcherAttr *>(args[0]->external());
+    assert(ext);
+
+    resolvedAttrToValue(state, v, ext->force());
+}
+
+/**
+ * Emit a lazy thunk for a LazyAttr: mkApp(primop, externalValue).
+ */
+static void emitLazyAttrThunk(EvalState & state, const fetchers::LazyAttr & lazyAttr, Value & dest)
+{
+    // not user-callable (unregistered, internal)
+    static PrimOp forcePrimOp{
+        .name = "__forceLazyFetcherAttr",
+        .arity = 1,
+        .impl = prim_forceLazyFetcherAttr,
+        .internal = true,
+    };
+
+    auto * vExt = state.allocValue();
+    vExt->mkExternal(new LazyFetcherAttr(lazyAttr));
+
+    auto * vPrimOp = state.allocValue();
+    vPrimOp->mkPrimOp(&forcePrimOp);
+
+    dest.mkApp(vPrimOp, vExt);
+}
 
 void emitTreeAttrs(
     EvalState & state,
@@ -51,7 +142,9 @@ void emitTreeAttrs(
             attrs.alloc("shortRev").mkString(emptyHash.gitShortRev(), state.mem);
         }
 
-        if (auto revCount = input.getRevCount())
+        if (auto revCount = maybeGetLazyAttr(input.attrs, "revCount"))
+            emitLazyAttrThunk(state, *revCount, attrs.alloc("revCount"));
+        else if (auto revCount = input.getRevCount())
             attrs.alloc("revCount").mkInt(*revCount);
         else if (emptyRevFallback)
             attrs.alloc("revCount").mkInt(0);
