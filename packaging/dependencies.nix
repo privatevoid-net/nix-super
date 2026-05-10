@@ -62,6 +62,21 @@ scope: {
     useTBB = !(stdenv.hostPlatform.isWindows || stdenv.hostPlatform.isStatic);
   };
 
+  libgit2 =
+    if lib.versionAtLeast pkgs.libgit2.version "1.9.3" then
+      pkgs.libgit2
+    else
+      # Grab newer libgit2.
+      pkgs.libgit2.overrideAttrs rec {
+        version = "1.9.3";
+        src = pkgs.fetchFromGitHub {
+          owner = "libgit2";
+          repo = "libgit2";
+          tag = "v${version}";
+          hash = "sha256-nJrRdPs86oGNL4W2CJb16oSUgfzYr9A2i5sw9BAehME=";
+        };
+      };
+
   # TODO Hack until https://github.com/NixOS/nixpkgs/issues/45462 is fixed.
   boost =
     (pkgs.boost.override {
