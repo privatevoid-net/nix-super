@@ -17,16 +17,16 @@ scope: {
   inherit stdenv;
 
   mimalloc =
-    if lib.versionAtLeast pkgs.mimalloc.version "3.3.0" then
+    if lib.versionAtLeast pkgs.mimalloc.version "3.3.2" then
       pkgs.mimalloc
     else
       pkgs.mimalloc.overrideAttrs rec {
-        version = "3.3.0";
+        version = "3.3.2";
         src = pkgs.fetchFromGitHub {
           owner = "microsoft";
           repo = "mimalloc";
           tag = "v${version}";
-          hash = "sha256-xy9gPihw3xvhnd6BrCYfMnnRp5dPSodynKRToYwxuzg=";
+          hash = "sha256-GZ37qQVDe9jgMb4Coe5oKvgaLTspZDlSkS5rdy1MfUU=";
         };
       };
 
@@ -44,23 +44,32 @@ scope: {
         NIX_CFLAGS_COMPILE = "-DINITIAL_MARK_STACK_SIZE=1048576";
       });
 
-  curl =
-    (pkgs.curl.override {
-      http3Support = !pkgs.stdenv.hostPlatform.isWindows;
-      # Make sure we enable all the dependencies for Content-Encoding/Transfer-Encoding decompression.
-      zstdSupport = true;
-      brotliSupport = true;
-      zlibSupport = true;
-    }).overrideAttrs
-      {
-        # TODO: Fix in nixpkgs. Static build with brotli is marked as broken, but it's not the case.
-        # Remove once https://github.com/NixOS/nixpkgs/pull/494111 lands in the 25.11 channel.
-        meta.broken = false;
-      };
+  curl = pkgs.curl.override {
+    http3Support = !pkgs.stdenv.hostPlatform.isWindows;
+    # Make sure we enable all the dependencies for Content-Encoding/Transfer-Encoding decompression.
+    zstdSupport = true;
+    brotliSupport = true;
+    zlibSupport = true;
+  };
 
   libblake3 = pkgs.libblake3.override {
     useTBB = !(stdenv.hostPlatform.isWindows || stdenv.hostPlatform.isStatic);
   };
+
+  libgit2 =
+    if lib.versionAtLeast pkgs.libgit2.version "1.9.3" then
+      pkgs.libgit2
+    else
+      # Grab newer libgit2.
+      pkgs.libgit2.overrideAttrs rec {
+        version = "1.9.3";
+        src = pkgs.fetchFromGitHub {
+          owner = "libgit2";
+          repo = "libgit2";
+          tag = "v${version}";
+          hash = "sha256-nJrRdPs86oGNL4W2CJb16oSUgfzYr9A2i5sw9BAehME=";
+        };
+      };
 
   # TODO Hack until https://github.com/NixOS/nixpkgs/issues/45462 is fixed.
   boost =
