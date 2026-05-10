@@ -17,16 +17,16 @@ scope: {
   inherit stdenv;
 
   mimalloc =
-    if lib.versionAtLeast pkgs.mimalloc.version "3.3.0" then
+    if lib.versionAtLeast pkgs.mimalloc.version "3.3.2" then
       pkgs.mimalloc
     else
       pkgs.mimalloc.overrideAttrs rec {
-        version = "3.3.0";
+        version = "3.3.2";
         src = pkgs.fetchFromGitHub {
           owner = "microsoft";
           repo = "mimalloc";
           tag = "v${version}";
-          hash = "sha256-xy9gPihw3xvhnd6BrCYfMnnRp5dPSodynKRToYwxuzg=";
+          hash = "sha256-GZ37qQVDe9jgMb4Coe5oKvgaLTspZDlSkS5rdy1MfUU=";
         };
       };
 
