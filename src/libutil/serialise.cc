@@ -287,6 +287,8 @@ void FdSource::skip(size_t len)
 #ifndef _WIN32
     /* If we can, seek forward in the file to skip the rest. */
     if (isSeekable && len) {
+        if (len > static_cast<size_t>(std::numeric_limits<off_t>::max()))
+            throw Error("cannot skip %d bytes: exceeds maximum file offset", len);
         if (lseek(fd, len, SEEK_CUR) == -1) {
             if (errno == ESPIPE)
                 isSeekable = false;
