@@ -28,14 +28,14 @@ void BufferedSink::operator()(std::string_view data)
     while (!data.empty()) {
         /* Optimisation: bypass the buffer if the data exceeds the
            buffer size. */
-        if (bufPos + data.size() >= bufSize) {
+        if (data.size() >= bufSize - bufPos) {
             flush();
             writeUnbuffered(data);
             break;
         }
         /* Otherwise, copy the bytes to the buffer.  Flush the buffer
            when it's full. */
-        size_t n = bufPos + data.size() > bufSize ? bufSize - bufPos : data.size();
+        size_t n = data.size() > bufSize - bufPos ? bufSize - bufPos : data.size();
         memcpy(buffer.get() + bufPos, data.data(), n);
         data.remove_prefix(n);
         bufPos += n;
