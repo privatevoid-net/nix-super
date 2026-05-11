@@ -560,7 +560,8 @@ template StringSet readStrings(Source & source);
 Error readError(Source & source)
 {
     auto type = readString(source);
-    assert(type == "Error");
+    if (type != "Error")
+        throw SerialisationError("unexpected error type '%s'", type);
     auto level = (Verbosity) readInt(source);
     [[maybe_unused]] auto name = readString(source); // removed
     auto msg = readString(source);
@@ -569,11 +570,13 @@ Error readError(Source & source)
         .msg = HintFmt(msg),
     };
     auto havePos = readNum<size_t>(source);
-    assert(havePos == 0);
+    if (havePos != 0)
+        throw SerialisationError("deserializing error positions is not supported");
     auto nrTraces = readNum<size_t>(source);
     for (size_t i = 0; i < nrTraces; ++i) {
         havePos = readNum<size_t>(source);
-        assert(havePos == 0);
+        if (havePos != 0)
+            throw SerialisationError("deserializing error positions is not supported");
         info.traces.push_back(Trace{.hint = HintFmt(readString(source))});
     }
     return Error(std::move(info));
