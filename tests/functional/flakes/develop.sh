@@ -66,7 +66,7 @@ echo "\$ENVVAR"
 EOF
 )" ]]
 
-# Test wether `--keep-env-var` keeps the environment variable.
+# Test whether `--keep-env-var` keeps the environment variable.
 (
   expect='BAR'
   got="$(FOO='BAR' nix develop --ignore-env --keep-env-var FOO --no-write-lock-file .#hello <<EOF
@@ -76,7 +76,7 @@ EOF
   [[ "$got" == "$expect" ]]
 )
 
-# Test wether duplicate `--keep-env-var` keeps the environment variable.
+# Test whether duplicate `--keep-env-var` keeps the environment variable.
 (
   expect='BAR'
   got="$(FOO='BAR' nix develop --ignore-env --keep-env-var FOO --keep-env-var FOO --no-write-lock-file .#hello <<EOF
@@ -86,7 +86,7 @@ EOF
   [[ "$got" == "$expect" ]]
 )
 
-# Test wether `--set-env-var` sets the environment variable.
+# Test whether `--set-env-var` sets the environment variable.
 (
   expect='BAR'
   got="$(nix develop --ignore-env --set-env-var FOO 'BAR' --no-write-lock-file .#hello <<EOF
@@ -125,11 +125,11 @@ expectStderr 1 nix develop --keep-env-var FOO .#hello |
 expectStderr 1 nix develop --ignore-env --unset-env-var FOO .#hello |
   grepQuiet "error: --unset-env-var does not make sense with --ignore-env"
 
-# Test wether multiple occurances of `--set-env-var` throws.
+# Test whether multiple occurrences of `--set-env-var` throws.
 expectStderr 1 nix develop --set-env-var FOO 'BAR' --set-env-var FOO 'BLA' --no-write-lock-file .#hello |
   grepQuiet "error: Duplicate definition of environment variable 'FOO' with '--set-env-var' is ambiguous"
 
-# Test wether similar `--unset-env-var` and `--set-env-var` throws.
+# Test whether similar `--unset-env-var` and `--set-env-var` throws.
 expectStderr 1 nix develop --set-env-var FOO 'BAR' --unset-env-var FOO --no-write-lock-file .#hello |
   grepQuiet "error: Cannot unset environment variable 'FOO' that is set with '--set-env-var'"
 

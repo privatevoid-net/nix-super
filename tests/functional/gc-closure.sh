@@ -15,7 +15,7 @@ nix_gc_closure() {
     input2_out=$(printf "%s" "$input2" | head -n1)
     input2_out2=$(printf "%s" "$input2" | tail -n1)
     top=$(nix build -f dependencies2.nix --no-link --print-out-paths)
-    somthing_else=$(nix store add-path ./dependencies2.nix)
+    something_else=$(nix store add-path ./dependencies2.nix)
 
     if isDaemonNewer "2.35pre"; then
         if [[ "$extraArg" != "--also-referrers" ]] && ! "$ensureNoDeleteReferrer"; then
@@ -27,7 +27,7 @@ nix_gc_closure() {
         [[ ! -e "$top" ]] || fail "top should have been deleted"
         [[ -e "$input0" ]] || fail "input0 is a gc root, shouldn't have been deleted"
         [[ -e "$input1" ]] || fail "input1 is not in the closure of top, it shouldn't have been deleted"
-        [[ -e "$somthing_else" ]] || fail "somthing_else is not in the closure of top, it shouldn't have been deleted"
+        [[ -e "$something_else" ]] || fail "something_else is not in the closure of top, it shouldn't have been deleted"
         if [[ "$extraArg" = "--also-referrers" ]]; then
             [[ ! -e "$input2_out" ]] || fail "input2_out is part of top's closure and we can delete dead referrers, it should have been deleted"
         elif "$ensureNoDeleteReferrer"; then

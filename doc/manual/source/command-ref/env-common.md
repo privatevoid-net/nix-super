@@ -160,7 +160,7 @@ When [`use-xdg-base-directories`] is enabled, the configuration directory is res
 
 Likewise for the state and cache directories.
 
-## Miscellanous environment variables
+## Miscellaneous environment variables
 
 - <span id="env-IN_NIX_SHELL">[`IN_NIX_SHELL`](#env-IN_NIX_SHELL)</span>
 
