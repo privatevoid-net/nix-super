@@ -40,7 +40,7 @@ additionalProperties: false
     title: Build Trace Key
     description: |
       A [build trace entry](@docroot@/store/build-trace.md) is a key-value pair.
-      This is the "key" part, refering to a derivation and output.
+      This is the "key" part, referring to a derivation and output.
     type: object
     required:
       - drvPath

@@ -26,7 +26,7 @@ TODO_NixOS # following line fails.
 
 # `nix develop` is a slightly special way of dealing with environment vars, it parses
 # these from a shell-file exported from a derivation. This is to test especially `outputs`
-# (which is an associative array in thsi case) being fine.
+# (which is an associative array in this case) being fine.
 # shellcheck disable=SC2016
 nix develop -f structured-attrs-shell.nix -c bash -c 'test -n "$out"'
 
