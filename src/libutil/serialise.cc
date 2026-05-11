@@ -28,14 +28,14 @@ void BufferedSink::operator()(std::string_view data)
     while (!data.empty()) {
         /* Optimisation: bypass the buffer if the data exceeds the
            buffer size. */
-        if (bufPos + data.size() >= bufSize) {
+        if (data.size() >= bufSize - bufPos) {
             flush();
             writeUnbuffered(data);
             break;
         }
         /* Otherwise, copy the bytes to the buffer.  Flush the buffer
            when it's full. */
-        size_t n = bufPos + data.size() > bufSize ? bufSize - bufPos : data.size();
+        size_t n = data.size() > bufSize - bufPos ? bufSize - bufPos : data.size();
         memcpy(buffer.get() + bufPos, data.data(), n);
         data.remove_prefix(n);
         bufPos += n;
@@ -287,6 +287,8 @@ void FdSource::skip(size_t len)
 #ifndef _WIN32
     /* If we can, seek forward in the file to skip the rest. */
     if (isSeekable && len) {
+        if (len > static_cast<size_t>(std::numeric_limits<off_t>::max()))
+            throw Error("cannot skip %d bytes: exceeds maximum file offset", len);
         if (lseek(fd, len, SEEK_CUR) == -1) {
             if (errno == ESPIPE)
                 isSeekable = false;
@@ -558,7 +560,8 @@ template StringSet readStrings(Source & source);
 Error readError(Source & source)
 {
     auto type = readString(source);
-    assert(type == "Error");
+    if (type != "Error")
+        throw SerialisationError("unexpected error type '%s'", type);
     auto level = (Verbosity) readInt(source);
     [[maybe_unused]] auto name = readString(source); // removed
     auto msg = readString(source);
@@ -567,11 +570,13 @@ Error readError(Source & source)
         .msg = HintFmt(msg),
     };
     auto havePos = readNum<size_t>(source);
-    assert(havePos == 0);
+    if (havePos != 0)
+        throw SerialisationError("deserializing error positions is not supported");
     auto nrTraces = readNum<size_t>(source);
     for (size_t i = 0; i < nrTraces; ++i) {
         havePos = readNum<size_t>(source);
-        assert(havePos == 0);
+        if (havePos != 0)
+            throw SerialisationError("deserializing error positions is not supported");
         info.traces.push_back(Trace{.hint = HintFmt(readString(source))});
     }
     return Error(std::move(info));
