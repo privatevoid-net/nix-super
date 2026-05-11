@@ -41,6 +41,8 @@
 #include <pwd.h>
 #include <grp.h>
 #include <iostream>
+#include <list>
+#include <atomic>
 
 #include "nix/util/strings.hh"
 #include "nix/util/signals.hh"
@@ -226,10 +228,16 @@ protected:
      */
     std::thread daemonThread;
 
+    struct DaemonWorkerState
+    {
+        std::thread thread;
+        ref<std::atomic_flag> done;
+    };
+
     /**
      * The daemon worker threads.
      */
-    std::vector<std::thread> daemonWorkerThreads;
+    std::list<DaemonWorkerState> daemonWorkerThreads;
 
     const StorePathSet & originalPaths() override
     {
@@ -1201,19 +1209,41 @@ void DerivationBuilderImpl::startDaemon()
 
             debug("received daemon connection");
 
-            auto workerThread = std::thread([store, remote{std::move(remote)}]() {
+            auto doneFlag = make_ref<std::atomic_flag>();
+
+            auto workerThread = std::thread([doneFlag, store, remote{std::move(remote)}]() {
                 try {
                     daemon::processConnection(
                         store, FdSource(remote.get()), FdSink(remote.get()), NotTrusted, daemon::Recursive);
                     debug("terminated daemon connection");
                 } catch (const Interrupted &) {
                     debug("interrupted daemon connection");
-                } catch (SystemError &) {
+                } catch (...) {
+                    /* Swallow all exceptions to avoid crashing the the process (exceptions that escape from the thread
+                     * trigger std::terminate()). */
                     ignoreExceptionExceptInterrupt();
                 }
+
+                doneFlag->test_and_set(std::memory_order_relaxed);
             });
 
-            daemonWorkerThreads.push_back(std::move(workerThread));
+            daemonWorkerThreads.push_back(
+                DaemonWorkerState{
+                    .thread = std::move(workerThread),
+                    .done = std::move(doneFlag),
+                });
+
+            /* Prune threads eagerly to free up resources. Ideally we'd also limit the number of concurrent workers. */
+            for (auto it = daemonWorkerThreads.begin(), end = daemonWorkerThreads.end(); it != end;) {
+                auto & state = *it;
+                auto & thread = state.thread;
+                if (state.done->test(std::memory_order_relaxed) && thread.joinable()) {
+                    thread.join();
+                    it = daemonWorkerThreads.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
 
         debug("daemon shutting down");
@@ -1242,9 +1272,7 @@ void DerivationBuilderImpl::stopDaemon()
     if (daemonThread.joinable())
         daemonThread.join();
 
-    // FIXME: should prune worker threads more quickly.
-    // FIXME: shutdown the client socket to speed up worker termination.
-    for (auto & thread : daemonWorkerThreads)
+    for (auto & [thread, doneFlag] : daemonWorkerThreads)
         thread.join();
     daemonWorkerThreads.clear();
 
