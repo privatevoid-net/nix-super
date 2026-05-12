@@ -89,7 +89,12 @@ void RemoteStore::initConnection(Connection & conn)
         StringSink saved;
         TeeSource tee(conn.from, saved);
         try {
-            conn.protoVersion = WorkerProto::BasicClientConnection::handshake(conn.to, tee, WorkerProto::latest);
+            // The DisableSetOptions feature isn't in the `latest` constant because it is shared with the daemon,
+            // which only adds the feature under certain conditions. Adding is easier than removing.
+            auto localVersion = WorkerProto::latest;
+            localVersion.features.insert(std::string{WorkerProto::featureDisableSetOptions});
+
+            conn.protoVersion = WorkerProto::BasicClientConnection::handshake(conn.to, tee, localVersion);
             if (conn.protoVersion.number < WorkerProto::minimum.number)
                 throw Error("the Nix daemon version is too old");
         } catch (SerialisationError & e) {
@@ -115,7 +120,8 @@ void RemoteStore::initConnection(Connection & conn)
         throw Error("cannot open connection to remote store '%s': %s", config.getHumanReadableURI(), e.what());
     }
 
-    setOptions(conn);
+    if (!conn.protoVersion.features.contains(WorkerProto::featureDisableSetOptions))
+        setOptions(conn);
 }
 
 void RemoteStore::setOptions(Connection & conn)

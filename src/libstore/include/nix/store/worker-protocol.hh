@@ -131,6 +131,11 @@ struct WorkerProto
     static constexpr std::string_view featureDeleteDeadSpecificReferrers = "delete-dead-specific-referrers";
 
     /**
+     * Feature for disabling SetOptions, which is a no-op in recursive-nix
+     */
+    static constexpr std::string_view featureDisableSetOptions = "disable-set-options";
+
+    /**
      * A unidirectional read connection, to be used by the read half of the
      * canonical serializers below.
      */
