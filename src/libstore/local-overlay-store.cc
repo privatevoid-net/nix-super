@@ -5,11 +5,14 @@
 #include "nix/util/os-string.hh"
 #include "nix/store/realisation.hh"
 #include "nix/util/processes.hh"
-#include "nix/util/url.hh"
 #include "nix/store/store-open.hh"
 #include "nix/store/store-registration.hh"
 
 namespace nix {
+
+void LocalOverlayStoreConfig::anchor() {}
+
+void LocalOverlayStore::anchor() {}
 
 std::string LocalOverlayStoreConfig::doc()
 {
@@ -263,7 +266,7 @@ LocalStore::VerificationResult LocalOverlayStore::verifyAllValidPaths(RepairFlag
     StorePathSet done;
 
     auto existsInStoreDir = [&](const StorePath & storePath) {
-        return pathExists((config->realStoreDir.get() / storePath.to_string()).string());
+        return pathExists(config->realStoreDir.get() / storePath.to_string());
     };
 
     bool errors = false;

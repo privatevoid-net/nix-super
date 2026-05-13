@@ -12,6 +12,10 @@ struct SSHStoreConfig : std::enable_shared_from_this<SSHStoreConfig>,
                         virtual RemoteStoreConfig,
                         virtual CommonSSHStoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     SSHStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
         , RemoteStoreConfig(params, FilePathType::Unix)
@@ -43,6 +47,10 @@ struct SSHStoreConfig : std::enable_shared_from_this<SSHStoreConfig>,
 
 struct MountedSSHStoreConfig : virtual SSHStoreConfig, virtual LocalFSStoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     MountedSSHStoreConfig(StringMap params);
     MountedSSHStoreConfig(const ParsedURL::Authority & authority, StringMap params);
 

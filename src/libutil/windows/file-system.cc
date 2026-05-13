@@ -16,8 +16,6 @@ static_assert(S_IFLNK != S_IFCHR, "S_IFLNK must not equal S_IFCHR");
 
 namespace nix {
 
-using namespace nix::windows;
-
 void setWriteTime(
     const std::filesystem::path & path, time_t accessedTime, time_t modificationTime, std::optional<bool> optIsSymlink)
 {
@@ -59,7 +57,7 @@ openNewFileForWrite(const std::filesystem::path & path, [[maybe_unused]] mode_t 
 {
     return AutoCloseFD{CreateFileW(
         path.c_str(),
-        GENERIC_WRITE,
+        GENERIC_WRITE | (params.writeOnly ? 0 : GENERIC_READ),
         FILE_SHARE_READ | FILE_SHARE_DELETE,
         /*lpSecurityAttributes=*/nullptr,
         params.truncateExisting ? CREATE_ALWAYS : CREATE_NEW, /* TODO: Reparse points. */
@@ -72,14 +70,14 @@ std::filesystem::path defaultTempDir()
     wchar_t buf[MAX_PATH + 1];
     DWORD len = GetTempPathW(MAX_PATH + 1, buf);
     if (len == 0 || len > MAX_PATH)
-        throw WinError("getting default temporary directory");
+        throw windows::WinError("getting default temporary directory");
     return std::filesystem::path(buf);
 }
 
 void deletePath(const std::filesystem::path & path)
 {
     std::error_code ec;
-    std::filesystem::remove_all(path, ec);
+    std::filesystem::remove_all(path, ec); // NOLINT(bugprone-unsafe-functions)
     if (ec && ec != std::errc::no_such_file_or_directory)
         throw SysError(ec.default_error_condition().value(), "recursively deleting %1%", PathFmt(path));
 }
@@ -106,7 +104,7 @@ std::filesystem::path descriptorToPath(Descriptor handle)
     if (dw > buf.size()) {
         buf.resize(dw);
         if (GetFinalPathNameByHandleW(handle, buf.data(), buf.size(), FILE_NAME_OPENED) != dw - 1)
-            throw WinError("GetFinalPathNameByHandleW");
+            throw windows::WinError("GetFinalPathNameByHandleW");
         dw -= 1;
     }
     return std::filesystem::path{std::wstring{buf.data(), dw}};
@@ -179,7 +177,7 @@ PosixStat lstat(const std::filesystem::path & path)
 {
     WIN32_FILE_ATTRIBUTE_DATA attrData;
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attrData))
-        throw WinError("getting status of %s", PathFmt(path));
+        throw windows::WinError("getting status of %s", PathFmt(path));
     return statFromFileInfo(attrData);
 }
 
@@ -190,7 +188,7 @@ std::optional<PosixStat> maybeLstat(const std::filesystem::path & path)
         auto lastError = GetLastError();
         if (lastError == ERROR_FILE_NOT_FOUND || lastError == ERROR_PATH_NOT_FOUND)
             return std::nullopt;
-        throw WinError(lastError, "getting status of %s", PathFmt(path));
+        throw windows::WinError(lastError, "getting status of %s", PathFmt(path));
     }
     return statFromFileInfo(attrData);
 }

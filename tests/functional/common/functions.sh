@@ -101,7 +101,7 @@ killDaemon() {
       die "killDaemon: not supported when testing on NixOS. Is it really needed? If so add conditionals; e.g. if ! isTestOnNixOS; then ..."
     fi
 
-    # Don't fail trying to stop a non-existant daemon twice.
+    # Don't fail trying to stop a non-existent daemon twice.
     if [[ "${_NIX_TEST_DAEMON_PID-}" == '' ]]; then
         return
     fi

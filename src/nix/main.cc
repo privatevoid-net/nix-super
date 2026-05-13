@@ -22,7 +22,6 @@
 #include "nix/expr/eval-cache.hh"
 #include "nix/flake/flake.hh"
 #include "nix/flake/settings.hh"
-#include "nix/util/json-utils.hh"
 
 #include "self-exe.hh"
 #include "crash-handler.hh"
@@ -42,15 +41,15 @@
 #  include "nix/util/linux-namespaces.hh"
 #endif
 
+#include "nix/util/strings.hh"
+
+namespace nix {
+
 #ifndef _WIN32
 extern std::string chrootHelperName;
 
 void chrootHelper(int argc, char ** argv);
 #endif
-
-#include "nix/util/strings.hh"
-
-namespace nix {
 
 /* Check if we have a non-loopback/link-local network interface. */
 static bool haveInternet()
@@ -598,13 +597,5 @@ int main(int argc, char ** argv)
 {
     // The CLI has a more detailed version than the libraries; see nixVersion.
     nix::nixVersion = NIX_CLI_VERSION;
-#ifndef _WIN32
-    // Increase the default stack size for the evaluator and for
-    // libstdc++'s std::regex.
-    // This used to be 64 MiB, but macOS as deployed on GitHub Actions has a
-    // hard limit slightly under that, so we round it down a bit.
-    nix::setStackSize(60 * 1024 * 1024);
-#endif
-
     return nix::handleExceptions(argv[0], [&]() { nix::mainWrapped(argc, argv); });
 }

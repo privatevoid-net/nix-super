@@ -2,14 +2,12 @@
 #include "nix/util/current-process.hh"
 #include "run.hh"
 #include "nix/cmd/command-installable-value.hh"
-#include "nix/main/common-args.hh"
 #include "nix/main/shared.hh"
 #include "nix/util/signals.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/derivations.hh"
 #include "nix/store/local-fs-store.hh"
 #include "nix/util/finally.hh"
-#include "nix/util/source-accessor.hh"
 #include "nix/expr/eval.hh"
 #include "nix/util/util.hh"
 #include "nix/store/globals.hh"
@@ -21,15 +19,11 @@
 #  include "nix/store/personality.hh"
 #endif
 
-#include <queue>
-
 extern char ** environ __attribute__((weak));
 
-using namespace nix;
+namespace nix {
 
 std::string chrootHelperName = "__run_in_chroot";
-
-namespace nix {
 
 /* Convert `env` to a list of strings suitable for `execve`'s `envp` argument. */
 Strings toEnvp(StringMap env)
@@ -112,8 +106,6 @@ void execProgramInStore(
 
     throw SysError("unable to execute '%s'", program);
 }
-
-} // namespace nix
 
 struct CmdRun : InstallableValueCommand, MixEnvironment
 {
@@ -269,3 +261,5 @@ void chrootHelper(int argc, char ** argv)
     throw Error("mounting the Nix store on '%s' is not supported on this platform", storeDir);
 #endif
 }
+
+} // namespace nix

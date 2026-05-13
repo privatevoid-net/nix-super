@@ -1,12 +1,10 @@
 #include "nix/cmd/command.hh"
 #include "nix/main/common-args.hh"
 #include "nix/store/store-api.hh"
-#include "nix/util/archive.hh"
-#include "nix/util/git.hh"
 #include "nix/util/posix-source-accessor.hh"
 #include "nix/cmd/misc-store-flags.hh"
 
-using namespace nix;
+namespace nix {
 
 struct CmdAddToStore : MixDryRun, StoreCommand
 {
@@ -38,7 +36,7 @@ struct CmdAddToStore : MixDryRun, StoreCommand
         if (!namePart)
             namePart = path.filename().string();
 
-        auto sourcePath = PosixSourceAccessor::createAtRoot(makeParentCanonical(path));
+        auto sourcePath = makeFSSourceAccessor(absPath(path));
 
         auto storePath = dryRun ? store->computeStorePath(*namePart, sourcePath, caMethod, hashAlgo, {}).first
                                 : store->addToStoreSlow(*namePart, sourcePath, caMethod, hashAlgo, {}).path;
@@ -86,3 +84,5 @@ struct CmdAddPath : CmdAddToStore
 static auto rCmdAddFile = registerCommand2<CmdAddFile>({"store", "add-file"});
 static auto rCmdAddPath = registerCommand2<CmdAddPath>({"store", "add-path"});
 static auto rCmdAdd = registerCommand2<CmdAdd>({"store", "add"});
+
+} // namespace nix

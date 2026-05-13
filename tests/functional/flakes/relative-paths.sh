@@ -65,7 +65,7 @@ git -C "$rootFlake" add flake.nix sub2/flake.nix
 
 [[ $(nix eval "$subflake2#y") = 15 ]]
 
-# Make sure that this still works after commiting the lock file.
+# Make sure that this still works after committing the lock file.
 git -C "$rootFlake" add sub2/flake.lock
 [[ $(nix eval "$subflake2#y") = 15 ]]
 

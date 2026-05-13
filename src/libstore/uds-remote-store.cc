@@ -1,8 +1,8 @@
 #include "nix/store/uds-remote-store.hh"
+#include "nix/util/environment-variables.hh"
 #include "nix/util/unix-domain-socket.hh"
 #include "nix/store/worker-protocol.hh"
 #include "nix/store/store-registration.hh"
-#include "nix/store/globals.hh"
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -25,6 +25,10 @@ std::filesystem::path getDaemonSocketPath(const Store::Config & config)
         .transform([](auto && s) { return std::filesystem::path{s}; })
         .value_or(config.getStateDir() / "daemon-socket" / "socket");
 }
+
+void UDSRemoteStoreConfig::anchor() {}
+
+void UDSRemoteStore::anchor() {}
 
 UDSRemoteStoreConfig::UDSRemoteStoreConfig(const std::filesystem::path & path, const StoreReference::Params & params)
     : Store::Config{params, FilePathType::Native}

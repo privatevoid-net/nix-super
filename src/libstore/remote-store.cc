@@ -1,3 +1,5 @@
+#include "nix/store/path.hh"
+#include "nix/store/store-api.hh"
 #include "nix/util/serialise.hh"
 #include "nix/util/util.hh"
 #include "nix/store/path-with-outputs.hh"
@@ -13,12 +15,12 @@
 #include "nix/store/derivations.hh"
 #include "nix/util/pool.hh"
 #include "nix/util/finally.hh"
-#include "nix/util/git.hh"
 #include "nix/util/logging.hh"
 #include "nix/util/callback.hh"
 #include "nix/store/filetransfer.hh"
 #include "nix/util/signals.hh"
 #include "nix/util/socket.hh"
+#include <variant>
 
 #ifndef _WIN32
 #  include <sys/socket.h>
@@ -27,6 +29,8 @@
 #include <nlohmann/json.hpp>
 
 namespace nix {
+
+void RemoteStoreConfig::anchor() {}
 
 /* TODO: Separate these store types into different files, give them better names */
 RemoteStore::RemoteStore(const Config & config)
@@ -57,6 +61,8 @@ RemoteStore::RemoteStore(const Config & config)
 {
 }
 
+void RemoteStore::anchor() {}
+
 ref<RemoteStore::Connection> RemoteStore::openConnectionWrapper()
 {
     if (failed) {
@@ -83,7 +89,12 @@ void RemoteStore::initConnection(Connection & conn)
         StringSink saved;
         TeeSource tee(conn.from, saved);
         try {
-            conn.protoVersion = WorkerProto::BasicClientConnection::handshake(conn.to, tee, WorkerProto::latest);
+            // The DisableSetOptions feature isn't in the `latest` constant because it is shared with the daemon,
+            // which only adds the feature under certain conditions. Adding is easier than removing.
+            auto localVersion = WorkerProto::latest;
+            localVersion.features.insert(std::string{WorkerProto::featureDisableSetOptions});
+
+            conn.protoVersion = WorkerProto::BasicClientConnection::handshake(conn.to, tee, localVersion);
             if (conn.protoVersion.number < WorkerProto::minimum.number)
                 throw Error("the Nix daemon version is too old");
         } catch (SerialisationError & e) {
@@ -109,7 +120,8 @@ void RemoteStore::initConnection(Connection & conn)
         throw Error("cannot open connection to remote store '%s': %s", config.getHumanReadableURI(), e.what());
     }
 
-    setOptions(conn);
+    if (!conn.protoVersion.features.contains(WorkerProto::featureDisableSetOptions))
+        setOptions(conn);
 }
 
 void RemoteStore::setOptions(Connection & conn)
@@ -458,7 +470,7 @@ void RemoteStore::addToStore(const ValidPathInfo & info, Source & source, Repair
 void RemoteStore::addMultipleToStore(
     PathsSource && pathsToCopy, Activity & act, RepairFlag repair, CheckSigsFlag checkSigs)
 {
-    if (getConnection()->protoVersion < WorkerProto::Version{.number = {1, 32}}) {
+    if (getConnection()->protoVersion.number < WorkerProto::Version::Number{1, 32}) {
         Store::addMultipleToStore(std::move(pathsToCopy), act, repair, checkSigs);
         return;
     }
@@ -680,9 +692,32 @@ void RemoteStore::collectGarbage(const GCOptions & options, GCResults & results)
 {
     auto conn(getConnection());
 
-    conn->to << WorkerProto::Op::CollectGarbage;
-    WorkerProto::write(*this, *conn, options.action);
-    WorkerProto::write(*this, *conn, options.pathsToDelete);
+    bool supportsDeleteSpecificReferrers =
+        conn->protoVersion.features.contains(WorkerProto::featureDeleteDeadSpecificReferrers);
+
+    if (supportsDeleteSpecificReferrers) {
+        conn->to << WorkerProto::Op::CollectGarbage;
+        WorkerProto::write(*this, *conn, options.action);
+        WorkerProto::write(*this, *conn, options.pathsToDelete);
+    } else {
+        auto paths = std::visit(
+            overloaded{
+                [&](const GCOptions::SpecificPaths & paths) {
+                    if (options.action != GCOptions::gcDeleteSpecific)
+                        throw Error(
+                            "Your daemon version is too old to support garbage collecting a specific set of paths");
+                    if (paths.deleteReferrers)
+                        throw Error("Your daemon version is too old to support deleting referrers.");
+                    return paths.paths;
+                },
+                [](const GCOptions::WholeStore & _) { return StorePathSet{}; },
+            },
+            options.pathsToDelete);
+        conn->to << WorkerProto::Op::CollectGarbage;
+        WorkerProto::write(*this, *conn, options.action);
+        WorkerProto::write(*this, *conn, paths);
+    }
+
     conn->to << options.ignoreLiveness
              << options.maxFreed
              /* removed options */

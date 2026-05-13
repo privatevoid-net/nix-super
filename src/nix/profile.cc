@@ -20,7 +20,7 @@
 
 #include "nix/util/strings.hh"
 
-using namespace nix;
+namespace nix {
 
 struct ProfileElementSource
 {
@@ -126,7 +126,7 @@ struct ProfileManifest
         auto manifestPath = profile / "manifest.json";
 
         if (std::filesystem::exists(manifestPath)) {
-            auto json = nlohmann::json::parse(readFile(manifestPath.string()));
+            auto json = nlohmann::json::parse(readFile(manifestPath));
 
             auto version = json.value("version", 0);
             std::string sUrl;
@@ -251,13 +251,13 @@ struct ProfileManifest
             }
         }
 
-        buildProfile(tempDir.string(), std::move(pkgs));
+        buildProfile(tempDir, std::move(pkgs));
 
         writeFile(tempDir / "manifest.json", toJSON(*store).dump());
 
         /* Add the symlink tree to the store. */
         StringSink sink;
-        dumpPath(tempDir.string(), sink);
+        dumpPath(tempDir, sink);
 
         auto narHash = hashString(HashAlgorithm::SHA256, sink.s);
 
@@ -1032,3 +1032,5 @@ struct CmdProfile : NixMultiCommand
 };
 
 static auto rCmdProfile = registerCommand<CmdProfile>("profile");
+
+} // namespace nix

@@ -23,6 +23,10 @@ class RemoteFSAccessor;
 
 struct RemoteStoreConfig : virtual StoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     RemoteStoreConfig(const Params & params, FilePathType pathType)
         : StoreConfig(params, pathType)
     {
@@ -44,6 +48,10 @@ struct RemoteStoreConfig : virtual StoreConfig
  */
 struct RemoteStore : public virtual Store, public virtual GcStore, public virtual LogStore
 {
+private:
+    void anchor() override;
+
+public:
     using Config = RemoteStoreConfig;
 
     const Config & config;

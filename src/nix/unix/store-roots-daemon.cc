@@ -7,7 +7,7 @@
 
 #include <thread>
 
-using namespace nix;
+namespace nix {
 
 struct CmdRootsDaemon : StoreConfigCommand
 {
@@ -44,6 +44,7 @@ struct CmdRootsDaemon : StoreConfigCommand
             {
                 .socketPath = gcSocketPath,
                 .socketMode = 0666,
+                .activationName = "nix-roots-daemon.socket",
             },
             [&](AutoCloseFD remote, std::function<void()> closeListeners) {
                 std::thread([&, remote = std::move(remote)]() mutable {
@@ -64,3 +65,5 @@ struct CmdRootsDaemon : StoreConfigCommand
 };
 
 static auto rCmdStoreRootsDaemon = registerCommand2<CmdRootsDaemon>({"store", "roots-daemon"});
+
+} // namespace nix

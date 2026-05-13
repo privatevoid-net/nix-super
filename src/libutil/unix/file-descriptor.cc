@@ -1,14 +1,11 @@
 #include "nix/util/file-system.hh"
 #include "nix/util/file-system-at.hh"
 #include "nix/util/signals.hh"
-#include "nix/util/finally.hh"
-#include "nix/util/serialise.hh"
 
 #include <fcntl.h>
 #include <unistd.h>
 #include <span>
 
-#include "util-config-private.hh"
 #include "util-unix-config-private.hh"
 
 namespace nix {
@@ -36,7 +33,7 @@ size_t readOffset(Descriptor fd, off_t offset, std::span<std::byte> buffer)
     ssize_t n;
     do {
         checkInterrupt();
-        n = pread(fd, buffer.data(), buffer.size(), offset);
+        n = ::pread(fd, buffer.data(), buffer.size(), offset);
     } while (n == -1 && errno == EINTR);
     if (n == -1)
         throw SysError("pread of %1% bytes at offset %2%", buffer.size(), offset);

@@ -1,6 +1,5 @@
 #include "nix/store/local-binary-cache-store.hh"
-#include "nix/store/globals.hh"
-#include "nix/store/nar-info-disk-cache.hh"
+#include "nix/util/environment-variables.hh"
 #include "nix/util/signals.hh"
 #include "nix/store/store-registration.hh"
 
@@ -53,6 +52,10 @@ StoreReference LocalBinaryCacheStoreConfig::getReference() const
 
 struct LocalBinaryCacheStore : virtual BinaryCacheStore
 {
+private:
+    void anchor() override;
+
+public:
     using Config = LocalBinaryCacheStoreConfig;
 
     ref<Config> config;
@@ -139,6 +142,10 @@ StringSet LocalBinaryCacheStoreConfig::uriSchemes()
     else
         return {"file"};
 }
+
+void LocalBinaryCacheStoreConfig::anchor() {}
+
+void LocalBinaryCacheStore::anchor() {}
 
 ref<Store> LocalBinaryCacheStoreConfig::openStore() const
 {

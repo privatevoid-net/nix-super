@@ -33,7 +33,6 @@ let
   forAllPackages = forAllPackages' { };
   forAllPackages' =
     {
-      enableBindings ? false,
       enableDocs ? false, # already have separate attrs for these
     }:
     lib.genAttrs (
@@ -66,9 +65,6 @@ let
         "nix-json-schema-checks"
         "nix-clang-tidy-plugin"
       ]
-      ++ lib.optionals enableBindings [
-        "nix-perl-bindings"
-      ]
       ++ lib.optionals enableDocs [
         "nix-manual"
         "nix-manual-manpages-only"
@@ -85,7 +81,6 @@ rec {
     let
       arbitrarySystem = "x86_64-linux";
       listedPkgs = forAllPackages' {
-        enableBindings = true;
         enableDocs = true;
       } (_: null);
       actualPkgs = lib.concatMapAttrs (
@@ -176,8 +171,6 @@ rec {
             # Build without unity to catch include issues.
             withUnityBuild = false;
             nix-expr = super.nix-expr.override { enableGC = false; };
-            # Unclear how to make Perl bindings work with a dynamically linked ASAN.
-            nix-perl-bindings = null;
           }
         )
       );
@@ -201,8 +194,6 @@ rec {
         pkgs.nixComponents2.overrideScope (
           self: super: {
             withTSan = true;
-            # Dies at startup.
-            nix-perl-bindings = null;
             # TSan has issues with fork and threads.
             nix-functional-tests = super.nix-functional-tests.overrideAttrs { doCheck = false; };
           }
@@ -218,6 +209,8 @@ rec {
       tidyScope = pkgs.nixComponents2.overrideScope (
         self: super: {
           withClangTidy = true;
+          # clang-tidy doesn't seem to like unity builds.
+          withUnityBuild = false;
           # nix-everything is built via callPackage (not the layer system), so
           # enableClangTidyLayer's doCheck=false doesn't reach it. Set it here
           # so checkInputs (the *-tests.tests.run derivations) aren't pulled in.
@@ -254,9 +247,6 @@ rec {
       ) (forAllSystems (system: components.${system}.${pkgName}))
     );
 
-  # Perl bindings for various platforms.
-  perlBindings = forAllSystems (system: nixpkgsFor.${system}.native.nixComponents2.nix-perl-bindings);
-
   # Binary tarball for various platforms, containing a Nix store
   # with the closure of 'nix' package, and the second half of
   # the installation script.
@@ -286,6 +276,7 @@ rec {
     self.hydraJobs.binaryTarballCross."x86_64-linux"."armv6l-unknown-linux-gnueabihf"
     self.hydraJobs.binaryTarballCross."x86_64-linux"."armv7l-unknown-linux-gnueabihf"
     self.hydraJobs.binaryTarballCross."x86_64-linux"."riscv64-unknown-linux-gnu"
+    self.hydraJobs.binaryTarballCross."x86_64-linux"."x86_64-unknown-freebsd"
   ];
 
   installerScriptForGHA = forAllSystems (
@@ -294,6 +285,32 @@ rec {
       tarballs = [ self.hydraJobs.binaryTarball.${system} ];
     }
   );
+
+  # `NixOS/nix-installer` with this revision's Nix closure embedded.
+  rustInstaller =
+    lib.genAttrs
+      (
+        linux64BitSystems
+        ++ [
+          "x86_64-darwin"
+          "aarch64-darwin"
+        ]
+      )
+      (
+        system:
+        let
+          pkgs = nixpkgsFor.${system}.native;
+          # Embed the native (glibc) Nix even though the Linux installer
+          # binary is static/musl.
+          tarball = pkgs.callPackage ./rust-installer/tarball.nix {
+            nix = pkgs.nixComponents2.nix-everything;
+          };
+          builder = if pkgs.stdenv.hostPlatform.isLinux then pkgs.pkgsStatic else pkgs;
+        in
+        builder.callPackage ./rust-installer {
+          inherit tarball;
+        }
+      );
 
   # docker image with Nix inside
   dockerImage = lib.genAttrs linux64BitSystems (system: self.packages.${system}.dockerImage);

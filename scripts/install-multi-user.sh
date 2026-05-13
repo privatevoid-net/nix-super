@@ -270,7 +270,7 @@ _diff() {
         printf -v CHANGED_GROUP_FORMAT "%b" "${GREEN}%>${RED}%<${ESC}"
         diff --changed-group-format="$CHANGED_GROUP_FORMAT" "$@"
     else
-    # simple colorized diff comatible w/ pre `--color` versions
+    # simple colorized diff compatible w/ pre `--color` versions
         diff --unchanged-group-format="$_UNCHANGED_GRP_FMT" --old-line-format="$_OLD_LINE_FMT" --new-line-format="$_NEW_LINE_FMT" --unchanged-line-format="  %L" "$@"
     fi
 }
@@ -961,7 +961,7 @@ configure_shell_profile() {
 cert_in_store() {
     # in a subshell
     # - change into the cert-file dir
-    # - get the phyiscal pwd
+    # - get the physical pwd
     # and test if this path is in the Nix store
     [[ "$(cd -- "$(dirname "$NIX_SSL_CERT_FILE")" && exec pwd -P)" == "$NIX_ROOT/store/"* ]]
 }

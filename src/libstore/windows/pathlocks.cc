@@ -5,14 +5,11 @@
 #include "nix/util/util.hh"
 #include "nix/util/windows-environment.hh"
 
-#ifdef _WIN32
-#  include <errhandlingapi.h>
-#  include <fileapi.h>
-#  include <windows.h>
+#include <errhandlingapi.h>
+#include <fileapi.h>
+#include <windows.h>
 
 namespace nix {
-
-using namespace nix::windows;
 
 void deleteLockFile(const std::filesystem::path & path, Descriptor desc)
 {
@@ -60,6 +57,7 @@ AutoCloseFD openLockFile(const std::filesystem::path & path, bool create)
 template<typename... Args>
 static bool warnOrThrowWine(DWORD lastError, const std::string & fs, const Args &... args)
 {
+    using namespace nix::windows;
     if (isWine()) {
         warn(fs + ": %s (ignored under Wine)", args..., lastError);
         return true;
@@ -167,4 +165,3 @@ FdLock::FdLock(Descriptor desc, LockType lockType, bool wait, std::string_view w
 }
 
 } // namespace nix
-#endif

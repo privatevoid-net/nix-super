@@ -23,6 +23,10 @@ StringSet HttpBinaryCacheStoreConfig::uriSchemes()
     return ret;
 }
 
+void HttpBinaryCacheStoreConfig::anchor() {}
+
+void HttpBinaryCacheStore::anchor() {}
+
 HttpBinaryCacheStoreConfig::HttpBinaryCacheStoreConfig(ParsedURL _cacheUri, const Params & params)
     : StoreConfig(params, FilePathType::Unix)
     , BinaryCacheStoreConfig(params)
@@ -214,7 +218,7 @@ void HttpBinaryCacheStore::upsertFile(
     } catch (FileTransferError & e) {
         UploadToHTTP err(e.message());
         err.addTrace({}, "while uploading to HTTP binary cache at '%s'", config->cacheUri.to_string());
-        throw err;
+        throw std::move(err);
     }
 }
 

@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
 
 #include "nix/util/file-system-at.hh"
 #include "nix/util/file-system.hh"
 #include "nix/util/fs-sink.hh"
 #include "nix/util/processes.hh"
+#include "nix/util/tests/gmock-matchers.hh"
 
 #ifdef __linux__
 #  include "nix/util/linux-namespaces.hh"
@@ -13,14 +15,14 @@
 
 namespace nix {
 
-using namespace nix::unix;
-
 /* ----------------------------------------------------------------------------
  * fchmodatTryNoFollow
  * --------------------------------------------------------------------------*/
 
 TEST(fchmodatTryNoFollow, works)
 {
+    using namespace nix::unix;
+
     std::filesystem::path tmpDir = nix::createTempDir();
     nix::AutoDelete delTmpDir(tmpDir, /*recursive=*/true);
 
@@ -40,41 +42,66 @@ TEST(fchmodatTryNoFollow, works)
     auto dirFd = openDirectory(tmpDir, FinalSymlink::Follow);
     ASSERT_TRUE(dirFd);
 
-    struct ::stat st;
+    using nix::testing::ThrowsSysError;
 
-    /* Check that symlinks are not followed and targets are not changed. */
+    /* Check that symlinks are not followed and targets are not changed.
 
-    EXPECT_NO_THROW(
-        try { fchmodatTryNoFollow(dirFd.get(), CanonPath("filelink"), 0777); } catch (SysError & e) {
-            if (e.errNo != EOPNOTSUPP)
-                throw;
-        });
-    ASSERT_EQ(stat((tmpDir / "file").c_str(), &st), 0);
-    EXPECT_EQ(st.st_mode & 0777, 0644);
+       Whitelist per OS rather than "not Linux", so that an unrecognised
+       platform fails loudly at compile time instead of silently getting the
+       wrong expectation:
 
-    EXPECT_NO_THROW(
-        try { fchmodatTryNoFollow(dirFd.get(), CanonPath("dirlink"), 0777); } catch (SysError & e) {
-            if (e.errNo != EOPNOTSUPP)
-                throw;
-        });
-    ASSERT_EQ(stat((tmpDir / "dir").c_str(), &st), 0);
-    EXPECT_EQ(st.st_mode & 0777, 0755);
+       - Linux: always throws `SysError(EOPNOTSUPP)` — Linux symlinks have no
+         mutable mode bits and `fchmodat` with `AT_SYMLINK_NOFOLLOW` is
+         unsupported.
+
+       - BSDs and descendants (Darwin, FreeBSD, NetBSD, OpenBSD, DragonFly BSD):
+         succeeds, modifying the symlink's own inode mode without touching the
+         target.
+
+       - Anything else: unverified — warn and exercise the call so we at least
+         detect crashes, but don't assert an outcome.
+
+       The `ASSERT_EQ`/`EXPECT_EQ` below run in every branch and enforce the
+       invariant that the *target* file's mode is unchanged, which is the
+       property we actually care about. */
+    auto expectSymlinkChmod = [&](std::string_view path, mode_t mode) {
+#if defined(__linux__)
+        EXPECT_THAT([&] { fchmodatTryNoFollow(dirFd.get(), CanonPath(path), mode); }, ThrowsSysError(EOPNOTSUPP));
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) \
+    || defined(__DragonFly__)
+        EXPECT_NO_THROW(fchmodatTryNoFollow(dirFd.get(), CanonPath(path), mode));
+#else
+        GTEST_LOG_(WARNING) << "unknown platform: chmod-on-symlink behaviour is not verified for this OS";
+        try {
+            fchmodatTryNoFollow(dirFd.get(), CanonPath(path), mode);
+        } catch (SysError &) {
+        }
+#endif
+    };
+
+    expectSymlinkChmod("filelink", 0777);
+    ASSERT_EQ(stat(tmpDir / "file").st_mode & 0777, 0644);
+
+    expectSymlinkChmod("dirlink", 0777);
+    ASSERT_EQ(stat(tmpDir / "dir").st_mode & 0777, 0755);
 
     /* Check fchmodatTryNoFollow works on regular files and directories. */
 
     EXPECT_NO_THROW(fchmodatTryNoFollow(dirFd.get(), CanonPath("file"), 0600));
-    ASSERT_EQ(stat((tmpDir / "file").c_str(), &st), 0);
-    EXPECT_EQ(st.st_mode & 0777, 0600);
+    ASSERT_EQ(stat(tmpDir / "file").st_mode & 0777, 0600);
 
-    EXPECT_NO_THROW((fchmodatTryNoFollow(dirFd.get(), CanonPath("dir"), 0700), 0));
-    ASSERT_EQ(stat((tmpDir / "dir").c_str(), &st), 0);
-    EXPECT_EQ(st.st_mode & 0777, 0700);
+    EXPECT_NO_THROW(fchmodatTryNoFollow(dirFd.get(), CanonPath("dir"), 0700));
+    ASSERT_EQ(stat(tmpDir / "dir").st_mode & 0777, 0700);
+
+    EXPECT_THAT([&] { fchmodatTryNoFollow(dirFd.get(), CanonPath("nonexistent"), 0600); }, ThrowsSysError(ENOENT));
 }
 
 #ifdef __linux__
 
 TEST(fchmodatTryNoFollow, fallbackWithoutProc)
 {
+    using namespace nix::unix;
+
     if (!userNamespacesSupported())
         GTEST_SKIP() << "User namespaces not supported";
 

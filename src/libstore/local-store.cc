@@ -56,6 +56,14 @@
 
 namespace nix {
 
+void LocalStoreConfig::anchor() {}
+
+void LocalBuildStoreConfig::anchor() {}
+
+void LocalStore::anchor() {}
+
+void GcStore::anchor() {}
+
 LocalStoreConfig::LocalStoreConfig(const std::filesystem::path & path, const Params & params)
     : StoreConfig(params, FilePathType::Native)
     , LocalFSStoreConfig(path, params)
@@ -210,7 +218,7 @@ LocalStore::LocalStore(ref<const Config> config)
 #if HAVE_POSIX_FALLOCATE
             res = posix_fallocate(fd.get(), 0, gcSettings.reservedSize);
 #endif
-            if (res == -1) {
+            if (res != 0) {
                 writeFull(fd.get(), std::string(gcSettings.reservedSize, 'X'));
                 [[gnu::unused]] auto res2 =
 
@@ -584,7 +592,7 @@ void LocalStore::upgradeDBSchema(State & state)
         debug("executing Nix database schema migration '%s'...", migrationName);
 
         SQLiteTxn txn(state.db);
-        state.db.exec(stmt + fmt(";\ninsert into SchemaMigrations values('%s')", migrationName));
+        state.db.exec(stmt + fmt(";\ninsert or ignore into SchemaMigrations values('%s')", migrationName));
         txn.commit();
 
         schemaMigrations.insert(migrationName);
@@ -1005,7 +1013,7 @@ void LocalStore::invalidatePath(State & state, const StorePath & path)
     /* Note that the foreign key constraints on the Refs table take
        care of deleting the references entries for `path'. */
 
-    pathInfoCache->lock()->erase(path);
+    invalidatePathInfoCacheFor(path);
 }
 
 const PublicKeys & LocalStore::getPublicKeys()
@@ -1041,17 +1049,18 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairF
             auto realPath = toRealPath(info.path);
 
             /* Lock the output path.  But don't lock if we're being called
-            from a build hook (whose parent process already acquired a
-            lock on this path). */
+               from a build hook (whose parent process already acquired a
+               lock on this path). */
             if (!locksHeld.count(printStorePath(info.path)))
                 outputLock.lockPaths({realPath});
 
-            if (repair || !isValidPath(info.path)) {
+            /* The path may have been created by another process in the meantime, so check again. */
+            if (repair || !isValidPathUncached(info.path)) {
 
                 deletePath(realPath);
 
                 /* While restoring the path from the NAR, compute the hash
-                of the NAR. */
+                   of the NAR. */
                 HashSink hashSink(HashAlgorithm::SHA256);
 
                 TeeSource wrapperSource{source, hashSink};
@@ -1064,8 +1073,8 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairF
                     throw Error(
                         "hash mismatch importing path '%s';\n  specified: %s\n  got:       %s",
                         printStorePath(info.path),
-                        info.narHash.to_string(HashFormat::Nix32, true),
-                        hashResult.hash.to_string(HashFormat::Nix32, true));
+                        info.narHash.to_string(HashFormat::SRI, true),
+                        hashResult.hash.to_string(HashFormat::SRI, true));
 
                 if (hashResult.numBytesDigested != info.narSize)
                     throw Error(
@@ -1077,8 +1086,7 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairF
                 if (info.ca) {
                     auto & specified = *info.ca;
                     auto actualHash = ({
-                        auto accessor = getFSAccessor(false);
-                        CanonPath path{info.path.to_string()};
+                        SourcePath sourcePath = requireStoreObjectAccessor(info.path, /*requireValidPath=*/false);
                         Hash h{HashAlgorithm::SHA256}; // throwaway def to appease C++
                         auto fim = specified.method.getFileIngestionMethod();
                         switch (fim) {
@@ -1088,12 +1096,12 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairF
                                 specified.hash.algo,
                                 std::string{info.path.hashPart()},
                             };
-                            dumpPath({accessor, path}, caSink, (FileSerialisationMethod) fim);
+                            dumpPath(sourcePath, caSink, (FileSerialisationMethod) fim);
                             h = caSink.finish().hash;
                             break;
                         }
                         case FileIngestionMethod::Git:
-                            h = git::dumpHash(specified.hash.algo, {accessor, path}).hash;
+                            h = git::dumpHash(specified.hash.algo, sourcePath).hash;
                             break;
                         }
                         ContentAddress{
@@ -1122,7 +1130,9 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairF
                 }
 
                 registerValidPath(info);
-            }
+            } else
+                // We may have a negative cache entry for this path, so get rid of it.
+                invalidatePathInfoCacheFor(info.path);
 
             outputLock.setDeletion(true);
         }
@@ -1208,7 +1218,7 @@ StorePath LocalStore::addToStoreFromDump(
         delTempDir = std::make_unique<AutoDelete>(tempDir);
         tempPath = tempDir / "x";
 
-        restorePath(tempPath.string(), bothSource, dumpMethod, localSettings.fsyncStorePaths);
+        restorePath(tempPath, bothSource, dumpMethod, localSettings.fsyncStorePaths);
 
         dumpBuffer.reset();
         dump = {};
@@ -1239,7 +1249,8 @@ StorePath LocalStore::addToStoreFromDump(
 
         PathLocks outputLock({realPath});
 
-        if (repair || !isValidPath(dstPath)) {
+        /* The path may have been created by another process in the meantime, so check again. */
+        if (repair || !isValidPathUncached(dstPath)) {
 
             deletePath(realPath);
 
@@ -1261,7 +1272,7 @@ StorePath LocalStore::addToStoreFromDump(
                 }
             } else {
                 /* Move the temporary path we restored above. */
-                moveFile(tempPath.string(), realPath);
+                moveFile(tempPath, realPath);
             }
 
             /* For computing the nar hash. In recursive SHA-256 mode, this
@@ -1286,7 +1297,9 @@ StorePath LocalStore::addToStoreFromDump(
             auto info = ValidPathInfo::makeFromCA(*this, name, std::move(desc), narHash.hash);
             info.narSize = narHash.numBytesDigested;
             registerValidPath(info);
-        }
+        } else
+            // We may have a negative cache entry for this path, so get rid of it.
+            invalidatePathInfoCacheFor(dstPath);
 
         outputLock.setDeletion(true);
     }
@@ -1312,7 +1325,7 @@ std::pair<std::filesystem::path, AutoCloseFD> LocalStore::createTempDirInStore()
             continue;
         }
         lockedByUs = lockFile(tmpDirFd.get(), ltWrite, true);
-    } while (!pathExists(tmpDirFn.string()) || !lockedByUs);
+    } while (!pathExists(tmpDirFn) || !lockedByUs);
     return {tmpDirFn, std::move(tmpDirFd)};
 }
 
@@ -1366,7 +1379,7 @@ bool LocalStore::verifyStore(bool checkContents, RepairFlag repair)
                 printError(
                     "link %s was modified! expected hash %s, got '%s'", PathFmt(link.path()), name.string(), hash);
                 if (repair) {
-                    std::filesystem::remove(link.path());
+                    unlinkIfExists(link.path());
                     printInfo("removed link %s", PathFmt(link.path()));
                 } else {
                     errors = true;

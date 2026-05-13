@@ -5,7 +5,6 @@
 #include "nix/store/store-open.hh"
 #include "nix/util/file-system.hh"
 #include "nix/util/hash.hh"
-#include "nix/util/tests/test-data.hh"
 
 #ifndef _WIN32
 
@@ -23,7 +22,7 @@ static void BM_RegisterValidPathsDerivations(benchmark::State & state)
 
         auto tmpRoot = createTempDir();
         auto realStoreDir = tmpRoot / "nix/store";
-        std::filesystem::create_directories(realStoreDir);
+        createDirs(realStoreDir);
 
         std::shared_ptr<Store> store = openStore(fmt("local?root=%s", tmpRoot.string()));
         auto localStore = std::dynamic_pointer_cast<LocalStore>(store);
@@ -67,7 +66,7 @@ static void BM_RegisterValidPathsDerivations(benchmark::State & state)
         state.PauseTiming();
         localStore.reset();
         store.reset();
-        std::filesystem::remove_all(tmpRoot);
+        deletePath(tmpRoot);
         state.ResumeTiming();
     }
 

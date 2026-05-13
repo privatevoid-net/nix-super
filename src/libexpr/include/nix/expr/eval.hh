@@ -489,7 +489,15 @@ private:
 
     LookupPath lookupPath;
 
-    const ref<boost::concurrent_flat_map<std::string, std::optional<SourcePath>, StringViewHash, std::equal_to<>>>
+    struct LookupPathResolvedState
+    {
+        SourcePath path;
+        const ref<boost::concurrent_flat_map<CanonPath, std::optional<SourcePath>>> resolvedPaths;
+    };
+
+    const ref<
+        boost::
+            concurrent_flat_map<std::string, std::shared_ptr<LookupPathResolvedState>, StringViewHash, std::equal_to<>>>
         lookupPathResolved;
 
     /**
@@ -626,9 +634,10 @@ public:
      *
      * If the specified search path element is a URI, download it.
      *
-     * If it is not found, return `std::nullopt`.
+     * If it is not found, return `nullptr`.
      */
-    std::optional<SourcePath> resolveLookupPathPath(const LookupPath::Path & elem, bool initAccessControl = false);
+    std::shared_ptr<LookupPathResolvedState>
+    resolveLookupPathPath(const LookupPath::Path & elem, bool initAccessControl = false);
 
     /**
      * Evaluate an expression to normal form
@@ -728,6 +737,26 @@ public:
 
     std::optional<std::string> tryAttrsToString(
         const PosIdx pos, Value & v, NixStringContext & context, bool coerceMore = false, bool copyToStore = true);
+
+    enum class CopyLazyPaths : bool {
+        PreserveLazy = false,
+        Copy = true,
+    };
+
+    /**
+     * For efficiency reasons, some store paths (as seen by the evaluator) in
+     * the storeFS at their content-addressed locations don't get copied to the
+     * store eagerly. This saves on needless I/O and possibly IPC if all the
+     * evaluator does is just evaluate nix expressions from those locations.
+     * This function copies such store objects to the store if they aren't already valid.
+     */
+    void ensureLazyPathCopied(const StorePath & path);
+
+    /**
+     * Ensure that all NixStringContextElem::Opaque context elements get fetched
+     * to the store.
+     */
+    void ensureLazyPathsCopied(const NixStringContext & context);
 
     /**
      * String coercion.
@@ -1035,9 +1064,14 @@ public:
 
     /**
      * Coerce `v` to a path and realise it, i.e. build anything in the value's string context using `realiseContext()`.
+     * @param copyLazyPaths When encountering a lazy path (i.e. a string with Opaque context that's also "mounted" on
+     * the storeFS), fetch the store path to the store.
      */
     SourcePath realisePath(
-        const PosIdx pos, Value & v, std::optional<SymlinkResolution> resolveSymlinks = SymlinkResolution::Full);
+        const PosIdx pos,
+        Value & v,
+        std::optional<SymlinkResolution> resolveSymlinks = SymlinkResolution::Full,
+        CopyLazyPaths copyLazyPaths = CopyLazyPaths::PreserveLazy);
 
     /**
      * Realise the given string with context, and return the string with outputs instead of downstream output

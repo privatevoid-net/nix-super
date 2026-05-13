@@ -3,11 +3,10 @@
 #include "nix/util/compression.hh"
 #include "nix/store/derivations.hh"
 #include "nix/util/source-accessor.hh"
-#include "nix/store/globals.hh"
+#include "nix/store/nar-info-disk-cache.hh"
 #include "nix/store/nar-info.hh"
 #include "nix/util/sync.hh"
 #include "nix/store/remote-fs-accessor.hh"
-#include "nix/store/nar-info-disk-cache.hh"
 #include "nix/util/nar-accessor.hh"
 #include "nix/util/thread-pool.hh"
 #include "nix/util/callback.hh"
@@ -17,12 +16,15 @@
 #include <chrono>
 #include <future>
 #include <regex>
-#include <fstream>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
 
 namespace nix {
+
+void BinaryCacheStoreConfig::anchor() {}
+
+void BinaryCacheStore::anchor() {}
 
 BinaryCacheStore::BinaryCacheStore(Config & config)
     : config{config}
@@ -152,8 +154,10 @@ ref<const ValidPathInfo> BinaryCacheStore::addToStoreCommon(
     {
         FdSink fileSink(fdTemp.get());
         TeeSink teeSinkCompressed{fileSink, fileHashSink};
-        auto compressionSink = makeCompressionSink(
-            config.compression, teeSinkCompressed, config.parallelCompression, config.compressionLevel);
+        bool parallel = config.parallelCompression.overridden ? config.parallelCompression.get()
+                                                              : config.compression.get() == CompressionAlgo::zstd;
+        auto compressionSink =
+            makeCompressionSink(config.compression, teeSinkCompressed, parallel, config.compressionLevel);
         TeeSink teeSinkUncompressed{*compressionSink, narHashSink};
         TeeSource teeSource{narSource, teeSinkUncompressed};
         narAccessor = makeNarAccessor(parseNarListing(teeSource));

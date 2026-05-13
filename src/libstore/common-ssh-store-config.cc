@@ -9,6 +9,8 @@ CommonSSHStoreConfig::CommonSSHStoreConfig(const ParsedURL::Authority & authorit
 {
 }
 
+void CommonSSHStoreConfig::anchor() {}
+
 SSHMaster CommonSSHStoreConfig::createSSHMaster(bool useMaster, Descriptor logFD) const
 {
     return {

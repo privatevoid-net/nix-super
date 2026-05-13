@@ -53,8 +53,6 @@ def main():
         + [t for t in custom_commands if t.endswith(".gen.inc")]
         # Flex/Bison generated parsers
         + [t for t in custom_commands if t.endswith("-tab.cc")]
-        # Perl XS generated bindings
-        + [t for t in custom_commands if t.endswith(".cc") and "perl" in t.lower()]
     )
     ninja_build(args.build_root, targets)
 

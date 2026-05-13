@@ -38,6 +38,10 @@ namespace nix {
  */
 struct IndirectRootStore : public virtual LocalFSStore
 {
+private:
+    void anchor() override;
+
+public:
     inline static std::string operationName = "Indirect GC roots registration";
 
     /**

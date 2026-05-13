@@ -8,7 +8,7 @@ project(
     'warning_level=1',
     'errorlogs=true', # Please print logs for tests that fail
   ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 
@@ -64,6 +64,7 @@ sources = files(
   'derived-path.cc',
   'downstream-placeholder.cc',
   'dummy-store.cc',
+  'filetransfer-request.cc',
   'filetransfer-retry.cc',
   'http-binary-cache-store.cc',
   'legacy-ssh-store.cc',
@@ -76,6 +77,7 @@ sources = files(
   'nar-info-disk-cache.cc',
   'nar-info.cc',
   'nix_api_store.cc',
+  'outputs-query.cc',
   'outputs-spec.cc',
   'path-info.cc',
   'path.cc',

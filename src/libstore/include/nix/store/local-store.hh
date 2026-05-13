@@ -35,8 +35,9 @@ struct LocalSettings;
 
 struct LocalBuildStoreConfig : virtual LocalFSStoreConfig
 {
-
 private:
+    void anchor() override;
+
     /**
       Input for computing the build directory. See `getBuildDir()`.
      */
@@ -89,6 +90,7 @@ struct LocalStoreConfig : std::enable_shared_from_this<LocalStoreConfig>,
     LocalStoreConfig(const std::filesystem::path & path, const Params & params);
 
 private:
+    void anchor() override;
 
     /**
      * An indirection so that we don't need to refer to global settings
@@ -177,6 +179,8 @@ public:
 
 class LocalStore : public virtual IndirectRootStore, public virtual GcStore
 {
+    void anchor() override;
+
 public:
 
     using Config = LocalStoreConfig;

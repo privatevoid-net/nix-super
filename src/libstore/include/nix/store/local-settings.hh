@@ -61,6 +61,9 @@ struct GCSettings : public virtual Config
           collector still deletes store paths that are used only at build
           time (e.g., the C compiler, or source tarballs downloaded from the
           network). To prevent it from doing so, set this option to `true`.
+
+          This option only applies to garbage collection of the whole store
+          and does not affect deleting explicit paths.
         )",
         {"gc-keep-outputs"},
     };
@@ -80,6 +83,9 @@ struct GCSettings : public virtual Config
           store path was built), so by default this option is on. Turn it off
           to save a bit of disk space (or a lot if `keep-outputs` is also
           turned on).
+
+          This option only applies to garbage collection of the whole store
+          and does not affect deleting explicit paths.
         )",
         {"gc-keep-derivations"},
     };
@@ -342,7 +348,7 @@ struct LocalSettings : public virtual Config, public GCSettings, public AutoAllo
 
     Setting<SandboxMode> sandboxMode{
         this,
-#ifdef __linux__
+#if defined(__linux__) || defined(__FreeBSD__)
         smEnabled
 #else
         smDisabled

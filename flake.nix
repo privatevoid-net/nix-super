@@ -118,9 +118,6 @@
                     {
                       config = crossSystem;
                     }
-                    // lib.optionalAttrs (crossSystem == "x86_64-unknown-freebsd13") {
-                      useLLVM = true;
-                    }
                     // lib.optionalAttrs (crossSystem == "x86_64-w64-mingw32") {
                       emulator = pkgs: "${pkgs.buildPackages.wineWow64Packages.stable_11}/bin/wine";
                     };
@@ -336,12 +333,6 @@
         // (lib.optionalAttrs (builtins.elem system linux64BitSystems)) {
           dockerImage = self.hydraJobs.dockerImage.${system};
         }
-        // (lib.optionalAttrs (!(builtins.elem system linux32BitSystems))) {
-          # Some perl dependencies are broken on i686-linux.
-          # Since the support is only best-effort there, disable the perl
-          # bindings
-          perlBindings = self.hydraJobs.perlBindings.${system};
-        }
         # Add "passthru" tests
         //
           flatMapAttrs
@@ -430,10 +421,6 @@
                 supportsCross = false;
               };
 
-              "nix-perl-bindings" = {
-                supportsCross = false;
-              };
-
               "nix-clang-tidy-plugin" = {
                 supportsCross = false;
               };
@@ -474,6 +461,9 @@
                 )
               )
             )
+        // lib.optionalAttrs (self.hydraJobs.rustInstaller ? ${system}) {
+          rustInstaller = self.hydraJobs.rustInstaller.${system};
+        }
         // lib.optionalAttrs (builtins.elem system linux64BitSystems) {
           dockerImage =
             let

@@ -13,8 +13,6 @@
 
 namespace nix {
 
-using namespace nix::windows;
-
 namespace windows {
 
 namespace {
@@ -214,7 +212,7 @@ PosixStat fstat(Descriptor fd)
 {
     BY_HANDLE_FILE_INFORMATION info;
     if (!GetFileInformationByHandle(fd, &info))
-        throw WinError("getting file information for %s", PathFmt(descriptorToPath(fd)));
+        throw windows::WinError("getting file information for %s", PathFmt(descriptorToPath(fd)));
 
     PosixStat st;
     windows::statFromFileInfo(
@@ -231,7 +229,13 @@ PosixStat fstat(Descriptor fd)
 }
 
 AutoCloseFD openFileEnsureBeneathNoSymlinks(
-    Descriptor dirFd, const CanonPath & path, ACCESS_MASK desiredAccess, ULONG createOptions, ULONG createDisposition)
+    Descriptor dirFd,
+    const CanonPath & path,
+    ACCESS_MASK desiredAccess,
+    ULONG createOptions,
+    ULONG createDisposition,
+    /* FIXME: Actually call this callback. */
+    [[maybe_unused]] std::function<void(AutoCloseFD dirFd, CanonPath relPath)> dirFdCallback)
 {
     assert(!path.isRoot());
     assert(!path.rel().starts_with('/')); /* Just in case the invariant is somehow broken. */
@@ -253,9 +257,9 @@ AutoCloseFD openFileEnsureBeneathNoSymlinks(
     /* Helper to check if a component is a symlink and throw SymlinkNotAllowed if so */
     auto throwIfSymlink = [&](std::wstring_view component, const CanonPath & pathForError) {
         try {
-            auto testHandle =
-                ntOpenAt(getParentFd(), component, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN_REPARSE_POINT);
-            if (isReparsePoint(testHandle.get()))
+            auto testHandle = windows::ntOpenAt(
+                getParentFd(), component, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_OPEN_REPARSE_POINT);
+            if (windows::isReparsePoint(testHandle.get()))
                 throw SymlinkNotAllowed(pathForError);
         } catch (SymlinkNotAllowed &) {
             throw;
@@ -272,13 +276,13 @@ AutoCloseFD openFileEnsureBeneathNoSymlinks(
         /* Open directory without following symlinks */
         AutoCloseFD parentFd2;
         try {
-            parentFd2 = ntOpenAt(
+            parentFd2 = windows::ntOpenAt(
                 getParentFd(),
                 wcomponent,
                 FILE_TRAVERSE | SYNCHRONIZE,                  // Just need traversal rights
                 FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT // Open directory, don't follow symlinks
             );
-        } catch (WinError & e) {
+        } catch (windows::WinError & e) {
             /* Check if this is because it's a symlink */
             if (e.lastError == ERROR_CANT_ACCESS_FILE || e.lastError == ERROR_ACCESS_DENIED) {
                 throwIfSymlink(wcomponent, pathUpTo(std::next(it)));
@@ -287,7 +291,7 @@ AutoCloseFD openFileEnsureBeneathNoSymlinks(
         }
 
         /* Check if what we opened is actually a symlink */
-        if (isReparsePoint(parentFd2.get())) {
+        if (windows::isReparsePoint(parentFd2.get())) {
             throw SymlinkNotAllowed(pathUpTo(std::next(it)));
         }
 
@@ -299,13 +303,13 @@ AutoCloseFD openFileEnsureBeneathNoSymlinks(
 
     AutoCloseFD finalHandle;
     try {
-        finalHandle = ntOpenAt(
+        finalHandle = windows::ntOpenAt(
             getParentFd(),
             finalComponent,
             desiredAccess,
             createOptions | FILE_OPEN_REPARSE_POINT, // Don't follow symlinks on final component either
             createDisposition);
-    } catch (WinError & e) {
+    } catch (windows::WinError & e) {
         /* Check if final component is a symlink when we requested to not follow it */
         if (e.lastError == ERROR_CANT_ACCESS_FILE) {
             throwIfSymlink(finalComponent, path);
@@ -314,7 +318,7 @@ AutoCloseFD openFileEnsureBeneathNoSymlinks(
     }
 
     /* Final check: did we accidentally open a symlink? */
-    if (isReparsePoint(finalHandle.get()))
+    if (windows::isReparsePoint(finalHandle.get()))
         throw SymlinkNotAllowed(path);
 
     return finalHandle;

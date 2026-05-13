@@ -1,16 +1,9 @@
-#include "nix/util/util.hh"
 #include "nix/util/serialise.hh"
-#include "nix/util/types.hh"
 #include "nix/util/file-system.hh"
-#include "nix/util/processes.hh"
-#include "nix/util/terminal.hh"
-#include "nix/util/strings.hh"
 
 #include <limits.h>
 #include <gtest/gtest.h>
 #include <rapidcheck/gtest.h>
-
-#include <numeric>
 
 using namespace std::string_view_literals;
 
@@ -121,7 +114,7 @@ TEST(canonPath, requiresAbsolutePath)
     ASSERT_ANY_THROW(canonPath("."sv));
     ASSERT_ANY_THROW(canonPath(".."sv));
     ASSERT_ANY_THROW(canonPath("../"sv));
-    ASSERT_DEATH({ canonPath(""sv); }, "!path.empty\\(\\)");
+    ASSERT_ANY_THROW(canonPath(""sv));
 }
 
 /* ----------------------------------------------------------------------------
@@ -261,20 +254,6 @@ TEST(pathExists, cwdExists)
 TEST(pathExists, bogusPathDoesNotExist)
 {
     ASSERT_FALSE(pathExists("/schnitzel/darmstadt/pommes"));
-}
-
-/* ----------------------------------------------------------------------------
- * makeParentCanonical
- * --------------------------------------------------------------------------*/
-
-TEST(makeParentCanonical, noParent)
-{
-    ASSERT_EQ(makeParentCanonical("file"), absPath(std::filesystem::path("file")));
-}
-
-TEST(makeParentCanonical, root)
-{
-    ASSERT_EQ(makeParentCanonical(FS_ROOT), FS_ROOT_NO_TRAILING_SLASH);
 }
 
 /* ----------------------------------------------------------------------------

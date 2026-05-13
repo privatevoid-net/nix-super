@@ -5,13 +5,13 @@
 #include "nix/store/nar-info.hh"
 
 #include <algorithm>
-#include <array>
 
 #include <nlohmann/json.hpp>
 
 #include "nix/util/strings.hh"
 
-using namespace nix;
+namespace nix {
+
 using nlohmann::json;
 
 /**
@@ -238,3 +238,5 @@ struct CmdPathInfo : StorePathsCommand, MixJSON
 };
 
 static auto rCmdPathInfo = registerCommand<CmdPathInfo>("path-info");
+
+} // namespace nix

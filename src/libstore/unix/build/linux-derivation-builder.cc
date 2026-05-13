@@ -37,8 +37,6 @@
 
 namespace nix {
 
-using namespace nix::linux;
-
 static void setupSeccomp(const LocalSettings & localSettings)
 {
     if (!localSettings.filterSyscalls)
@@ -118,7 +116,10 @@ static void setupSeccomp(const LocalSettings & localSettings)
     /* Prevent builders from using EAs or ACLs. Not all filesystems
        support these, and they're not allowed in the Nix store because
        they're not representable in the NAR serialisation. */
-    if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(getxattr), 0) != 0
+    if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(listxattr), 0) != 0
+        || seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(llistxattr), 0) != 0
+        || seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(flistxattr), 0) != 0
+        || seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(getxattr), 0) != 0
         || seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(lgetxattr), 0) != 0
         || seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(fgetxattr), 0) != 0
         || seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(setxattr), 0) != 0
@@ -337,10 +338,10 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
             /* If we're running from the daemon, then this will return the
                root cgroup of the service. Otherwise, it will return the
                current cgroup. */
-            auto cgroupFS = getCgroupFS();
+            auto cgroupFS = linux::getCgroupFS();
             if (!cgroupFS)
                 throw Error("cannot determine the cgroups file system");
-            auto rootCgroupPath = *cgroupFS / getRootCgroup().rel();
+            auto rootCgroupPath = *cgroupFS / linux::getRootCgroup().rel();
             if (!pathExists(rootCgroupPath))
                 throw Error("expected cgroup directory %s", PathFmt(rootCgroupPath));
 
@@ -363,7 +364,7 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
 
                 if (pathExists(cgroupFile)) {
                     auto prevCgroup = readFile(cgroupFile);
-                    destroyCgroup(prevCgroup);
+                    linux::destroyCgroup(prevCgroup);
                 }
 
                 writeFile(cgroupFile, cgroup->native());
@@ -825,7 +826,7 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
     void killSandbox(bool getStats) override
     {
         if (cgroup) {
-            auto stats = destroyCgroup(*cgroup);
+            auto stats = linux::destroyCgroup(*cgroup);
             if (getStats) {
                 buildResult.cpuUser = stats.cpuUser;
                 buildResult.cpuSystem = stats.cpuSystem;

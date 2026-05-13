@@ -1,15 +1,12 @@
-# This is just a stub project to include all the others as subprojects
-# for development shell purposes
+# This is just a top-level project to include all the others as subprojects
+# for development shell purposes (when building via Nix) or for distro packaging purposes.
 
 project(
-  'nix-dev-shell',
+  'Nix',
   'cpp',
   version : files('.version'),
   subproject_dir : 'src',
-  default_options : [
-    'localstatedir=/nix/var',
-  ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
 )
 
 # Internal Libraries
@@ -45,13 +42,6 @@ subproject('libexpr-c')
 subproject('libflake-c')
 subproject('libmain-c')
 
-asan_enabled = 'address' in get_option('b_sanitize')
-
-# Language Bindings
-if get_option('bindings') and not meson.is_cross_build() and not asan_enabled
-  subproject('perl')
-endif
-
 # Testing
 if get_option('unit-tests')
   subproject('libutil-test-support')
@@ -63,7 +53,11 @@ if get_option('unit-tests')
   subproject('libexpr-tests')
   subproject('libflake-tests')
 endif
-subproject('nix-functional-tests')
+
+if get_option('functional-tests')
+  subproject('nix-functional-tests')
+endif
+
 if get_option('json-schema-checks')
   subproject('json-schema-checks')
 endif

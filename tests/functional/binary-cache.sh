@@ -44,7 +44,7 @@ cacheDir2="$TEST_ROOT/binary+cache"
 nix copy --to "file://$cacheDir2" "$outPath" && [[ -d "$cacheDir2" ]]
 
 basicDownloadTests() {
-    # No uploading tests bcause upload with force HTTP doesn't work.
+    # No uploading tests because upload with force HTTP doesn't work.
 
     # By default, a binary cache doesn't support "nix-env -qas", but does
     # support installation.
@@ -276,7 +276,27 @@ nix copy --to "file://$cacheDir"?write-nar-listing=1 "$outPath"
 
 diff -u \
     <(jq -S < "$cacheDir/$(basename "$outPath" | cut -c1-32).ls") \
-    <(echo '{"version":1,"root":{"type":"directory","entries":{"bar":{"type":"regular","size":4,"narOffset":232},"link":{"type":"symlink","target":"xyzzy"}}}}' | jq -S)
+    <(jq -S <<'EOF'
+{
+  "version": 1,
+  "root": {
+    "type": "directory",
+    "entries": {
+      "bar": {
+        "type": "regular",
+        "executable": false,
+        "size": 4,
+        "narOffset": 232
+      },
+      "link": {
+        "type": "symlink",
+        "target": "xyzzy"
+      }
+    }
+  }
+}
+EOF
+    )
 
 
 # Test debug info index generation.

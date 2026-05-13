@@ -16,6 +16,10 @@ class RemoteFSAccessor;
 
 struct BinaryCacheStoreConfig : virtual StoreConfig
 {
+private:
+    void anchor() override;
+
+public:
     BinaryCacheStoreConfig(const Params & params)
         : StoreConfig(params, FilePathType::Unix)
     {
@@ -58,7 +62,11 @@ struct BinaryCacheStoreConfig : virtual StoreConfig
         this,
         false,
         "parallel-compression",
-        "Enable multi-threaded compression of NARs. This is currently only available for `xz` and `zstd`."};
+        R"(
+          Enable multi-threaded compression of NARs. This is currently only available for `xz` and `zstd`.
+
+          If not set explicitly, defaults to `true` when `compression` is `zstd` and `false` otherwise.
+        )"};
 
     Setting<int> compressionLevel{
         this,
@@ -88,6 +96,8 @@ struct alignas(8) /* Work around ASAN failures on i686-linux. */
     Config & config;
 
 private:
+    void anchor() override;
+
     std::vector<std::unique_ptr<Signer>> signers;
 
 protected:

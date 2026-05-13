@@ -10,7 +10,9 @@
 
   rapidcheck,
   gtest,
+  zstd,
   runCommand,
+  util-linux,
 
   # Configuration Options
 
@@ -44,6 +46,10 @@ mkMesonExecutable (finalAttrs: {
     nix-util-test-support
     rapidcheck
     gtest
+    zstd
+  ]
+  ++ lib.optionals stdenv.hostPlatform.isLinux [
+    util-linux
   ];
 
   mesonFlags = [
@@ -67,7 +73,29 @@ mkMesonExecutable (finalAttrs: {
               touch $out
             ''
           );
-    };
+    }
+    //
+      lib.optionalAttrs
+        (stdenv.hostPlatform.isLinux && stdenv.buildPlatform.canExecute stdenv.hostPlatform)
+        {
+          # Run the same tests with newer syscalls disabled via seccomp,
+          # to exercise fallback paths (iterative openat for openat2,
+          # /proc/self/fd for fchmodat2).
+          run-without-new-syscalls =
+            runCommand "${finalAttrs.pname}-run-without-new-syscalls"
+              {
+                meta.broken = !stdenv.hostPlatform.emulatorAvailable buildPackages;
+                nativeBuildInputs = [ util-linux ];
+              }
+              ''
+                export _NIX_TEST_UNIT_DATA=${./data}
+                enosys \
+                  --syscall openat2 \
+                  --syscall fchmodat2 \
+                  -- ${lib.getExe finalAttrs.finalPackage}
+                touch $out
+              '';
+        };
   };
 
   meta = {

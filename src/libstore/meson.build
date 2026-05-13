@@ -9,7 +9,7 @@ project(
     'errorlogs=true', # Please print logs for tests that fail
     'localstatedir=/nix/var',
   ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 
@@ -225,15 +225,14 @@ path_opts = [
   'libdir',
   'includedir',
   'libexecdir',
+  'localstatedir',
   # Homecooked Nix directories.
   'store-dir',
-  'localstatedir',
   'log-dir',
 ]
 # For your grepping pleasure, this loop sets the following variables that aren't mentioned
 # literally above:
 # store_dir
-# localstatedir
 # log_dir
 # profile_dir
 foreach optname : path_opts
@@ -404,13 +403,7 @@ libraries_private = []
 
 extra_pkg_config_variables = {
   'storedir' : get_option('store-dir'),
+  'localstatedir' : get_option('localstatedir'),
 }
-
-# Working around https://github.com/mesonbuild/meson/issues/13584
-if host_machine.system() != 'darwin'
-  extra_pkg_config_variables += {
-    'localstatedir' : get_option('localstatedir'),
-  }
-endif
 
 subdir('nix-meson-build-support/export')

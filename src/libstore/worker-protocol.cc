@@ -1,3 +1,4 @@
+#include "nix/store/store-dir-config.hh"
 #include "nix/util/serialise.hh"
 #include "nix/store/path-with-outputs.hh"
 #include "nix/store/store-api.hh"
@@ -6,11 +7,12 @@
 #include "nix/store/common-protocol.hh"
 #include "nix/store/worker-protocol.hh"
 #include "nix/store/worker-protocol-impl.hh"
-#include "nix/util/archive.hh"
 #include "nix/store/path-info.hh"
 #include "nix/util/json-utils.hh"
+#include "nix/util/util.hh"
 
 #include <chrono>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 
 namespace nix {
@@ -26,6 +28,7 @@ const WorkerProto::Version WorkerProto::latest = {
             std::string{
                 WorkerProto::featureRealisationWithPath,
             },
+            std::string{WorkerProto::featureDeleteDeadSpecificReferrers},
         },
 };
 
@@ -528,6 +531,50 @@ void WorkerProto::Serialise<Realisation>::write(const StoreDirConfig & store, Wr
 {
     WorkerProto::write(store, conn, info.id);
     WorkerProto::write(store, conn, static_cast<const UnkeyedRealisation &>(info));
+}
+
+GCOptions::SpecificPaths
+WorkerProto::Serialise<GCOptions::SpecificPaths>::read(const StoreDirConfig & store, ReadConn conn)
+{
+    GCOptions::SpecificPaths paths;
+    paths.paths = WorkerProto::Serialise<StorePathSet>::read(store, conn);
+    conn.from >> paths.deleteReferrers;
+    return paths;
+}
+
+void WorkerProto::Serialise<GCOptions::SpecificPaths>::write(
+    const StoreDirConfig & store, WriteConn conn, const GCOptions::SpecificPaths & paths)
+{
+    WorkerProto::write(store, conn, paths.paths);
+    conn.to << paths.deleteReferrers;
+}
+
+GCOptions::GCPaths WorkerProto::Serialise<GCOptions::GCPaths>::read(const StoreDirConfig & store, ReadConn conn)
+{
+    uint8_t wholeStore;
+    conn.from >> wholeStore;
+    switch (wholeStore) {
+    case 0:
+        return WorkerProto::Serialise<GCOptions::SpecificPaths>::read(store, conn);
+    case 1:
+        return GCOptions::WholeStore{};
+    default:
+        throw Error("Invalid whole store indicator from remote");
+    }
+}
+
+void WorkerProto::Serialise<GCOptions::GCPaths>::write(
+    const StoreDirConfig & store, WriteConn conn, const GCOptions::GCPaths & gcPaths)
+{
+    std::visit(
+        overloaded{
+            [&](const GCOptions::SpecificPaths paths) {
+                conn.to << uint8_t{0};
+                WorkerProto::write(store, conn, paths);
+            },
+            [&](const GCOptions::WholeStore & _) { conn.to << uint8_t{1}; },
+        },
+        gcPaths);
 }
 
 } // namespace nix

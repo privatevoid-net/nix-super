@@ -6,10 +6,9 @@
 
 #include <algorithm>
 #include <sys/socket.h>
+#include <sys/wait.h>
 
 namespace nix {
-
-using namespace nix::unix;
 
 /* ----------------------------------------------------------------------------
  * sendMessageWithFds / receiveMessageWithFds
@@ -17,6 +16,8 @@ using namespace nix::unix;
 
 TEST(MessageWithFds, streamWithData)
 {
+    using namespace nix::unix;
+
     int sockets[2];
     ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
     AutoCloseFD sender(sockets[0]);
@@ -77,6 +78,8 @@ TEST(MessageWithFds, streamWithData)
 
 TEST(MessageWithFds, datagramEmptyData)
 {
+    using namespace nix::unix;
+
     int sockets[2];
     ASSERT_EQ(socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets), 0);
     AutoCloseFD sender(sockets[0]);

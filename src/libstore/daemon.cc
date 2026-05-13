@@ -3,7 +3,6 @@
 #include "nix/store/worker-protocol.hh"
 #include "nix/store/worker-protocol-connection.hh"
 #include "nix/store/worker-protocol-impl.hh"
-#include "nix/store/build-result.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-cast.hh"
 #include "nix/store/filetransfer.hh"
@@ -16,9 +15,9 @@
 #include "nix/util/archive.hh"
 #include "nix/store/derivations.hh"
 #include "nix/util/args.hh"
-#include "nix/util/git.hh"
 #include "nix/util/logging.hh"
 #include "nix/store/globals.hh"
+#include <variant>
 
 #ifndef _WIN32 // TODO need graceful async exit support on Windows?
 #  include "nix/util/monitor-fd.hh"
@@ -747,12 +746,30 @@ static void performOp(
     case WorkerProto::Op::CollectGarbage: {
         GCOptions options;
         options.action = WorkerProto::Serialise<GCOptions::GCAction>::read(*store, rconn);
-        options.pathsToDelete = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
+        if (rconn.version.features.contains(WorkerProto::featureDeleteDeadSpecificReferrers)) {
+            options.pathsToDelete = WorkerProto::Serialise<GCOptions::GCPaths>::read(*store, rconn);
+        } else {
+            auto paths = WorkerProto::Serialise<StorePathSet>::read(*store, rconn);
+            if (options.action != GCAction::gcDeleteSpecific && paths.empty())
+                options.pathsToDelete = GCOptions::WholeStore{};
+            else
+                options.pathsToDelete = GCOptions::SpecificPaths{
+                    .paths = paths,
+                    .deleteReferrers = false,
+                };
+        }
         conn.from >> options.ignoreLiveness >> options.maxFreed;
         // obsolete fields
         readInt(conn.from);
         readInt(conn.from);
         readInt(conn.from);
+
+        if (options.action == GCAction::gcDeleteDead
+            && std::holds_alternative<GCOptions::SpecificPaths>(options.pathsToDelete)
+            && !conn.protoVersion.features.contains(WorkerProto::featureDeleteDeadSpecificReferrers)) {
+            throw Error(
+                "Garbage collecting specific paths requested but it is not supported by the negotiated protocol");
+        }
 
         GCResults results;
 
@@ -1033,8 +1050,12 @@ void processConnection(ref<Store> store, FdSource && from, FdSink && to, Trusted
 #endif
 
     /* Exchange the greeting. */
+    auto localVersion = WorkerProto::latest;
+    if (recursive)
+        localVersion.features.insert(std::string{WorkerProto::featureDisableSetOptions});
+
     WorkerProto::BasicServerConnection conn;
-    conn.protoVersion = WorkerProto::BasicServerConnection::handshake(to, from, WorkerProto::latest);
+    conn.protoVersion = WorkerProto::BasicServerConnection::handshake(to, from, localVersion);
 
     if (conn.protoVersion.number < WorkerProto::minimum.number)
         throw Error("the Nix client version is too old");

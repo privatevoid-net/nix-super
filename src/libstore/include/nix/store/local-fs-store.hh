@@ -10,6 +10,8 @@ namespace nix {
 struct LocalFSStoreConfig : virtual StoreConfig
 {
 private:
+    void anchor() override;
+
     static Setting<std::optional<AbsolutePath>>
     makeRootDirSetting(LocalFSStoreConfig & self, std::optional<AbsolutePath> defaultValue)
     {
@@ -87,6 +89,10 @@ struct alignas(8) /* Work around ASAN failures on i686-linux. */
                    virtual GcStore,
                    virtual LogStore
 {
+private:
+    void anchor() override;
+
+public:
     using Config = LocalFSStoreConfig;
 
     const Config & config;

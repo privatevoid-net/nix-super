@@ -37,7 +37,7 @@ AutoCloseFD openFileReadonly(const std::filesystem::path & path, FinalSymlink fi
 
 AutoCloseFD openNewFileForWrite(const std::filesystem::path & path, mode_t mode, OpenNewFileForWriteParams params)
 {
-    auto flags = O_WRONLY | O_CREAT | O_CLOEXEC;
+    auto flags = (params.writeOnly ? O_WRONLY : O_RDWR) | O_CREAT | O_CLOEXEC;
     if (params.truncateExisting) {
         flags |= O_TRUNC;
         if (!params.followSymlinksOnTruncate)
@@ -211,7 +211,7 @@ static void _deletePath(
                 throw;
             }
 
-        int fd = openat(parentfd, name.rel_c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        int fd = openat(parentfd, name.rel_c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (fd == -1)
             throw SysError("opening directory %1%", PathFmt(path));
         AutoCloseDir dir(fdopendir(fd));

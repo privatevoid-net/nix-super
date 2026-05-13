@@ -8,7 +8,7 @@ project(
     'warning_level=1',
     'errorlogs=true', # Please print logs for tests that fail
   ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 
@@ -40,6 +40,7 @@ subdir('nix-meson-build-support/common')
 
 sources = files(
   'access-tokens.cc',
+  'attrs.cc',
   'git-utils.cc',
   'git.cc',
   'input.cc',

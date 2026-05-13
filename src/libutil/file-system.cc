@@ -1,4 +1,3 @@
-#include "nix/util/environment-variables.hh"
 #include "nix/util/file-system.hh"
 #include "nix/util/file-path.hh"
 #include "nix/util/file-path-impl.hh"
@@ -96,7 +95,8 @@ absPath(const std::filesystem::path & path0, const std::filesystem::path * dir, 
 
 std::filesystem::path canonPath(const std::filesystem::path & path, bool resolveSymlinks)
 {
-    assert(!path.empty());
+    if (path.empty())
+        throw Error("cannot canonicalise an empty path");
 
     if (!path.is_absolute())
         throw Error("not an absolute path: %s", PathFmt(path));
@@ -394,7 +394,7 @@ void createDir(const std::filesystem::path & path, mode_t mode)
 void createDirs(const std::filesystem::path & path)
 {
     try {
-        std::filesystem::create_directories(path);
+        std::filesystem::create_directories(path); // NOLINT(bugprone-unsafe-functions)
     } catch (std::filesystem::filesystem_error & e) {
         throw SystemError(e.code(), "creating directory %1%", PathFmt(path));
     }
@@ -661,21 +661,6 @@ bool isExecutableFileAmbient(const std::filesystem::path & exe)
                   == 0;
 }
 
-std::filesystem::path makeParentCanonical(const std::filesystem::path & rawPath)
-{
-    std::filesystem::path path(absPath(rawPath));
-    try {
-        auto parent = path.parent_path();
-        if (parent == path) {
-            // `path` is a root directory => trivially canonical
-            return parent;
-        }
-        return std::filesystem::canonical(parent) / path.filename();
-    } catch (std::filesystem::filesystem_error & e) {
-        throw SystemError(e.code(), "canonicalising parent path of %1%", PathFmt(path));
-    }
-}
-
 void chmod(const std::filesystem::path & path, mode_t mode)
 {
     if (
@@ -694,6 +679,14 @@ void chmod(const std::filesystem::path & path, mode_t mode)
 #else
 #  define UNLINK_PROC ::unlink
 #endif
+
+void unlinkIfExists(const std::filesystem::path & path)
+{
+    if (UNLINK_PROC(path.c_str()) == -1) {
+        if (errno != ENOENT)
+            throw SysError("removing %s", PathFmt(path));
+    }
+}
 
 void unlink(const std::filesystem::path & path)
 {

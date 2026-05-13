@@ -3,12 +3,9 @@
 #include "nix/store/build/worker.hh"
 #include "nix/store/build/substitution-goal.hh"
 #include "nix/store/nar-info.hh"
-#include "nix/util/finally.hh"
+#include "nix/store/worker-settings.hh"
 #include "nix/util/signals.hh"
 #include "nix/util/callback.hh"
-#include "nix/store/globals.hh"
-
-#include <coroutine>
 
 namespace nix {
 
@@ -149,7 +146,7 @@ Goal::Co PathSubstitutionGoal::init()
     }
     if (lastStoresException.has_value()) {
         if (!worker.settings.tryFallback) {
-            throw *lastStoresException;
+            throw std::move(*lastStoresException);
         } else
             logError(lastStoresException->info());
     }

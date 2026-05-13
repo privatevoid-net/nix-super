@@ -163,6 +163,7 @@ typedef struct nix_c_context nix_c_context;
  * @brief Called to get the value of a string owned by Nix.
  *
  * The `start` data is borrowed and the function must not assume that the buffer persists after it returns.
+ * @warning Don't assume that the string is NUL-terminated.
  *
  * @param[in] start the string to copy.
  * @param[in] n the string length.

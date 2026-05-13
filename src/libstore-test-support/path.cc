@@ -1,11 +1,7 @@
-#include <exception> // Needed by rapidcheck on Darwin
-#include <regex>
+#include <exception> // IWYU pragma: keep (Needed by rapidcheck on Darwin and FreeBSD)
 
 #include <rapidcheck/gen/Arbitrary.h>
 #include <rapidcheck.h>
-
-#include "nix/store/path-regex.hh"
-#include "nix/store/store-api.hh"
 
 #include "nix/util/tests/hash.hh"
 #include "nix/store/tests/path.hh"

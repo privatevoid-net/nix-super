@@ -8,7 +8,7 @@ project(
     'warning_level=1',
     'errorlogs=true', # Please print logs for tests that fail
   ],
-  meson_version : '>= 1.1',
+  meson_version : '>= 1.8',
   license : 'LGPL-2.1-or-later',
 )
 
@@ -101,6 +101,10 @@ brotli = [
 ]
 deps_private += brotli
 
+# Direct libzstd linkage for ZstdMultiFrameCompressionSink.
+zstd = dependency('libzstd', version : '>= 1.4.0')
+deps_private += zstd
+
 cpuid_required = get_option('cpuid')
 if host_machine.cpu_family() != 'x86_64' and cpuid_required.enabled()
   warning('Force-enabling seccomp on non-x86_64 does not make sense')
@@ -132,6 +136,7 @@ sources = [ config_priv_h ] + files(
   'base-n.cc',
   'base-nix-32.cc',
   'bump-memory-resource.cc',
+  'caching-source-accessor.cc',
   'canon-path.cc',
   'compression-algo.cc',
   'compression-settings.cc',

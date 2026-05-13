@@ -5,7 +5,6 @@
 #include "nix/expr/eval-inline.hh"
 #include "nix/expr/get-drvs.hh"
 #include "nix/expr/attr-path.hh"
-#include "nix/util/signals.hh"
 #include "nix/expr/value-to-xml.hh"
 #include "nix/expr/value-to-json.hh"
 #include "nix/store/store-open.hh"
@@ -14,10 +13,9 @@
 #include "nix/cmd/legacy.hh"
 #include "man-pages.hh"
 
-#include <map>
 #include <iostream>
 
-using namespace nix;
+namespace nix {
 
 std::filesystem::path gcRoot;
 static int rootNr = 0;
@@ -68,7 +66,7 @@ void processExpr(
                 if (strict)
                     state.forceValueDeep(vRes);
                 std::set<const void *> seen;
-                printAmbiguous(state, vRes, std::cout, &seen);
+                printAmbiguous(state, vRes, std::cout, &seen, &context);
                 std::cout << std::endl;
             }
         } else {
@@ -96,6 +94,8 @@ void processExpr(
                 std::cout << fmt("%s%s\n", drvPathS, (outputName != "out" ? "!" + outputName : ""));
             }
         }
+
+        state.ensureLazyPathsCopied(context);
     }
 }
 
@@ -209,3 +209,5 @@ static int main_nix_instantiate(int argc, char ** argv)
 }
 
 static RegisterLegacyCommand r_nix_instantiate("nix-instantiate", main_nix_instantiate);
+
+} // namespace nix

@@ -56,6 +56,13 @@ struct ServeUnixSocketOptions
 
 #ifndef _WIN32
     /**
+     * Name of the socket for socket activation, as included in `LISTEN_FDNAMES`
+     * Ordinarily the name of the socket unit, e.g. `nix-daemon.socket`
+     * If this field is empty, no name filtering will be performed.
+     */
+    std::string activationName = "";
+
+    /**
      * Additional file descriptor to poll. Useful for doing a self-pipe trick
      * https://cr.yp.to/docs/selfpipe.html.
      */
@@ -67,6 +74,8 @@ struct ServeUnixSocketOptions
     std::function<void()> onAuxiliaryFdPollin = nullptr;
 #endif
 };
+
+MakeError(AbortServeSocket, BaseError);
 
 /**
  * Run a server loop that accepts connections and calls the handler for each.
@@ -83,6 +92,7 @@ struct ServeUnixSocketOptions
  *
  * This function never returns normally. It runs until interrupted
  * (e.g., via SIGINT), at which point it throws `Interrupted`.
+ * Can be explicitly exited by throwing AbortServeSocket.
  *
  * @param options Configuration for the server.
  * @param handler Callback invoked for each accepted connection.

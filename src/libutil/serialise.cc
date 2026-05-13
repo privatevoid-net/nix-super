@@ -10,6 +10,7 @@
 #include <memory>
 
 #include <boost/coroutine2/coroutine.hpp>
+#include <boost/coroutine2/protected_fixedsize_stack.hpp>
 
 #ifdef _WIN32
 #  include <fileapi.h>
@@ -27,14 +28,14 @@ void BufferedSink::operator()(std::string_view data)
     while (!data.empty()) {
         /* Optimisation: bypass the buffer if the data exceeds the
            buffer size. */
-        if (bufPos + data.size() >= bufSize) {
+        if (data.size() >= bufSize - bufPos) {
             flush();
             writeUnbuffered(data);
             break;
         }
         /* Otherwise, copy the bytes to the buffer.  Flush the buffer
            when it's full. */
-        size_t n = bufPos + data.size() > bufSize ? bufSize - bufPos : data.size();
+        size_t n = data.size() > bufSize - bufPos ? bufSize - bufPos : data.size();
         memcpy(buffer.get() + bufPos, data.data(), n);
         data.remove_prefix(n);
         bufPos += n;
@@ -224,6 +225,9 @@ bool FdSource::hasData()
         return true;
 
     while (true) {
+#ifdef _WIN32
+        /* Windows' fd_set is a bounded handle array, so FD_SET can't
+           overflow; on Unix use poll() since fd may exceed FD_SETSIZE. */
         fd_set fds;
         FD_ZERO(&fds);
         Socket sock = toSocket(fd);
@@ -240,6 +244,20 @@ bool FdSource::hasData()
             throw SysError("polling file descriptor");
         }
         return FD_ISSET(sock, &fds);
+#else
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        auto n = poll(&pfd, 1, 0);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            throw SysError("polling file descriptor");
+        }
+        return n > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+#endif
     }
 }
 
@@ -269,6 +287,8 @@ void FdSource::skip(size_t len)
 #ifndef _WIN32
     /* If we can, seek forward in the file to skip the rest. */
     if (isSeekable && len) {
+        if (len > static_cast<size_t>(std::numeric_limits<off_t>::max()))
+            throw Error("cannot skip %d bytes: exceeds maximum file offset", len);
         if (lseek(fd, len, SEEK_CUR) == -1) {
             if (errno == ESPIPE)
                 isSeekable = false;
@@ -328,20 +348,21 @@ std::unique_ptr<FinishSink> sourceToSink(fun<void(Source &)> reader)
             cur = in;
 
             if (!coro) {
-                coro = coro_t::push_type([&](coro_t::pull_type & yield) {
-                    LambdaSource source([&](char * out, size_t out_len) {
-                        if (cur.empty()) {
-                            yield();
-                            if (yield.get())
-                                throw EndOfFile("coroutine has finished");
-                        }
+                coro =
+                    coro_t::push_type(boost::coroutines2::protected_fixedsize_stack(), [&](coro_t::pull_type & yield) {
+                        LambdaSource source([&](char * out, size_t out_len) {
+                            if (cur.empty()) {
+                                yield();
+                                if (yield.get())
+                                    throw EndOfFile("coroutine has finished");
+                            }
 
-                        size_t n = cur.copy(out, out_len);
-                        cur.remove_prefix(n);
-                        return n;
+                            size_t n = cur.copy(out, out_len);
+                            cur.remove_prefix(n);
+                            return n;
+                        });
+                        reader(source);
                     });
-                    reader(source);
-                });
             }
 
             if (!*coro) {
@@ -385,14 +406,15 @@ std::unique_ptr<Source> sinkToSource(fun<void(Sink &)> writer, fun<void()> eof)
         {
             bool hasCoro = coro.has_value();
             if (!hasCoro) {
-                coro = coro_t::pull_type([&](coro_t::push_type & yield) {
-                    LambdaSink sink([&](std::string_view data) {
-                        if (!data.empty()) {
-                            yield(data);
-                        }
+                coro =
+                    coro_t::pull_type(boost::coroutines2::protected_fixedsize_stack(), [&](coro_t::push_type & yield) {
+                        LambdaSink sink([&](std::string_view data) {
+                            if (!data.empty()) {
+                                yield(data);
+                            }
+                        });
+                        writer(sink);
                     });
-                    writer(sink);
-                });
             }
 
             if (cur.empty()) {
@@ -538,7 +560,8 @@ template StringSet readStrings(Source & source);
 Error readError(Source & source)
 {
     auto type = readString(source);
-    assert(type == "Error");
+    if (type != "Error")
+        throw SerialisationError("unexpected error type '%s'", type);
     auto level = (Verbosity) readInt(source);
     [[maybe_unused]] auto name = readString(source); // removed
     auto msg = readString(source);
@@ -547,11 +570,13 @@ Error readError(Source & source)
         .msg = HintFmt(msg),
     };
     auto havePos = readNum<size_t>(source);
-    assert(havePos == 0);
+    if (havePos != 0)
+        throw SerialisationError("deserializing error positions is not supported");
     auto nrTraces = readNum<size_t>(source);
     for (size_t i = 0; i < nrTraces; ++i) {
         havePos = readNum<size_t>(source);
-        assert(havePos == 0);
+        if (havePos != 0)
+            throw SerialisationError("deserializing error positions is not supported");
         info.traces.push_back(Trace{.hint = HintFmt(readString(source))});
     }
     return Error(std::move(info));

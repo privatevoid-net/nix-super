@@ -4,7 +4,6 @@
 #include "nix/expr/eval-inline.hh"
 #include "nix/expr/eval-settings.hh"
 #include "nix/store/names.hh"
-#include "nix/expr/get-drvs.hh"
 #include "nix/main/common-args.hh"
 #include "nix/main/shared.hh"
 #include "nix/expr/eval-cache.hh"
@@ -13,13 +12,13 @@
 #include "nix/util/strings-inline.hh"
 
 #include <regex>
-#include <fstream>
 #include <nlohmann/json.hpp>
 
 #include "nix/util/strings.hh"
 
-using namespace nix;
 using json = nlohmann::json;
+
+namespace nix {
 
 std::string wrap(std::string prefix, std::string s)
 {
@@ -219,3 +218,5 @@ struct CmdSearch : SourceExprCommand, MixJSON
 };
 
 static auto rCmdSearch = registerCommand<CmdSearch>("search");
+
+} // namespace nix

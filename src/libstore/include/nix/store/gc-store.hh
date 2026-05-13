@@ -39,6 +39,19 @@ struct GCOptions
     using GCAction = nix::GCAction;
     using enum GCAction;
 
+    struct WholeStore
+    {};
+
+    struct SpecificPaths
+    {
+        StorePathSet paths;
+
+        /**
+         * Allow dead referrers of candidate paths to also be deleted.
+         */
+        bool deleteReferrers = false;
+    };
+
     GCAction action{gcDeleteDead};
 
     /**
@@ -50,9 +63,10 @@ struct GCOptions
     bool ignoreLiveness{false};
 
     /**
-     * For `gcDeleteSpecific`, the paths to delete.
+     * The paths from which to delete.
      */
-    StorePathSet pathsToDelete;
+    using GCPaths = std::variant<WholeStore, SpecificPaths>;
+    GCPaths pathsToDelete;
 
     /**
      * Stop after at least `maxFreed` bytes have been freed.
@@ -102,6 +116,10 @@ struct GCResults
  */
 struct GcStore : public virtual Store
 {
+private:
+    void anchor() override;
+
+public:
     inline static std::string operationName = "Garbage collection";
 
     /**

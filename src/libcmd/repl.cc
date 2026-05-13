@@ -75,7 +75,7 @@ struct NixRepl : AbstractNixRepl, detail::ReplCompleterMixin, gc
 
     RunNix * runNixPtr;
 
-    void runNix(const std::string & program, OsStrings args, const std::optional<std::string> & input = {});
+    void runNix(const std::string & program, OsStrings args);
 
     std::unique_ptr<ReplInteracter> interacter;
 
@@ -484,8 +484,8 @@ ProcessLineResult NixRepl::processLine(std::string line)
             }
         }();
 
-        // Open in EDITOR
-        auto args = editorFor(path, line);
+        /* Open file in EDITOR, or edit a read-only copy if the file doesn't have a physical path. */
+        auto [args, fd, autoDel] = editorFor(path, line, /*readOnly=*/true);
         auto editor = args.front();
         args.pop_front();
 
@@ -494,13 +494,16 @@ ProcessLineResult NixRepl::processLine(std::string line)
         runProgram2({
             .program = editor,
             .lookupPath = true,
-            .args = toOsStrings(std::move(args)),
+            .args = std::move(args),
             .isInteractive = true,
         });
 
-        // Reload right after exiting the editor
-        state->resetFileCache();
-        reloadFilesAndFlakes();
+        /* If we had to open a temporary read-only file, there's no need to
+           reload (no files could have changed anyway). */
+        if (!fd) {
+            state->resetFileCache();
+            reloadFilesAndFlakes();
+        }
     }
 
     else if (command == ":t") {
@@ -685,21 +688,19 @@ ProcessLineResult NixRepl::processLine(std::string line)
 
 void NixRepl::loadFile(const std::filesystem::path & path)
 {
-    loadedFiles.remove(path);
-    loadedFiles.push_back(path);
     Value v, v2;
     state->evalFile(lookupFileArg(*state, path.string()), v);
     state->autoCallFunction(*autoArgs, v, v2);
     addAttrsToScope(v2);
+    // Remember for :reload only on success.
+    loadedFiles.remove(path);
+    loadedFiles.push_back(path);
 }
 
 void NixRepl::loadFlake(const std::string & flakeRefS)
 {
     if (flakeRefS.empty())
         throw Error("cannot use ':load-flake' without a path specified. (Use '.' for the current working directory.)");
-
-    loadedFlakes.remove(flakeRefS);
-    loadedFlakes.push_back(flakeRefS);
 
     std::filesystem::path cwd;
     try {
@@ -727,6 +728,10 @@ void NixRepl::loadFlake(const std::string & flakeRefS)
             }),
         v);
     addAttrsToScope(v);
+
+    // Remember for :reload only on success.
+    loadedFlakes.remove(flakeRefS);
+    loadedFlakes.push_back(flakeRefS);
 }
 
 void NixRepl::initEnv()
@@ -769,28 +774,44 @@ void NixRepl::reloadFilesAndFlakes()
 
 void NixRepl::loadFiles()
 {
-    decltype(loadedFiles) old = loadedFiles;
-    loadedFiles.clear();
+    // loadFile() rebuilds loadedFiles; keep failed entries and continue.
+    decltype(loadedFiles) old;
+    std::swap(old, loadedFiles);
 
     for (auto & i : old) {
         notice("Loading %1%...", PathFmt(i));
-        loadFile(i);
+        try {
+            loadFile(i);
+        } catch (Error & e) {
+            loadedFiles.push_back(i);
+            printMsg(lvlError, e.msg());
+        }
     }
 
     for (auto & [i, what] : getValues()) {
         notice("Loading installable '%1%'...", what);
-        addAttrsToScope(*i);
+        try {
+            addAttrsToScope(*i);
+        } catch (Error & e) {
+            printMsg(lvlError, e.msg());
+        }
     }
 }
 
 void NixRepl::loadFlakes()
 {
-    Strings old = loadedFlakes;
-    loadedFlakes.clear();
+    // See loadFiles().
+    Strings old;
+    std::swap(old, loadedFlakes);
 
     for (auto & i : old) {
         notice("Loading flake '%1%'...", i);
-        loadFlake(i);
+        try {
+            loadFlake(i);
+        } catch (Error & e) {
+            loadedFlakes.push_back(i);
+            printMsg(lvlError, e.msg());
+        }
     }
 }
 
@@ -889,10 +910,10 @@ void NixRepl::evalString(std::string s, Value & v)
     state->forceValue(v, v.determinePos(noPos));
 }
 
-void NixRepl::runNix(const std::string & program, OsStrings args, const std::optional<std::string> & input)
+void NixRepl::runNix(const std::string & program, OsStrings args)
 {
     if (runNixPtr)
-        (*runNixPtr)(program, std::move(args), input);
+        (*runNixPtr)(program, std::move(args));
     else
         throw Error(
             "Cannot run '%s' because no method of calling the Nix CLI was provided. This is a configuration problem pertaining to how this program was built. See Nix 2.25 release notes",

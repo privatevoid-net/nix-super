@@ -3,13 +3,13 @@
 #include "nix/cmd/command.hh"
 #include "nix/main/common-args.hh"
 #include "nix/store/store-api.hh"
-#include "nix/util/archive.hh"
 #include "nix/store/derivations.hh"
 #include "nix/store/globals.hh"
 #include <nlohmann/json.hpp>
 
-using namespace nix;
 using json = nlohmann::json;
+
+namespace nix {
 
 struct CmdAddDerivation : MixDryRun, StoreCommand
 {
@@ -44,3 +44,5 @@ struct CmdAddDerivation : MixDryRun, StoreCommand
 };
 
 static auto rCmdAddDerivation = registerCommand2<CmdAddDerivation>({"derivation", "add"});
+
+} // namespace nix

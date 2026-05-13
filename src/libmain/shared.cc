@@ -6,12 +6,10 @@
 #include "nix/store/store-open.hh"
 #include "nix/store/gc-store.hh"
 #include "nix/main/loggers.hh"
-#include "nix/main/progress-bar.hh"
 #include "nix/util/signals.hh"
 #include "nix/util/util.hh"
 
 #include <algorithm>
-#include <exception>
 #include <iostream>
 
 #include <cstdlib>
@@ -22,6 +20,9 @@
 
 #ifndef _WIN32
 #  include <sys/resource.h>
+#endif
+#ifdef __APPLE__
+#  include <sys/sysctl.h>
 #endif
 #ifdef __linux__
 #  include <features.h>
@@ -134,8 +135,26 @@ void bumpFileLimit()
     if (getrlimit(RLIMIT_NOFILE, &limit) != 0)
         return;
 
-    if (limit.rlim_cur < limit.rlim_max) {
-        limit.rlim_cur = limit.rlim_max;
+    rlim_t target = limit.rlim_max;
+
+#  ifdef __APPLE__
+    // On macOS the hard limit is typically RLIM_INFINITY, but
+    // setting rlim_cur to that causes problems: child processes
+    // (e.g. GNU patch in the Nix sandbox) may allocate memory
+    // proportional to the fd limit and OOM. Use the kernel's
+    // per-process file limit instead, which is the effective cap.
+    //
+    // GNU patch < 2.8 crashes with **** out of memory, which breaks in nixpkgs darwin bootstrap tools.
+    // This was fixed in:
+    // https://cgit.git.savannah.gnu.org/cgit/patch.git/commit/?id=61d7788b83b302207a67b82786f4fd79e3538f30
+    int maxfiles;
+    size_t len = sizeof(maxfiles);
+    if (sysctlbyname("kern.maxfilesperproc", &maxfiles, &len, nullptr, 0) == 0)
+        target = maxfiles;
+#  endif
+
+    if (limit.rlim_cur < target) {
+        limit.rlim_cur = target;
         // Ignore errors, this is best effort.
         setrlimit(RLIMIT_NOFILE, &limit);
     }

@@ -10,10 +10,9 @@
 #include "nix/cmd/legacy.hh"
 #include "man-pages.hh"
 
-#include <iostream>
 #include <cerrno>
 
-using namespace nix;
+namespace nix {
 
 std::string deleteOlderThan;
 bool dryRun = false;
@@ -101,6 +100,7 @@ static int main_nix_collect_garbage(int argc, char ** argv)
         auto store = openStore();
         auto & gcStore = require<GcStore>(*store);
         options.action = dryRun ? GCOptions::gcReturnDead : GCOptions::gcDeleteDead;
+        options.pathsToDelete = GCOptions::WholeStore{};
         GCResults results;
         Finally printer([&] { printFreed(dryRun, results); });
         gcStore.collectGarbage(options, results);
@@ -110,3 +110,5 @@ static int main_nix_collect_garbage(int argc, char ** argv)
 }
 
 static RegisterLegacyCommand r_nix_collect_garbage("nix-collect-garbage", main_nix_collect_garbage);
+
+} // namespace nix

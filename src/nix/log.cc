@@ -1,10 +1,9 @@
 #include "nix/cmd/command.hh"
 #include "nix/cmd/get-build-log.hh"
-#include "nix/main/common-args.hh"
 #include "nix/main/shared.hh"
 #include "nix/store/globals.hh"
 
-using namespace nix;
+namespace nix {
 
 struct CmdLog : InstallableCommand
 {
@@ -48,3 +47,5 @@ struct CmdLog : InstallableCommand
 };
 
 static auto rCmdLog = registerCommand<CmdLog>("log");
+
+} // namespace nix

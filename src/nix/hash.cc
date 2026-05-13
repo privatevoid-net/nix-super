@@ -1,17 +1,15 @@
 #include "nix/cmd/command.hh"
 #include "nix/util/hash.hh"
-#include "nix/store/content-address.hh"
 #include "nix/cmd/legacy.hh"
 #include "nix/main/shared.hh"
 #include "nix/store/references.hh"
-#include "nix/util/archive.hh"
 #include "nix/util/git.hh"
 #include "nix/util/posix-source-accessor.hh"
 #include "nix/cmd/misc-store-flags.hh"
 #include "man-pages.hh"
 #include "nix/util/fun.hh"
 
-using namespace nix;
+namespace nix {
 
 /**
  * Base for `nix hash path`, `nix hash file` (deprecated), and `nix-hash` (legacy).
@@ -86,9 +84,7 @@ struct CmdHashBase : Command
                     return std::make_unique<HashSink>(hashAlgo);
             };
 
-            auto makeSourcePath = [&]() -> SourcePath {
-                return PosixSourceAccessor::createAtRoot(makeParentCanonical(path));
-            };
+            auto makeSourcePath = [&]() -> SourcePath { return makeFSSourceAccessor(absPath(path)); };
 
             Hash h{HashAlgorithm::SHA256}; // throwaway def to appease C++
             switch (mode) {
@@ -368,3 +364,5 @@ static int compatNixHash(int argc, char ** argv)
 }
 
 static RegisterLegacyCommand r_nix_hash("nix-hash", compatNixHash);
+
+} // namespace nix

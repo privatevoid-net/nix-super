@@ -1,9 +1,10 @@
-#include "nix/store/derivations.hh"
-#include "nix/store/globals.hh"
+#include "nix/store/gc-store.hh"
 #include "nix/store/local-gc.hh"
+#include "nix/store/local-settings.hh"
 #include "nix/store/local-store.hh"
 #include "nix/store/path.hh"
 #include "nix/util/configuration.hh"
+#include "nix/util/environment-variables.hh"
 #include "nix/util/finally.hh"
 #include "nix/util/unix-domain-socket.hh"
 #include "nix/util/signals.hh"
@@ -22,6 +23,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <variant>
 #if HAVE_STATVFS
 #  include <sys/statvfs.h>
 #endif
@@ -355,10 +357,16 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     const auto & gcSettings = config->getLocalSettings().getGCSettings();
 
     bool shouldDelete = options.action == GCOptions::gcDeleteDead || options.action == GCOptions::gcDeleteSpecific;
-    bool keepOutputs = gcSettings.keepOutputs;
-    bool keepDerivations = gcSettings.keepDerivations;
 
     boost::unordered_flat_set<StorePath, std::hash<StorePath>> roots, dead, alive;
+
+    /* Return early if nothing to delete */
+    if (std::visit(
+            overloaded{
+                [](const GCOptions::SpecificPaths & pathsToDelete) { return pathsToDelete.paths.empty(); },
+                [](const GCOptions::WholeStore & _) { return false; }},
+            options.pathsToDelete))
+        return;
 
     struct Shared
     {
@@ -374,15 +382,6 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     Sync<Shared> _shared;
 
     std::condition_variable wakeup;
-
-    /* Using `--ignore-liveness' with `--delete' can have unintended
-       consequences if `keep-outputs' or `keep-derivations' are true
-       (the garbage collector will recurse into deleting the outputs
-       or derivers, respectively).  So disable them. */
-    if (options.action == GCOptions::gcDeleteSpecific && options.ignoreLiveness) {
-        keepOutputs = false;
-        keepDerivations = false;
-    }
 
     if (shouldDelete)
         deletePath(reservedPath);
@@ -577,7 +576,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
        via the referrers edges and optionally derivers and derivation
        output edges. If none of those paths are roots, then all
        visited paths are garbage and are deleted. */
-    auto deleteReferrersClosure = [&](const StorePath & start) {
+    auto maybeDeleteReferrersClosure = [&](const StorePath & start) {
         StorePathSet visited;
         std::queue<StorePath> todo;
 
@@ -601,14 +600,15 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
 
             /* Bail out if we've previously discovered that this path
                is alive. */
-            if (alive.count(*path)) {
+            if (alive.contains(*path)) {
+                debug("cannot delete '%s' because '%s' is alive", printStorePath(start), printStorePath(*path));
                 alive.insert(start);
                 return;
             }
 
             /* If we've previously deleted this path, we don't have to
                handle it again. */
-            if (dead.count(*path))
+            if (dead.contains(*path))
                 continue;
 
             auto markAlive = [&]() {
@@ -616,12 +616,23 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                 alive.insert(start);
                 try {
                     StorePathSet closure;
+                    bool includeOutputs = false;
+                    bool includeDerivers = false;
+                    std::visit(
+                        overloaded{
+                            [&](const GCOptions::WholeStore &) {
+                                includeOutputs = gcSettings.keepOutputs;
+                                includeDerivers = gcSettings.keepDerivations;
+                            },
+                            [](const GCOptions::SpecificPaths &) {},
+                        },
+                        options.pathsToDelete);
                     computeFSClosure(
                         *path,
                         closure,
                         /* flipDirection */ false,
-                        keepOutputs,
-                        keepDerivations);
+                        includeOutputs,
+                        includeDerivers);
                     for (auto & p : closure)
                         alive.insert(p);
                 } catch (InvalidPath &) {
@@ -629,18 +640,32 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
             };
 
             /* If this is a root, bail out. */
-            if (roots.count(*path)) {
+            if (roots.contains(*path)) {
                 debug("cannot delete '%s' because it's a root", printStorePath(*path));
                 return markAlive();
             }
 
-            if (options.action == GCOptions::gcDeleteSpecific && !options.pathsToDelete.count(*path))
+            if (std::visit(
+                    overloaded{
+                        [&](const GCOptions::SpecificPaths & pathsToDelete) {
+                            if (!pathsToDelete.deleteReferrers && !pathsToDelete.paths.contains(*path)) {
+                                debug(
+                                    "cannot delete '%s' because '%s' is not in the specified paths to delete",
+                                    printStorePath(start),
+                                    printStorePath(*path));
+                                return true;
+                            }
+                            return false;
+                        },
+                        [](const GCOptions::WholeStore & _) { return false; },
+                    },
+                    options.pathsToDelete))
                 return;
 
             {
                 auto hashPart = path->hashPart();
                 auto shared(_shared.lock());
-                if (shared->tempRoots.count(hashPart)) {
+                if (shared->tempRoots.contains(hashPart)) {
                     debug("cannot delete '%s' because it's a temporary root", printStorePath(*path));
                     return markAlive();
                 }
@@ -660,21 +685,28 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                 for (auto & p : i->second)
                     enqueue(p);
 
-                /* If keep-derivations is set and this is a
-                   derivation, then visit the derivation outputs. */
-                if (keepDerivations && path->isDerivation()) {
-                    for (auto & [name, maybeOutPath] : queryPartialDerivationOutputMap(*path))
-                        if (maybeOutPath && isValidPath(*maybeOutPath)
-                            && queryPathInfo(*maybeOutPath)->deriver == *path)
-                            enqueue(*maybeOutPath);
-                }
+                std::visit(
+                    overloaded{
+                        [&](const GCOptions::WholeStore &) {
+                            /* If keep-derivations is set and this is a derivation, then we only want to delete this
+                             * derivation if we can also delete all its outputs, so visit the derivation outputs. */
+                            if (gcSettings.keepDerivations && path->isDerivation())
+                                for (auto & [name, maybeOutPath] : queryPartialDerivationOutputMap(*path))
+                                    if (maybeOutPath && isValidPath(*maybeOutPath)
+                                        && queryPathInfo(*maybeOutPath)->deriver == path)
+                                        enqueue(*maybeOutPath);
 
-                /* If keep-outputs is set, then visit the derivers. */
-                if (keepOutputs) {
-                    auto derivers = queryValidDerivers(*path);
-                    for (auto & i : derivers)
-                        enqueue(i);
-                }
+                            /* If keep-outputs is set, we only want to delete this path if we
+                             * can also delete its derivers, so visit the derivers. */
+                            if (gcSettings.keepOutputs) {
+                                auto derivers = queryValidDerivers(*path);
+                                for (auto & i : derivers)
+                                    enqueue(i);
+                            }
+                        },
+                        [](const GCOptions::SpecificPaths &) {},
+                    },
+                    options.pathsToDelete);
             }
         }
         for (auto & path : topoSortPaths(visited)) {
@@ -694,50 +726,75 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
         }
     };
 
-    /* Either delete all garbage paths, or just the specified
-       paths (for gcDeleteSpecific). */
-    if (options.action == GCOptions::gcDeleteSpecific) {
+    try {
+        /* Either delete all garbage paths, or just the specified paths. */
+        std::visit(
+            overloaded{
+                [&](const GCOptions::SpecificPaths & pathsToDelete) {
+                    switch (options.action) {
+                    case GCOptions::gcDeleteDead:
+                        printInfo("deleting garbage within specified paths...");
+                        break;
+                    case GCOptions::gcDeleteSpecific:
+                        printInfo("deleting specified paths...");
+                        break;
+                    case GCOptions::gcReturnDead:
+                    case GCOptions::gcReturnLive:
+                        printInfo("determining live/dead paths...");
+                    }
 
-        for (auto & i : options.pathsToDelete) {
-            deleteReferrersClosure(i);
-            if (!dead.count(i))
-                throw Error(
-                    "Cannot delete path '%1%' since it is still alive. "
-                    "To find out why, use: "
-                    "nix-store --query --roots and nix-store --query --referrers",
-                    printStorePath(i));
-        }
+                    for (auto & i : pathsToDelete.paths) {
+                        maybeDeleteReferrersClosure(i);
 
-    } else if (options.maxFreed > 0) {
+                        if (options.action == GCOptions::gcDeleteSpecific && !dead.contains(i))
+                            throw Error(
+                                "Cannot delete path '%1%' since it is still alive. "
+                                "To find out why, use: "
+                                "nix-store --query --roots and nix-store --query --referrers",
+                                printStorePath(i));
+                        else if (!dead.contains(i))
+                            debug("cannot delete '%s' because it's still alive", printStorePath(i));
+                    }
+                },
+                [&](const GCOptions::WholeStore & _) {
+                    if (options.maxFreed == 0)
+                        return;
 
-        if (shouldDelete)
-            printInfo("deleting garbage...");
-        else
-            printInfo("determining live/dead paths...");
+                    switch (options.action) {
+                    case GCOptions::gcDeleteDead:
+                        printInfo("deleting garbage...");
+                        break;
+                    case GCOptions::gcDeleteSpecific:
+                        throw Error("Cannot delete the entire store");
+                    case GCOptions::gcReturnDead:
+                    case GCOptions::gcReturnLive:
+                        printInfo("determining live/dead paths...");
+                    }
 
-        try {
-            AutoCloseDir dir(opendir(config->realStoreDir.get().string().c_str()));
-            if (!dir)
-                throw SysError("opening directory %1%", PathFmt(config->realStoreDir.get()));
+                    AutoCloseDir dir(opendir(config->realStoreDir.get().string().c_str()));
+                    if (!dir)
+                        throw SysError("opening directory %1%", PathFmt(config->realStoreDir.get()));
 
-            /* Read the store and delete all paths that are invalid or
-               unreachable. We don't use readDirectory() here so that
-               GCing can start faster. */
-            auto linksName = linksDir.filename();
-            struct dirent * dirent;
-            while (errno = 0, dirent = readdir(dir.get())) {
-                checkInterrupt();
-                std::string name = dirent->d_name;
-                if (name == "." || name == ".." || name == linksName)
-                    continue;
+                    /* Read the store and delete all paths that are invalid or
+                    unreachable. We don't use readDirectory() here so that
+                    GCing can start faster. */
+                    auto linksName = linksDir.filename();
+                    struct dirent * dirent;
+                    while (errno = 0, dirent = readdir(dir.get())) {
+                        checkInterrupt();
+                        std::string name = dirent->d_name;
+                        if (name == "." || name == ".." || name == linksName)
+                            continue;
 
-                if (auto storePath = maybeParseStorePath(storeDir + "/" + name))
-                    deleteReferrersClosure(*storePath);
-                else
-                    deleteFromStore(name, false);
-            }
-        } catch (GCLimitReached & e) {
-        }
+                        if (auto storePath = maybeParseStorePath(storeDir + "/" + name))
+                            maybeDeleteReferrersClosure(*storePath);
+                        else
+                            deleteFromStore(name, false);
+                    }
+                },
+            },
+            options.pathsToDelete);
+    } catch (GCLimitReached & e) {
     }
 
     if (options.action == GCOptions::gcReturnLive) {

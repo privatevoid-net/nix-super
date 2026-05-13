@@ -229,6 +229,12 @@ public:
  */
 struct StoreConfig : public StoreConfigBase, public StoreDirConfig
 {
+private:
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor() = 0;
+
+public:
     using Params = StoreReference::Params;
 
     StoreConfig(const Params & params, FilePathType pathType);
@@ -380,6 +386,10 @@ struct StoreConfig : public StoreConfigBase, public StoreDirConfig
  */
 class Store : public std::enable_shared_from_this<Store>, public StoreDirConfig
 {
+    /* VTable anchor to avoid weak linkage of the vtable - it breaks
+       dynamic_cast across shared libraries on Darwin. */
+    virtual void anchor() = 0;
+
 public:
 
     using Config = StoreConfig;
@@ -806,6 +816,47 @@ public:
     /**
      * Add a store path as a temporary root of the garbage collector.
      * The root disappears as soon as we exit.
+     * Before exiting, if you want to avoid the path being GC'ed, you either have to make it a permanent root using
+     * `LocalFSStore::addPermRoot()`, or make sure it's reachable from a permanent root (e.g. by adding it as a
+     * reference of a reachable path).
+     *
+     * To avoid races, you should call either this function or `LocalFSStore::addPermRoot()` *before* creating and using
+     * a store path, e.g.
+     *
+     * ```c++
+     * auto path = store.computeStorePath(...);
+     * store->addTempRoot(path);
+     * if (!store->isValidPath(path))
+     *     store->addToStore(...);
+     * ```
+     *
+     * By contrast, registering a root just before *using* a path is not sufficient to prevent GC races. For
+     * instance, don't do this:
+     *
+     * ```c++
+     * store->addTempRoot(path);
+     * auto drv = store->readDerivation(path);
+     * ```
+     *
+     * since the path may be GC'ed just before the call to `addTempRoot()`.
+     *
+     * Note that `addToStore()` implicitly calls `addTempRoot()`, so you don't need to call it yourself if you're
+     * calling `addToStore()` unconditionally.
+     *
+     * It is generally the responsibility of the caller of Nix APIs and CLI tools to ensure that paths are reachable by
+     * the garbage collector. For example, `buildPath(drvPath)` does not need to register *drvPath* as a GC root, since
+     * that's the responsibility of the caller, and it would be too late for `buildPath()` to do so anyway. Thus, this
+     * can race:
+     * ```console
+     * drv=$(nix-instantiate foo.nix)
+     * nix-store -r $drv
+     * ```
+     * whereas this is safe:
+     * ```console
+     * nix-instantiate foo.nix --add-root ./drv
+     * nix-store -r ./drv
+     * ```
+     *
      */
     virtual void addTempRoot(const StorePath & path)
     {

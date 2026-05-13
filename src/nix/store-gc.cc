@@ -5,9 +5,8 @@
 #include "nix/store/store-cast.hh"
 #include "nix/store/gc-store.hh"
 #include "nix/util/error.hh"
-#include "nix/util/logging.hh"
 
-using namespace nix;
+namespace nix {
 
 struct CmdStoreGC : StoreCommand, MixDryRun
 {
@@ -43,6 +42,7 @@ struct CmdStoreGC : StoreCommand, MixDryRun
         auto & gcStore = require<GcStore>(*store);
 
         options.action = dryRun ? GCOptions::gcReturnDead : GCOptions::gcDeleteDead;
+        options.pathsToDelete = GCOptions::WholeStore{};
         GCResults results;
         Finally printer([&] { printFreed(dryRun, results); });
         gcStore.collectGarbage(options, results);
@@ -50,3 +50,5 @@ struct CmdStoreGC : StoreCommand, MixDryRun
 };
 
 static auto rCmdStoreGC = registerCommand2<CmdStoreGC>({"store", "gc"});
+
+} // namespace nix

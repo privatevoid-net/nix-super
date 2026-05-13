@@ -3,9 +3,7 @@
 
 #include "nix/util/current-process.hh"
 #include "nix/util/util.hh"
-#include "nix/util/finally.hh"
 #include "nix/util/file-system.hh"
-#include "nix/util/processes.hh"
 #include "nix/util/signals.hh"
 #include "nix/util/environment-variables.hh"
 #include <math.h>
@@ -15,7 +13,6 @@
 #endif
 
 #ifdef __linux__
-#  include <mutex>
 #  include "nix/util/cgroup.hh"
 #  include "nix/util/linux-namespaces.hh"
 #endif
@@ -61,7 +58,7 @@ unsigned int getMaxCPU()
 #ifndef _WIN32
 size_t savedStackSize = 0;
 
-void setStackSize(size_t stackSize)
+void ensureStackSizeAtLeast(size_t stackSize)
 {
     struct rlimit limit;
     if (getrlimit(RLIMIT_STACK, &limit) == 0 && static_cast<size_t>(limit.rlim_cur) < stackSize) {

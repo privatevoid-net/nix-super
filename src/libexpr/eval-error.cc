@@ -6,7 +6,7 @@
 namespace nix {
 
 InvalidPathError::InvalidPathError(EvalState & state, const StorePath & path)
-    : CloneableError(state, "path '%s' is not valid", path.to_string())
+    : CloneableError(state, "path '%s' is not valid", state.store->printStorePath(path))
     , path{path}
 {
 }
@@ -97,7 +97,7 @@ void EvalErrorBuilder<T>::debugThrow()
     auto error = std::move(this->error);
     delete this;
 
-    throw error;
+    throw std::move(error);
 }
 
 template<class T>

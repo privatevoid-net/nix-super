@@ -53,7 +53,10 @@ struct FilteringSourceAccessor : SourceAccessor
 
     std::pair<CanonPath, std::optional<std::string>> getFingerprint(const CanonPath & path) override;
 
-    void invalidateCache(const CanonPath & path) override;
+    void invalidateCache() override
+    {
+        next->invalidateCache();
+    }
 
     /**
      * Call `makeNotAllowedError` to throw a `RestrictedPathError`

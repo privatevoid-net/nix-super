@@ -66,9 +66,16 @@ PeerInfo getPeerInfo(Descriptor remote)
     if (listenFds) {
         if (getEnv("LISTEN_PID") != std::to_string(getpid()))
             throw Error("unexpected systemd environment variables");
+
+        auto fdNames = tokenizeString<std::vector<std::string>>(getEnv("LISTEN_FDNAMES").value_or(""), ":");
         auto count = string2Int<unsigned int>(*listenFds);
         assert(count);
         for (unsigned int i = 0; i < count; ++i) {
+            // Not all implementations of LISTEN_FDS will implement names,
+            // listen anyway if we do not have enough names
+            if (i < fdNames.size() && options.activationName != "" && fdNames[i] != options.activationName)
+                continue;
+
             AutoCloseFD fdSocket(SD_LISTEN_FDS_START + i);
             closeOnExec(fdSocket.get());
             listeningSockets.push_back(std::move(fdSocket));
@@ -123,6 +130,9 @@ PeerInfo getPeerInfo(Descriptor remote)
                 handler(std::move(remote), [&]() { listeningSockets.clear(); });
             }
 
+        } catch (AbortServeSocket &) {
+            /* Explicitly aborted, bail out. */
+            throw;
         } catch (Error & error) {
             auto ei = error.info();
             // FIXME: add to trace?

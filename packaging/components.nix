@@ -512,8 +512,6 @@ in
   */
   nix-json-schema-checks = callPackage ../src/json-schema-checks/package.nix { };
 
-  nix-perl-bindings = callPackage ../src/perl/package.nix { };
-
   # The clang-tidy plugin is a build-time tool loaded into clang-tidy itself,
   # so it must be built with a clang stdenv for ABI compatibility with the
   # clang-tidy binary from the same llvmPackages set, regardless of the

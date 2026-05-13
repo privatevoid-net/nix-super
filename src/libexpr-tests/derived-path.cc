@@ -1,6 +1,6 @@
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
-#include <exception> // Needed by rapidcheck on Darwin
+#include <exception> // IWYU pragma: keep (Needed by rapidcheck on Darwin and FreeBSD)
 #include <rapidcheck/gtest.h>
 
 #include "nix/store/tests/derived-path.hh"

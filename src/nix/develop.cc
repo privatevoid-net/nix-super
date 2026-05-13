@@ -1,7 +1,7 @@
+#include "nix/cmd/command.hh"
 #include "nix/util/config-global.hh"
 #include "nix/expr/eval.hh"
 #include "nix/cmd/installable-flake.hh"
-#include "nix/cmd/command-installable-value.hh"
 #include "nix/main/common-args.hh"
 #include "nix/main/shared.hh"
 #include "nix/store/store-api.hh"
@@ -14,7 +14,6 @@
 #  include "run.hh"
 #endif
 
-#include <iterator>
 #include <memory>
 #include <sstream>
 #include <nlohmann/json.hpp>
@@ -22,7 +21,7 @@
 
 #include "nix/util/strings.hh"
 
-using namespace nix;
+namespace nix {
 
 struct DevelopSettings : Config
 {
@@ -753,3 +752,5 @@ struct CmdPrintDevEnv : Common, MixJSON
 
 static auto rCmdPrintDevEnv = registerCommand<CmdPrintDevEnv>("print-dev-env");
 static auto rCmdDevelop = registerCommand<CmdDevelop>("develop");
+
+} // namespace nix
